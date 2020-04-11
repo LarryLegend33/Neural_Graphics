@@ -2,6 +2,7 @@ import bpy
 import time
 import sys
 from mathutils import Vector
+from bpy_extras.object_utils import world_to_camera_view
 import numpy as np
 
 
@@ -45,6 +46,7 @@ class Blender_Setup():
                        Vector([-2, -4, 0]),
                        Vector([np.pi / 3., 0, 0]), Vector([0.1, 0.1, 0.1]))
         self.set_body_pose()
+        
         try:
             os.remove(render_type+".png")
         except NameError:
@@ -117,7 +119,7 @@ class Blender_Setup():
         obj = bpy.data.objects[name]
         obj.scale = scale
 
-    def get_object_location(self, name):
+    def get_object_location(self, name):        
         return tuple(bpy.data.objects[name].location)
 
     def get_object_rotation_euler(self, name):
@@ -141,6 +143,11 @@ class Blender_Setup():
 
     def get_bone_location(self, object_name, bone_name):
         bone = bpy.data.objects[object_name].pose.bones[bone_name]
+        coords_2d = world_to_camera_view(
+            self.scene, bpy.data.objects["Camera"], bone.location)
+        # STILL HAVE TO SET SCALE FACTOR HERE. 
+
+        
         return tuple(bone.location)
 
     def get_bone_rotation_euler(self, object_name, bone_name):
@@ -249,10 +256,12 @@ pose_dict = dict(zip(pose_dict_keys, pose_dict_values))
 body_pose = BodyPose(pose_dict)
 blender_creator = Blender_Setup(body_pose)
 if sys.argv[-1] == "depth":
+  #  width, height = (256, 256)
     width, height = (128, 128)
 elif sys.argv[-1] == "wire":
     width, height = (512, 512)
 blender_creator.renderer(width, height, sys.argv[-1])
+print(blender_creator.get_bone_location('rig', 'arm elbow_L'))
 
 
                                  

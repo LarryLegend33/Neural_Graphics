@@ -49,7 +49,7 @@ end
     λ = 0                # L2 regularizer param, implemented as weight decay
     batchsize = 10       # batch size
     epochs = 100           # number of epochs
-    training_images = 100
+    training_images = 10
     validation_images = 10
     seed = 0             # set seed > 0 for reproducibility
     cuda = true          # if true use cuda (if available)
@@ -61,6 +61,8 @@ end
 
 
 # LeNet like architecture to start
+# think metaprogramming here. want to make a generator for
+# conv layer structure. probably number of conv layers
 function base_flux_model()
     image_size = (128, 128)
     kernel_size = (3, 3)
@@ -98,7 +100,7 @@ end
     # write a gen model to make a NN and mcmc the params
     # for good performance. 
 
-function train_flux_on_dataset(; kws...)
+function train_nn_on_dataset(nn_model::Chain; kws...)
     nn_args = Args(; kws...)
     nn_args.seed > 0 && Random.seed!(nn_args.seed)
     use_cuda = nn_args.cuda && CUDAapi.has_cuda_gpu()
@@ -115,13 +117,8 @@ function train_flux_on_dataset(; kws...)
     training_loader = DataLoader(
         make_pose_data(nn_args.training_images)...,
         batchsize=nn_args.batchsize)
-    nn_model = base_flux_model()
     nn_params = params(nn_model)
-    if nn_args.λ > 0 
-        opt = Optimiser(ADAM(nn_args.η), WeightDecay(nn_args.λ))
-    else
-        opt = ADAM(nn_args.η)                     
-    end
+    opt = Optimiser(ADAM(nn_args.η), WeightDecay(nn_args.λ))
 
     if nn_args.tblogger 
         tblogger = TBLogger(nn_args.savepath, tb_overwrite)
@@ -129,14 +126,13 @@ function train_flux_on_dataset(; kws...)
         @info "TensorBoard logging at \"$(nn_args.savepath)\""
     end
 
-     @info "Start Training"
+    @info "Start Training"
 
-    for epoch in 1:nn_args.epochs
+
+
+    for epoch in 0:nn_args.epochs
         p = ProgressMeter.Progress(length(training_loader))
-
-        println(epoch)
         if epoch % nn_args.infotime == 0
-            println(epoch)
             test_model_performance = eval_validation_set(
                 validation_loader, 
                 nn_model,
@@ -145,10 +141,9 @@ function train_flux_on_dataset(; kws...)
             if nn_args.tblogger
                 set_step!(tblogger, epoch)
                 with_logger(tblogger) do
-                    @info "validation performance"
-                    loss=test_model_performance.loss
-                    acc=test_model_performance.acc
+                    @info "train" loss=test_model_performance.loss acc=test_model_performance.acc
             end
+            epoch == 0 && run(`tensorboard --logdir logging`, wait=false)
         end
 
         
@@ -161,8 +156,6 @@ function train_flux_on_dataset(; kws...)
             Flux.Optimise.update!(opt, nn_params, grads)
             ProgressMeter.next!(p)   # comment out for no progress bar
         end
-
-    
                 
         if epoch > 0 && epoch % nn_args.save_every_n_epochs == 0
             !ispath(nn_args.savepath) && mkpath(nn_args.savepath)
@@ -174,10 +167,12 @@ function train_flux_on_dataset(; kws...)
         end
     end
     end
-    return nn_model
+    return nn_model, training_loader, validation_loader
 end    
 
-trained_model = train_flux_on_dataset()
+
+nn_mod = base_flux_model();
+trained_model, training_data, validation_data = train_nn_on_dataset(nn_mod) 
 
     
 # function train_flux_with_model(num_batches::Int, batch_size::Int)
