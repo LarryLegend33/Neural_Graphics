@@ -5,6 +5,7 @@ using ImageFiltering: imfilter, Kernel
 using ColorTypes
 using FixedPointNumbers
 using Base.Iterators
+using DelimitedFiles
 
 latent_variables = [:rot_z, 
                     :elbow_r_loc_x,
@@ -22,11 +23,15 @@ latent_variables = [:rot_z,
                     :heel_l_loc_x,
                     :heel_l_loc_y,
                     :heel_l_loc_z]
+                
 
-# I'm guessing this makes noisymatrix a subclass 
 struct NoisyMatrix <: Gen.Distribution{Matrix{Float64}} end
 
+struct GaussianNoisyGroundtruths <: Gen.Distribution{Array{Float64, 2}} end
+
 const noisy_matrix = NoisyMatrix()
+
+const noisy_groundtruths = GaussianNoisyGroundtruths()
 
 function Gen.logpdf(::NoisyMatrix, x::Matrix{Float64}, mu::Matrix{U}, noise::T) where {U<:Real,T<:Real}
     var = noise * noise
@@ -52,26 +57,52 @@ function Gen.random(::NoisyMatrix, mu::Matrix{U}, noise::T) where {U<:Real,T<:Re
 end
 
 
+# You never call this; it is a standin -- but fix it eventually. 
+function Gen.logpdf(::GaussianNoisyGroundtruths, x::Array{Float64, 2}, mu::Array{U}, noise::T) where {U<:Real,T<:Real}
+    var = noise * noise
+    diff = x - mu
+    vec = diff[:]
+    return -(vec' * vec)/ (2.0 * var) - 0.5 * log(2.0 * pi * var)
+end
+
+function Gen.random(::GaussianNoisyGroundtruths, mu::Array{U}, noise::T) where {U<:Real,T<:Real}
+    mat = copy(mu)
+    (w, h) = size(mu)
+    for i=1:w
+        for j=1:h
+            mat[i, j] = normal(mu[i, j], noise)
+        end
+    end
+    return mat
+end
+
 
 function render_pose(pose, render_type)
     run(`/Applications/Blender.app/Contents/MacOS/Blender -b HumanKTH.decimated.blend -P bpy_depth_standalone.py -- $pose $render_type`)
     image_png = FileIO.load("$render_type.png")
+    groundtruths = readdlm("$render_type.txt", ',')
     image_matrix = convert(Matrix{Float32}, image_png)
-    return image_matrix
+    return image_matrix, groundtruths
 end
-
 
 
 @gen function body_pose_model()
     # locations of relevant joints
     pose_params = [({lv} ~ uniform(0, 1)) for lv in latent_variables]
-    depth_image = render_pose(pose_params, "depth")
+    depth_image, two_d_groundtruth = render_pose(pose_params, "depth")
     blurred_depth_image = imfilter(depth_image, Kernel.gaussian(1))
     noisy_image = ({ :image } ~ noisy_matrix(blurred_depth_image, 0.1))
+    gaussian_groundtruths = ({ :groundtruths } ~ noisy_groundtruths(two_d_groundtruth, .001))
+    # this actually induces a significant amount of noise. is that what you want? 
     return blurred_depth_image
 end
 
 trace = Gen.simulate(body_pose_model, ());
+
+
+# This is the real structure of the model -- i.e. where to look. 
+
+
 
 
 #choice_list = [trace[lv] for lv in latent_variables];
