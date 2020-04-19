@@ -7,23 +7,42 @@ using FixedPointNumbers
 using Base.Iterators
 using DelimitedFiles
 
-latent_variables = [:rot_z, 
-                    :elbow_r_loc_x,
-                    :elbow_r_loc_y,
-                    :elbow_r_loc_z,
-                    :elbow_l_loc_x,
-                    :elbow_l_loc_y,
-                    :elbow_l_loc_z,
-                    :elbow_r_rot,
-                    :elbow_l_rot,
-                    :hip_loc_z,
-                    :heel_r_loc_x,
-                    :heel_r_loc_y,
-                    :heel_r_loc_z,
-                    :heel_l_loc_x,
-                    :heel_l_loc_y,
-                    :heel_l_loc_z]
-                
+
+latent_variables = [(:rot_z, [-π/4,π/4]),
+                    (:elbow_r_x, [-.2, .2]),
+                    (:elbow_r_y, [-.2, .2]),
+                    (:elbow_r_z, [0, .3]),
+                    (:elbow_l_x, [-.2, .2]),
+                    (:elbow_l_y, [-.2, .2]),
+                    (:elbow_l_z, [0, .3]),
+                    (:elbow_r_rot, [0, π/3]),
+                    (:elbow_l_rot, [0, π/3]),
+                    (:hip_z, [-.2, .2]),
+                    (:heel_r_x, [-.2, .2]),
+                    (:heel_r_y, [0, .2]), 
+                    (:heel_r_z, [-.2, .2]),
+                    (:heel_l_x, [-.2, .2]),
+                    (:heel_l_y, [0, .2]), 
+                    (:heel_l_z, [-.2, .2])]
+
+
+latent_variables = [(:rot_z, [0,0]),
+                    (:elbow_r_x, [.2,.3]),
+                    (:elbow_r_y, [.2,.3]),
+                    (:elbow_r_z, [.2,.3]),
+                    (:elbow_l_x, [0,0]),
+                    (:elbow_l_y, [0,0]),
+                    (:elbow_l_z, [0,0]),
+                    (:elbow_r_rot, [0,0]),
+                    (:elbow_l_rot, [0,0]),
+                    (:hip_z, [0,0]),
+                    (:heel_r_x, [-.2,.2]),
+                    (:heel_r_y, [-.2,.2]), 
+                    (:heel_r_z, [0,0]),
+                    (:heel_l_x, [0,0]),
+                    (:heel_l_y, [0,0]), 
+                    (:heel_l_z, [0,0])]
+
 
 struct NoisyMatrix <: Gen.Distribution{Matrix{Float64}} end
 
@@ -58,14 +77,18 @@ end
 
 
 # You never call this; it is a standin -- but fix it eventually. 
-function Gen.logpdf(::GaussianNoisyGroundtruths, x::Array{Float64, 2}, mu::Array{U}, noise::T) where {U<:Real,T<:Real}
+# function Gen.logpdf(::GaussianNoisyGroundtruths, x::Array{Float64, 2}, mu::Array{U}, noise::T) where {U<:Real,T<:Real}
+# end
+function Gen.logpdf(::GaussianNoisyGroundtruths, x::Matrix{Float64}, mu::Matrix{U}, noise::T) where {U<:Real,T<:Real}
     var = noise * noise
     diff = x - mu
     vec = diff[:]
     return -(vec' * vec)/ (2.0 * var) - 0.5 * log(2.0 * pi * var)
 end
 
-function Gen.random(::GaussianNoisyGroundtruths, mu::Array{U}, noise::T) where {U<:Real,T<:Real}
+
+
+function Gen.random(::GaussianNoisyGroundtruths, mu::Array{U, 2}, noise::T) where {U<:Real,T<:Real}
     mat = copy(mu)
     (w, h) = size(mu)
     for i=1:w
@@ -77,6 +100,7 @@ function Gen.random(::GaussianNoisyGroundtruths, mu::Array{U}, noise::T) where {
 end
 
 
+                
 function render_pose(pose, render_type)
     run(`/Applications/Blender.app/Contents/MacOS/Blender -b HumanKTH.decimated.blend -P bpy_depth_standalone.py -- $pose $render_type`)
     image_png = FileIO.load("$render_type.png")
@@ -88,7 +112,9 @@ end
 
 @gen function body_pose_model()
     # locations of relevant joints
-    pose_params = [({lv} ~ uniform(0, 1)) for lv in latent_variables]
+    pose_params = [({lv} ~ uniform(win[1], win[2])) 
+                   for (lv, win) in latent_variables]
+    println(pose_params)
     depth_image, two_d_groundtruth = render_pose(pose_params, "depth")
     blurred_depth_image = imfilter(depth_image, Kernel.gaussian(1))
     noisy_image = ({ :image } ~ noisy_matrix(blurred_depth_image, 0.1))
@@ -96,6 +122,13 @@ end
     # this actually induces a significant amount of noise. is that what you want? 
     return blurred_depth_image
 end
+
+
+
+
+
+
+
 
 trace = Gen.simulate(body_pose_model, ());
 
