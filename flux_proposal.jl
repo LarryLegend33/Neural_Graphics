@@ -1,5 +1,5 @@
 using Flux
-using Flux: crossentropy, logitcrossentropy, mse
+using Flux: crossentropy, logitcrossentropy, mse, onehot, onecold
 using Gen
 using Parameters: @with_kw
 using Logging
@@ -7,9 +7,11 @@ using TensorBoardLogger: TBLogger, tb_overwrite, set_step!, set_step_increment!
 using CUDAapi
 using Flux.Data: DataLoader
 using Flux.Optimise: Optimiser, WeightDecay, ADAM
+using DelimitedFiles
 import BSON
 import DrWatson: savename, struct2dict
 import ProgressMeter
+
 
 # Do three things here
 # First, just create a model that can be trained on
@@ -21,27 +23,114 @@ import ProgressMeter
 # are 10 elements. 
 
 
+# will bring in latent variables symbols and params
 include("gen_pose_model.jl");
 
-loss(y, ŷ) = mse(ŷ, y); 
+loss(y, ŷ) = mse(ŷ, y);
+xyz_init_lookup = readdlm("xyz_by_rotation.txt", ',')
+lv_symbols = [lv[1] for lv in latent_variables]
 
-function make_pose_data(num_samples::Int)
+# rotation is encoded as 1 in K in a 72 item digital output
+# this directly corresponds to a row of initial xyz coords before the delta
+function extract_deltas(rotation::Int, detected_locations::Dict):
+    rotated_xyz = init_xyz(rotation)
+    deltas = Dict([(lv, detected_locations[lv] - rotated_xyz[lv]) for lv in lv_symbols])
+    # THIS WILL BE FED BACK AS THE CANDIDATE DELTAS
+    return deltas
+end
+
+init_xyz(rotation) = Dict([(lv, xyz) for lv, xyz in  zip(
+    lv_symbols[1:length(detected_locations)],
+    xyz_init_lookup[rotation, :])])
+
+# HAVE TO WRITE A DEPTH TO WORLD CALCULATOR THAT
+# IS A HARD-CODED MATRIX TRANSFORM.
+
+# FORM OF NN OUTPUT IS 
+
+
+function world_groundtruth(trace):
+    init_xyz_index = round(rad2deg(trace[:rot_z]) / 5)
+    rotated_xyz = init_xyz(rotation)
+    world_coords = Dict([
+        (lv, trace[lv] + rotated_xyz[lv]) for lv in lv_symbols[1:end-3]])
+    return world_coords
+end
+    
+
+
+
+function make_training_data_for_joint_id(num_samples::Int)
+end
+
+
+function make_training_data_for_rotation(num_samples::Int)
+    one_in_k = 72
     trace = Gen.simulate(body_pose_model, ());
     image_size = size(trace[:image])
     generated_images = Array{Float32}(undef, image_size...,
                                       1, num_samples)
-    groundtruths = Array{Float32}(undef, 1,
-                                  length(latent_variables),
-                                  1, num_samples)
+    groundtruths = Array{Float32}(undef, one_in_k,
+                                  1, 1, num_samples)
     for i in 1:num_samples
         trace = Gen.simulate(body_pose_model, ());
         generated_images[:,:,:,i] = trace[:image]
-        groundtruths[:,:,:,i] = 
-            [Float32(trace[lv]) for lv in latent_variables]
+        groundtruths[:,:,:,i] = onehot(rad2deg(trace[:rot_z]), 0:5:360)
     end
     labeled_data = (generated_images, groundtruths)
     return labeled_data
-end 
+end
+
+function make_training_data_for_objects(patches, codes)
+    num_samples = size(patches)[1]
+    patch_input = Array{Float32}(undef, size(patches[1])...,
+                                 1, num_samples)
+    groundtruth_codes = Array{Float32}(undef, size(codes[1])[1],
+                                       1, 1, num_samples)
+    for i in 1:num_samples
+        patch_input[:,:,:,i] = patches[i]
+        groundtruth_codes[:,:,:,i] = codes[i]
+    end
+    labeled_data = (patch_input, groudtruth_codes)
+    return labeled_data
+
+# now you need a function that takes patches with specific objects
+# and returns their depths as groundtruths. in real net,
+# find the joints, then pass the patch to the depth calc net. 
+
+    # probably if sum(joint_code) = 1, return a depth for that index.
+    # otherwise add in a nan
+    
+function patches_with_joint_gts(image::Array{Float32, 2},
+                                xydepth::Array{Float32, 2}, patchdim::Int)
+    im_width, im_height = size(image)
+    num_joints = 5
+    start_x = rand(1:patchdim)
+    start_y = rand(1:patchdim)
+    patches = []
+    codes = []
+    depths = []
+    for y in start_y:patchdim:im_height
+        for x in start_x:patchdim:im_width
+            try
+                patch = image[y:y+patchdim, x:x+patchdim]
+            catch e
+                return patches, codes, depths
+            end
+            joint_code = zeros(num_joints)
+            for ind, xyd in enumerate(xydepth)
+                if (y < xyd[2] < y+patchdim && x < xyd[1] < x + patchdim)
+                    joint_code[ind] = 1
+                end
+            end
+            if sum(joint_code) == 1
+                push!(depths, xydepth[findfirst(isequal(1), xydepth][3])
+            push!(patches, patch)
+            push!(codes, joint_code)
+        end
+    end
+    return patches, codes, depths
+            
 
 
 @with_kw mutable struct Args
@@ -181,6 +270,14 @@ trained_model, training_data, validation_data = train_nn_on_dataset(nn_mod)
     
 #  end     
  
-
-
+# may be useful to have network know the rotation before searching, and
+# be trained with rotation as an input, coded as a 1 in K addon to the image. 
+# ORDER OF NEURAL NETWORK HAS TO BE ROTATION FIRST. THEN RUN
+# FILTERS OVER PATCHES OF INPUT. EACH PATCH WILL HAVE A DIGITAL OUTPUT
+# THAT NOTES THE PRESENCE OR ABSENCE OF A FEATURE. CUSTOM PROPOSAL WILL
+# CHANGE THE PHASE OF THE FILTERS SO THAT THE CENTER OF THE FILTER
+# WILL BE IN DIFFERENT SPOTS, AND UNIQUE OUTPUTS WILL ARISE (i.e. the different
+# phases will resolve XY more accurately). NEXT EACH PATCH IS PASSED INTO
+# A DEPTH CALCULATOR. THIS IS A NET TRAINED ON PATCHES WITH KNOWN DEPTHS.
+# OUTPUT IS A XY AND DEPTH FOR EACH JOINT. 
 

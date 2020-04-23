@@ -5,7 +5,6 @@ from mathutils import Vector, Matrix, Euler
 from bpy_extras.object_utils import world_to_camera_view
 import numpy as np
 
-
 class Blender_Setup():
     
     def __init__(self, pose, width, height, joints):
@@ -149,55 +148,50 @@ class Blender_Setup():
     # WORKS!!! YOU GET THE EXACT RIGHT BUMP FROM THE POSE. 
     def set_body_pose(self):
         self.rig.rotation_euler = Euler([0, 0, self.pose['rot_z']], 'XYZ')
-        print(self.bone_location("arm elbow_R"))
-        print(Vector([self.pose['elbow_r_x'] / 2,
-                      self.pose['elbow_r_y'] / 2,
-                      self.pose['elbow_r_z'] / 2]))
         self.update_bone_location("arm elbow_R",
                                   Vector([self.pose['elbow_r_x'] / 2,
                                           self.pose['elbow_r_y'] / 2,
                                           self.pose['elbow_r_z'] / 2]))
-        print(self.bone_location("arm elbow_R"))
-        # self.bone("arm elbow_R").location = Vector([self.pose['elbow_r_x'],
-        #                                             self.pose['elbow_r_y'],
-        #                                             self.pose['elbow_r_z']])
-        # self.bone("arm elbow_L").location = Vector([self.pose['elbow_l_x'],
-        #                                             self.pose['elbow_l_y'],
-        #                                             self.pose['elbow_l_z']])
-        # self.bone("hip").location = Vector([0, 0, self.pose['hip_z']])
-        # self.bone("heel_R").location = Vector([self.pose['heel_r_x'],
-        #                                        self.pose['heel_r_y'],
-        #                                        self.pose['heel_r_z']])
-        # self.bone("heel_L").location = Vector([self.pose['heel_l_x'],
-        #                                        self.pose['heel_l_y'],
-        #                                        self.pose['heel_l_z']])
-        # self.bone("arm elbow_R").rotation_euler = Euler(
-        #     [0, 0, self.pose['elbow_r_rot']], 'XYZ')
-        # self.bone("arm elbow_L").rotation_euler = Euler(
-        #     [0, 0, self.pose['elbow_l_rot']], 'XYZ')
-       
+        self.update_bone_location("arm elbow_L",
+                                  Vector([self.pose['elbow_l_x'] / 2,
+                                          self.pose['elbow_l_y'] / 2,
+                                          self.pose['elbow_l_z'] / 2]))
+        self.update_bone_location("heel_R",
+                                  Vector([self.pose['heel_r_x'] / 2,
+                                          self.pose['heel_r_y'] / 2,
+                                          self.pose['heel_r_z'] / 2]))
+        self.update_bone_location("heel_L",
+                                  Vector([self.pose['heel_l_x'] / 2,
+                                          self.pose['heel_l_y'] / 2,
+                                          self.pose['heel_l_z'] / 2]))
+        self.update_bone_location("hip",
+                                  Vector([0,0, self.pose['hip_z'] / 2]))
+        self.bone("arm elbow_L").rotation_euler = Euler(
+            [0, 0, self.pose['elbow_l_rot']], 'XYZ')
+        self.bone("arm elbow_R").rotation_euler = Euler(
+            [0, 0, self.pose['elbow_r_rot']], 'XYZ')
         self.context.view_layer.update()
 
 # here just pass pose statistics and then set_body_pose, then render.
 # this class organizes the stochastic choices into vectors
 
 pose_dict_values = [float(pd) for pd in sys.argv[sys.argv.index("--") + 1:-1]]
-pose_dict_keys = ['rot_z',
-                  'elbow_r_x',
+pose_dict_keys = ['elbow_r_x',
                   'elbow_r_y',
                   'elbow_r_z',
                   'elbow_l_x',
                   'elbow_l_y',
                   'elbow_l_z',
-                  'elbow_r_rot',
-                  'elbow_l_rot',
                   'hip_z',
                   'heel_r_x',
                   'heel_r_y',
                   'heel_r_z',
                   'heel_l_x',
                   'heel_l_y',
-                  'heel_l_z']
+                  'heel_l_z',
+                  'elbow_r_rot',
+                  'elbow_l_rot',
+                  'rot_z']
 
 #arm2 is relatively accurate. arm1 is perfect (shoulder)
 #heel r and l are both perfect
@@ -218,9 +212,18 @@ elif sys.argv[-1] == "wire":
     width, height = (512, 512)
 blender_creator = Blender_Setup(pose_dict, width, height, joints)
 blender_creator.renderer(sys.argv[-1])
-joint_file = open(sys.argv[-1]+'.txt', 'w')
-joint_file.writelines([str(
+joints_2D_groundtruths = open(sys.argv[-1]+'.txt', 'w')
+joints_2D_groundtruths.writelines([str(
     tuple(blender_creator.groundtruth_xy[j]))[1:-1]+"\n" for j in joints])
-joint_file.close()
+joints_2D_groundtruths.close()
+
+joint_positions = open('bone_positions3D.txt', 'w')
+joint_positions.writelines([str(
+    tuple(blender_creator.bone_locations_after_pose[j]))[1:-1]+"\n" for j in joints])
+joint_positions.close()
+
+
+
+
 
 

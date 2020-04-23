@@ -8,40 +8,24 @@ using Base.Iterators
 using DelimitedFiles
 
 
-latent_variables = [(:rot_z, [-π/4,π/4]),
-                    (:elbow_r_x, [-.2, .2]),
-                    (:elbow_r_y, [-.2, .2]),
+latent_variables = [(:elbow_r_x, [-.2, .2]),
+                    (:elbow_r_y, [0, .4]),
                     (:elbow_r_z, [0, .3]),
                     (:elbow_l_x, [-.2, .2]),
                     (:elbow_l_y, [-.2, .2]),
                     (:elbow_l_z, [0, .3]),
-                    (:elbow_r_rot, [0, π/3]),
-                    (:elbow_l_rot, [0, π/3]),
                     (:hip_z, [-.2, .2]),
                     (:heel_r_x, [-.2, .2]),
                     (:heel_r_y, [0, .2]), 
                     (:heel_r_z, [-.2, .2]),
                     (:heel_l_x, [-.2, .2]),
                     (:heel_l_y, [0, .2]), 
-                    (:heel_l_z, [-.2, .2])]
+                    (:heel_l_z, [-.2, .2]),
+                    (:elbow_r_rot, [0, π/3]),
+                    (:elbow_l_rot, [0, π/3]),
+                    (:rot_z, [0,π])]
 
 
-latent_variables = [(:rot_z, [0,0]),
-                    (:elbow_r_x, [.2,.3]),
-                    (:elbow_r_y, [.2,.3]),
-                    (:elbow_r_z, [.2,.3]),
-                    (:elbow_l_x, [0,0]),
-                    (:elbow_l_y, [0,0]),
-                    (:elbow_l_z, [0,0]),
-                    (:elbow_r_rot, [0,0]),
-                    (:elbow_l_rot, [0,0]),
-                    (:hip_z, [0,0]),
-                    (:heel_r_x, [-.2,.2]),
-                    (:heel_r_y, [-.2,.2]), 
-                    (:heel_r_z, [0,0]),
-                    (:heel_l_x, [0,0]),
-                    (:heel_l_y, [0,0]), 
-                    (:heel_l_z, [0,0])]
 
 
 struct NoisyMatrix <: Gen.Distribution{Matrix{Float64}} end
@@ -119,18 +103,37 @@ end
     blurred_depth_image = imfilter(depth_image, Kernel.gaussian(1))
     noisy_image = ({ :image } ~ noisy_matrix(blurred_depth_image, 0.1))
     gaussian_groundtruths = ({ :groundtruths } ~ noisy_groundtruths(two_d_groundtruth, .001))
-    # this actually induces a significant amount of noise. is that what you want? 
     return blurred_depth_image
+end
+
+
+function build_initial_positions()
+    open("xyz_by_rotation.txt", "w") do file
+        for rotation in 0:5:10
+            pose = zeros(length(latent_variables))
+            pose[length(latent_variables)] = deg2rad(rotation)
+            render_pose(pose, "depth")
+            joint_xyz = readdlm("bone_positions3D.txt", ',')
+            line = reshape(
+                transpose(joint_xyz), 1, size(joint_xyz)[1] * size(joint_xyz)[2])
+#            line = string(line)[2:end-1]
+            writedlm(file, line, ',')
+        end
+    end
+    return
 end
 
 
 
 
+    
+        # make a dictionary with :elbow_l_x, etc.
+        
+        
 
-
-
-
+#build_initial_positions()
 trace = Gen.simulate(body_pose_model, ());
+            
 
 
 # This is the real structure of the model -- i.e. where to look. 
