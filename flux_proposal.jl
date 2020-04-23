@@ -59,48 +59,42 @@ end
     
 
 
-
-function make_training_data_for_joint_id(num_samples::Int)
-end
-
-
-function make_training_data_for_rotation(num_samples::Int)
-    one_in_k = 72
+function make_training_data(num_samples::Int)
     trace = Gen.simulate(body_pose_model, ());
     image_size = size(trace[:image])
+    patch_dim = 30
+    one_in_k_rot = 72
     generated_images = Array{Float32}(undef, image_size...,
                                       1, num_samples)
-    groundtruths = Array{Float32}(undef, one_in_k,
-                                  1, 1, num_samples)
+    rotation_groundtruths = Array{Float32}(undef, one_in_k_rot,
+                                           1, 1, num_samples)
+    patches_all = []
+    codes_all = []
+    patches_for_depth = []
+    depths = []
     for i in 1:num_samples
         trace = Gen.simulate(body_pose_model, ());
         generated_images[:,:,:,i] = trace[:image]
-        groundtruths[:,:,:,i] = onehot(rad2deg(trace[:rot_z]), 0:5:360)
+        rotation_groundtruths[:,:,:,i] = onehot(rad2deg(trace[:rot_z]), 0:5:360)
+        patches, codes, depths = patches_w_joint_gts(trace[:image],
+                                                   trace[:groundtruths],
+                                                   patch_dim)
+        vcat(patches_all, patches)
+        vcat(codes_all, codes)
+        vcat(patches_for_depth, [!isnan(d)? pt for pt,d in zip(patches, depths)]
+        vcat(depths, [!isnan(d) onehot(d, 7:.2:13)  for d in depths])
     end
-    labeled_data = (generated_images, groundtruths)
-    return labeled_data
+             # NEED TO SPEND SOME TIME FIGURING OUT IF THIS SPECIFIC ARRAY
+             # STRUCTURE IS REQUIRED FOR TRAINING. IF ITS NOT YOURE DOING A LOT OF WORK
+             # FOR NOTHING. BUT THIS SHOULD BE THE FULL SET OF DATA.
+             # TRAIN ON ELBOW ROTATION AFTER ESTABLISHING THIS WORKS
+
+    
+  
+  
 end
 
-function make_training_data_for_objects(patches, codes)
-    num_samples = size(patches)[1]
-    patch_input = Array{Float32}(undef, size(patches[1])...,
-                                 1, num_samples)
-    groundtruth_codes = Array{Float32}(undef, size(codes[1])[1],
-                                       1, 1, num_samples)
-    for i in 1:num_samples
-        patch_input[:,:,:,i] = patches[i]
-        groundtruth_codes[:,:,:,i] = codes[i]
-    end
-    labeled_data = (patch_input, groudtruth_codes)
-    return labeled_data
 
-# now you need a function that takes patches with specific objects
-# and returns their depths as groundtruths. in real net,
-# find the joints, then pass the patch to the depth calc net. 
-
-    # probably if sum(joint_code) = 1, return a depth for that index.
-    # otherwise add in a nan
-    
 function patches_with_joint_gts(image::Array{Float32, 2},
                                 xydepth::Array{Float32, 2}, patchdim::Int)
     im_width, im_height = size(image)
