@@ -60,6 +60,7 @@ function Gen.random(::NoisyMatrix, mu::Matrix{U}, noise::T) where {U<:Real,T<:Re
 end
 
 
+
 # You never call this; it is a standin -- but fix it eventually. 
 # function Gen.logpdf(::GaussianNoisyGroundtruths, x::Array{Float64, 2}, mu::Array{U}, noise::T) where {U<:Real,T<:Real}
 # end
@@ -98,7 +99,6 @@ end
     # locations of relevant joints
     pose_params = [({lv} ~ uniform(win[1], win[2])) 
                    for (lv, win) in latent_variables]
-    println(pose_params)
     depth_image, two_d_groundtruth = render_pose(pose_params, "depth")
     blurred_depth_image = imfilter(depth_image, Kernel.gaussian(1))
     noisy_image = ({ :image } ~ noisy_matrix(blurred_depth_image, 0.1))

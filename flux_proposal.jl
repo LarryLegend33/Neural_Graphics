@@ -8,6 +8,7 @@ using CUDAapi
 using Flux.Data: DataLoader
 using Flux.Optimise: Optimiser, WeightDecay, ADAM
 using DelimitedFiles
+using Debugger
 import BSON
 import DrWatson: savename, struct2dict
 import ProgressMeter
@@ -20,26 +21,38 @@ import ProgressMeter
 # array syntax: undef initializes the array with nans
 # the rest are dimensions of the array.
 # 28 x 28 x 1 x 10 means each element is a 28x28 image and there
-# are 10 elements. 
+# are 10 elements. lsp-mode
+
 
 
 # will bring in latent variables symbols and params
 include("gen_pose_model.jl");
 
-loss(y, ŷ) = mse(ŷ, y);
+loss(y, ŷ) = Flux.mse(ŷ, y);
 xyz_init_lookup = readdlm("xyz_by_rotation.txt", ',')
 lv_symbols = [lv[1] for lv in latent_variables]
 
 # rotation is encoded as 1 in K in a 72 item digital output
 # this directly corresponds to a row of initial xyz coords before the delta
-function extract_deltas(rotation::Int, detected_locations::Dict):
+
+function roundto(x::Float64, mod::Float64)
+    rem = x % mod
+    if rem < mod / 2
+        return round(x-rem, digits=1)
+    else
+        return round(x+mod-rem, digits=1)
+    end
+end
+
+
+function extract_deltas(rotation::Int, detected_locations::Dict)
     rotated_xyz = init_xyz(rotation)
     deltas = Dict([(lv, detected_locations[lv] - rotated_xyz[lv]) for lv in lv_symbols])
     # THIS WILL BE FED BACK AS THE CANDIDATE DELTAS
     return deltas
 end
 
-init_xyz(rotation) = Dict([(lv, xyz) for lv, xyz in  zip(
+init_xyz(rotation) = Dict([(lv, xyz) for (lv, xyz) in  zip(
     lv_symbols[1:length(detected_locations)],
     xyz_init_lookup[rotation, :])])
 
@@ -48,55 +61,17 @@ init_xyz(rotation) = Dict([(lv, xyz) for lv, xyz in  zip(
 
 # FORM OF NN OUTPUT IS 
 
-
-function world_groundtruth(trace):
+function world_groundtruth(trace)
     init_xyz_index = round(rad2deg(trace[:rot_z]) / 5)
-    rotated_xyz = init_xyz(rotation)
+    rotated_xyz = init_xyz(init_xyz_index)
     world_coords = Dict([
         (lv, trace[lv] + rotated_xyz[lv]) for lv in lv_symbols[1:end-3]])
     return world_coords
 end
-    
 
 
-function make_training_data(num_samples::Int)
-    trace = Gen.simulate(body_pose_model, ());
-    image_size = size(trace[:image])
-    patch_dim = 30
-    one_in_k_rot = 72
-    generated_images = Array{Float32}(undef, image_size...,
-                                      1, num_samples)
-    rotation_groundtruths = Array{Float32}(undef, one_in_k_rot,
-                                           1, 1, num_samples)
-    patches_all = []
-    codes_all = []
-    patches_for_depth = []
-    depths = []
-    for i in 1:num_samples
-        trace = Gen.simulate(body_pose_model, ());
-        generated_images[:,:,:,i] = trace[:image]
-        rotation_groundtruths[:,:,:,i] = onehot(rad2deg(trace[:rot_z]), 0:5:360)
-        patches, codes, depths = patches_w_joint_gts(trace[:image],
-                                                   trace[:groundtruths],
-                                                   patch_dim)
-        vcat(patches_all, patches)
-        vcat(codes_all, codes)
-        vcat(patches_for_depth, [!isnan(d)? pt for pt,d in zip(patches, depths)]
-        vcat(depths, [!isnan(d) onehot(d, 7:.2:13)  for d in depths])
-    end
-             # NEED TO SPEND SOME TIME FIGURING OUT IF THIS SPECIFIC ARRAY
-             # STRUCTURE IS REQUIRED FOR TRAINING. IF ITS NOT YOURE DOING A LOT OF WORK
-             # FOR NOTHING. BUT THIS SHOULD BE THE FULL SET OF DATA.
-             # TRAIN ON ELBOW ROTATION AFTER ESTABLISHING THIS WORKS
-
-    
-  
-  
-end
-
-
-function patches_with_joint_gts(image::Array{Float32, 2},
-                                xydepth::Array{Float32, 2}, patchdim::Int)
+function patches_w_joint_gts(image::Array{Float64, 2},
+                             xydepth::Array{Float64, 2}, patchdim::Int)
     im_width, im_height = size(image)
     num_joints = 5
     start_x = rand(1:patchdim)
@@ -104,27 +79,78 @@ function patches_with_joint_gts(image::Array{Float32, 2},
     patches = []
     codes = []
     depths = []
-    for y in start_y:patchdim:im_height
-        for x in start_x:patchdim:im_width
-            try
-                patch = image[y:y+patchdim, x:x+patchdim]
-            catch e
-                return patches, codes, depths
-            end
+    for y in start_y:patchdim:im_height-patchdim
+        for x in start_x:patchdim:im_width-patchdim
+            patch = image[y:y+patchdim-1, x:x+patchdim-1]
+            println("PATCH SIZE")
+            println(size(patch))
             joint_code = zeros(num_joints)
-            for ind, xyd in enumerate(xydepth)
-                if (y < xyd[2] < y+patchdim && x < xyd[1] < x + patchdim)
+            for ind in 1:size(xydepth)[1]
+                if (y < xydepth[
+                    ind,2] < y+patchdim && x < xydepth[
+                        ind,1] < x + patchdim)
                     joint_code[ind] = 1
                 end
             end
             if sum(joint_code) == 1
-                push!(depths, xydepth[findfirst(isequal(1), xydepth][3])
+                push!(depths, xydepth[findfirst(isequal(1), joint_code), 3])
+            else
+                push!(depths, NaN)
+            end
             push!(patches, patch)
             push!(codes, joint_code)
         end
     end
     return patches, codes, depths
-            
+end
+
+
+function make_training_data(num_samples::Int)
+    trace = Gen.simulate(body_pose_model, ());
+    image_size = size(trace[:image])
+    patch_dim = 30
+    rot_res = 5.0
+    depth_res = .2
+    one_in_k_rot = 72
+    onehot_depth = 7:depth_res:13
+    generated_images = Array{Float32}(undef, image_size...,
+                                      1, num_samples)
+    rotation_groundtruths = Array{Float32}(undef, one_in_k_rot,
+                                           1, 1, num_samples)
+    patches_all = []
+    codes_all = []
+    patches_for_depth = []
+    depths_all = []
+    for i in 1:num_samples
+        trace = Gen.simulate(body_pose_model, ());
+        generated_images[:,:,:,i] = trace[:image]
+        rotation_groundtruths[:,:,:,i] = onehot(
+            roundto(rad2deg(trace[:rot_z]), rot_res), 0:rot_res:360-rot_res)
+        patches, codes, depths = patches_w_joint_gts(trace[:image],
+                                                   trace[:groundtruths],
+                                                   patch_dim)
+        patches_all = vcat(patches_all, patches)
+        codes_all = vcat(codes_all, codes)
+        patches_for_depth = vcat(patches_for_depth, [pt for (pt,d) in zip(patches, depths) if !isnan(d)])
+        depths_all = vcat(depths_all, [onehot(
+            roundto(d, .2) , onehot_depth) for d in depths if !isnan(d)])
+    end
+    println("DEPTHS ALL")
+    println(depths_all)
+    patch_trainingset = Array{Float32}(undef, patch_dim, patch_dim, 
+                                       1, size(patches_all)[1])
+    for (i, p) in enumerate(patches_all) patch_trainingset[:,:,:, i] = p end
+    codes_trainingset = Array{Float32}(undef, size(codes_all[1])[1], 1,  
+                                       1, size(patches_all)[1])
+    for (i, c) in enumerate(codes_all) codes_trainingset[:,:,:, i] = c end
+    depth_trainingset = Array{Float32}(undef, size(onehot_depth)[1], 1, 1, size(depths_all)[1])
+    for (i, d) in enumerate(depths_all) depth_trainingset[:,:,:, i] = d end
+    patches_d_trainingset = Array{Float32}(undef, patch_dim, patch_dim, 
+                                           1, size(patches_for_depth)[1])
+    for (i, p) in enumerate(patches_for_depth) patches_d_trainingset[:,:,:, i] = p end             
+    return patch_trainingset, codes_trainingset, depth_trainingset, patches_d_trainingset
+end
+
 
 
 @with_kw mutable struct Args
@@ -141,6 +167,7 @@ function patches_with_joint_gts(image::Array{Float32, 2},
     tblogger = true       # log training with tensorboard
     savepath = "/Users/nightcrawler2/Neural_Graphics/logging"
 end
+
 
 
 # LeNet like architecture to start
@@ -254,9 +281,10 @@ function train_nn_on_dataset(nn_model::Chain; kws...)
 end    
 
 
-nn_mod = base_flux_model();
-trained_model, training_data, validation_data = train_nn_on_dataset(nn_mod) 
+#nn_mod = base_flux_model();
+                      #trained_model, training_data, validation_data = train_nn_on_dataset(nn_mod)
 
+make_training_data(5);
     
 # function train_flux_with_model(num_batches::Int, batch_size::Int)
 

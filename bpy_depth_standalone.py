@@ -174,7 +174,7 @@ class Blender_Setup():
 
 # here just pass pose statistics and then set_body_pose, then render.
 # this class organizes the stochastic choices into vectors
-
+print(sys.argv)
 pose_dict_values = [float(pd) for pd in sys.argv[sys.argv.index("--") + 1:-1]]
 pose_dict_keys = ['elbow_r_x',
                   'elbow_r_y',
