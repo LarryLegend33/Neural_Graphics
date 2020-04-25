@@ -216,7 +216,6 @@ joints_2D_groundtruths = open(sys.argv[-1]+'.txt', 'w')
 joints_2D_groundtruths.writelines([str(
     tuple(blender_creator.groundtruth_xy[j]))[1:-1]+"\n" for j in joints])
 joints_2D_groundtruths.close()
-
 joint_positions = open('bone_positions3D.txt', 'w')
 joint_positions.writelines([str(
     tuple(blender_creator.bone_locations_after_pose[j]))[1:-1]+"\n" for j in joints])
