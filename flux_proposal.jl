@@ -27,12 +27,34 @@ import ProgressMeter
 
 # will bring in latent variables symbols and params
 include("gen_pose_model.jl");
-loss(y, ŷ) = logitcrossentropy(ŷ, y);
+loss(y, ŷ) = mse(ŷ, y);
 xyz_init_lookup = readdlm("xyz_by_rotation.txt", ',')
 lv_symbols = [lv[1] for lv in latent_variables]
 
 # rotation is encoded as 1 in K in a 72 item digital output
 # this directly corresponds to a row of initial xyz coords before the delta
+
+function accuracy(y, ŷ, thr, acc_array)
+    call = [prob > thr ? 1f0 : 0f0 for prob in softmax(ŷ)]
+
+    # something to figure out later: why == is false, isapprox is true
+    # if you print call and y, they will show the same values
+    # yet report false.
+    # true pos
+    if sum(call) >= 1 && isapprox(y,call)
+        acc_array[1] += 1
+    # false pos
+    elseif sum(call) >= 1 && !isapprox(y,call)
+        acc_array[2] += 1
+    # true neg
+    elseif sum(call) == 0 && isapprox(y,call)
+        acc_array[3] += 1
+    # false neg
+    elseif sum(call) == 0 && !isapprox(y,call)
+        acc_array[4] += 1
+    end
+    return acc_array
+end
 
 function roundto(x::Float64, mod::Float64)
     rem = x % mod
@@ -171,7 +193,7 @@ end
 @with_kw mutable struct Args
     η = 3e-4             # learning rate
     λ = 0                # L2 regularizer param, implemented as weight decay
-    batchsize = 10       # batch size
+    batchsize = 2       # batch size
     epochs = 100           # number of epochs
     training_samples = 100
     validation_samples = 20
@@ -184,16 +206,25 @@ end
 end
 
 
-function eval_validation_set(loader, model, device)
+# accuracy for me is simply the number of times in a batch the
+# call is correct vs incorrect. 
+function eval_validation_set(loader, model, device, acc_thresh)
     total_loss = 0f0
-    accuracy = 0
+    accuracy_array = zeros(4)
+    false_neg = 0
+    # switch accuracy threshold to 1/length of the input plus a
+    # value -- can bias it up by a quarter of the value. 
     for (image, gt) in loader
         image, gt = image |> device, gt |> device
         ŷ = model(image)
-        total_loss += loss(ŷ, gt[1,:,1,1]) 
-   #     accuracy += sum([abs(diff) < .1 ? 1 : 0 for diff in ŷ-gt[1,:,1,1]])
+        total_loss += loss(ŷ, gt)
+        accuracy_array = accuracy(gt, ŷ, acc_thresh, accuracy_array)
     end
-    return (loss = round(total_loss, digits=4), acc = round(accuracy, digits=4))
+    return (loss = round(total_loss, digits=4),
+            true_pos = accuracy_array[1], 
+            false_pos = accuracy_array[2],
+            true_neg = accuracy_array[3],
+            false_neg = accuracy_array[4])
 end
     # figure this out first, then try to figure out how to
     # write a gen model to make a NN and mcmc the params
@@ -203,6 +234,9 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
                              validation_set, training_set)
     nn_args.seed > 0 && Random.seed!(nn_args.seed)
     use_cuda = nn_args.cuda && CUDAapi.has_cuda_gpu()
+    # make thresh 25% higher than uniform. works perfect for
+    # patches and depths
+    accuracy_threshold = 1.25 * (1.0 / size(validation_set[2])[1])
     if use_cuda
         device = gpu
         @info "Training on GPU"
@@ -215,7 +249,7 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
         batchsize=1)
     training_loader = DataLoader(
         training_set...,
-        batchsize=nn_args.batchsize)
+        batchsize=nn_args.batchsize, shuffle=true)
     nn_params = params(nn_model)
     opt = Optimiser(ADAM(nn_args.η), WeightDecay(nn_args.λ))
 
@@ -224,6 +258,7 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
         set_step_increment!(tblogger, 0) # 0 auto increment since we manually set_step!
         @info "TensorBoard logging at \"$(nn_args.savepath)\""
     end
+    
     @info "Start Training"
     for epoch in 0:nn_args.epochs
         p = ProgressMeter.Progress(length(training_loader))
@@ -231,12 +266,17 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
             test_model_performance = eval_validation_set(
                 validation_loader, 
                 nn_model,
-                device)
+                device,
+                accuracy_threshold)
             println("Epoch: $epoch Validation: $(test_model_performance)")            
             if nn_args.tblogger
                 set_step!(tblogger, epoch)
                 with_logger(tblogger) do
-                    @info "train" loss=test_model_performance.loss acc=test_model_performance.acc
+                    @info "train" loss=test_model_performance.loss
+                    @info "train" true_pos=test_model_performance.true_pos
+                    @info "train" false_pos=test_model_performance.false_pos
+                    @info "train" true_neg=test_model_performance.true_neg
+                    @info "train" false_neg=test_model_performance.false_neg
             end
             epoch == 0 && run(`tensorboard --logdir logging`, wait=false)
         end
@@ -244,7 +284,8 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
             sample, groundtruth = sample |> device, groundtruth |> device
             grads = Flux.gradient(nn_params) do
                 ŷ = nn_model(sample)
-                loss(ŷ, groundtruth[1, :, 1, :])
+                loss(ŷ, groundtruth)
+           #     loss(ŷ, groundtruth[:, :, 1, :])
             end
             Flux.Optimise.update!(opt, nn_params, grads)
             ProgressMeter.next!(p)   # comment out for no progress bar
@@ -263,19 +304,38 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
     return nn_model
 end    
 
-nn_args = Args()
+nn_args = Args(epochs=200)
+println(nn_args.batchsize)
 validation_data = make_training_data(nn_args.validation_samples)
 training_data = make_training_data(nn_args.training_samples)
 rotation_net = LeNet5(;imgsize=(256,256,1), nclasses=length(0:5:355))  
 patch_net = LeNet5(;imgsize=(30,30,1), nclasses=5)
 depth_net = LeNet5(;imgsize=(30,30,1), nclasses=length(7:.2:13))
-patch_model = train_nn_on_dataset(
-    patch_net,
+# patch_model = train_nn_on_dataset(
+#     patch_net,
+#     nn_args,
+#     (validation_data["patches"], validation_data["codes_gt"]),
+#     (training_data["patches"], training_data["codes_gt"]))
+
+# WORKS AWESOME WITH PROBABILITY THRESH SET AT .25
+# patch_model = train_nn_on_dataset(
+#     patch_net,
+#     nn_args,
+#     (training_data["patches"], training_data["codes_gt"]),
+#     (training_data["patches"], training_data["codes_gt"]))
+
+# completely perfect calls after 120 epochs with
+# accuracy threshold set well (1.25 value above)
+depth_model = train_nn_on_dataset(
+    depth_net,
     nn_args,
-    (validation_data["patches"], validation_data["codes_gt"]),
-    (training_data["patches"], training_data["codes_gt"]))
+    (training_data["patches_depth"], training_data["depth_gt"]),
+    (training_data["patches_depth"], training_data["depth_gt"]))
 
 
+
+# OK so now custom proposal has to take the patch IDs and 
+# convert them to deltas in the joint positions 
 
 
 # may be useful to have network know the rotation before searching, and
