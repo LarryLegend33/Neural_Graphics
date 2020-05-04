@@ -25,9 +25,19 @@ import ProgressMeter
 
 
 
+# NOTE Y HAT IS THE RETURN VALUE OF THE MODEL ALWAYS
+# Y IS THE GROUNDTRUTH. GROUNDTRUTH COMES OUT IN 4D. HAVE TO REDUCE
+# IT TO 2D B/C THE MODELS OUTPUT IN 2D
+
 # will bring in latent variables symbols and params
 include("gen_pose_model.jl");
-loss(y, ŷ) = mse(ŷ, y);
+
+
+
+#loss(ŷ, y) = mse(ŷ, y[:,1,1,:]);
+loss(ŷ, y) = logitcrossentropy(ŷ, y[:,1,1,:]);
+#loss(y, ŷ) = mse(ŷ, y[:,1,1,:]);
+
 xyz_init_lookup = readdlm("xyz_by_rotation.txt", ',')
 lv_symbols = [lv[1] for lv in latent_variables]
 
@@ -39,7 +49,8 @@ function accuracy(y, ŷ, thr, acc_array)
 
     # something to figure out later: why == is false, isapprox is true
     # if you print call and y, they will show the same values
-    # yet report false.
+    # yet report false if you use == 
+
     # true pos
     if sum(call) >= 1 && isapprox(y,call)
         acc_array[1] += 1
@@ -142,9 +153,9 @@ function make_training_data(num_samples::Int)
     trace = Gen.simulate(body_pose_model, ());
     image_size = size(trace[:image])
     patch_dim = 30
-    rot_res = 5.0
+    rot_res = 20.0
     depth_res = .2
-    one_in_k_rot = 72
+    one_in_k_rot = convert(Int, 360 / rot_res)
     onehot_depth = 7:depth_res:13
     generated_images = Array{Float32}(undef, image_size...,
                                       1, num_samples)
@@ -194,7 +205,7 @@ end
     η = 3e-4             # learning rate
     λ = 0                # L2 regularizer param, implemented as weight decay
     batchsize = 2       # batch size
-    epochs = 100           # number of epochs
+    epochs = 200           # number of epochs
     training_samples = 100
     validation_samples = 20
     seed = 0             # set seed > 0 for reproducibility
@@ -228,7 +239,20 @@ function eval_validation_set(loader, model, device, acc_thresh)
 end
     # figure this out first, then try to figure out how to
     # write a gen model to make a NN and mcmc the params
-    # for good performance. 
+# for good performance.
+
+function indep_validation(nn_model::Chain, validation_set, acc_thresh)
+    validation_loader = DataLoader(
+        validation_set...,
+        batchsize=1)
+    test_model_performance = eval_validation_set(
+        validation_loader, 
+        nn_model,
+        cpu,
+        acc_thresh)
+    return test_model_performance
+end
+    
 
 function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
                              validation_set, training_set)
@@ -304,33 +328,47 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
     return nn_model
 end    
 
-nn_args = Args(epochs=200)
+nn_args = Args(epochs=100)
 println(nn_args.batchsize)
-validation_data = make_training_data(nn_args.validation_samples)
-training_data = make_training_data(nn_args.training_samples)
-rotation_net = LeNet5(;imgsize=(256,256,1), nclasses=length(0:5:355))  
+#validation_data = make_training_data(nn_args.validation_samples)
+#training_data = make_training_data(nn_args.training_samples)
+rotation_net = LeNet5(;imgsize=(256,256,1), nclasses=length(0:20:355))
+
 patch_net = LeNet5(;imgsize=(30,30,1), nclasses=5)
 depth_net = LeNet5(;imgsize=(30,30,1), nclasses=length(7:.2:13))
-# patch_model = train_nn_on_dataset(
-#     patch_net,
-#     nn_args,
-#     (validation_data["patches"], validation_data["codes_gt"]),
+
+# Absolutely perfect using logitcrossentropy as the
+# loss function
+# rotation_model = train_nn_on_dataset(rotation_net, 
+#                                      nn_args,
+#                                      (training_data["gen images"],
+#                                       training_data["rotation_gt"]),
+#                                      (training_data["gen images"],
+#                                       training_data["rotation_gt"]))
+
+#indep_validation(rotation_model, (training_data["gen images"], training_data["rotation_gt"]), .1)
+
 #     (training_data["patches"], training_data["codes_gt"]))
+
 
 # WORKS AWESOME WITH PROBABILITY THRESH SET AT .25
-# patch_model = train_nn_on_dataset(
-#     patch_net,
-#     nn_args,
-#     (training_data["patches"], training_data["codes_gt"]),
-#     (training_data["patches"], training_data["codes_gt"]))
+# really examine the loss function's inner workings.
 
-# completely perfect calls after 120 epochs with
-# accuracy threshold set well (1.25 value above)
-depth_model = train_nn_on_dataset(
-    depth_net,
+# unreal performance using logitcrossentropy as the loss function
+# in 10 epochs get 200 true positives. run a bit longer? 
+patch_model = train_nn_on_dataset(
+    patch_net,
     nn_args,
-    (training_data["patches_depth"], training_data["depth_gt"]),
-    (training_data["patches_depth"], training_data["depth_gt"]))
+    (training_data["patches"], training_data["codes_gt"]),
+    (training_data["patches"], training_data["codes_gt"]))
+
+# completely perfect calls after 200 epochs with
+# accuracy threshold set well (1.25 value above)
+# depth_model = train_nn_on_dataset(
+#     depth_net,
+#     nn_args,
+#     (training_data["patches_depth"], training_data["depth_gt"]),
+#     (training_data["patches_depth"], training_data["depth_gt"]))
 
 
 
