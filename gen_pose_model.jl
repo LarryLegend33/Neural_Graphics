@@ -132,7 +132,7 @@ end
         
 
 #build_initial_positions()
-#trace = Gen.simulate(body_pose_model, ());
+trace = Gen.simulate(body_pose_model, ());
             
 
 

@@ -36,17 +36,26 @@ include("gen_pose_model.jl");
 
 #loss(ŷ, y) = mse(ŷ, y[:,1,1,:]);
 loss(ŷ, y) = logitcrossentropy(ŷ, y[:,1,1,:]);
+accuracy_threshold(x) = 1.25 * (1.0 / size(x)[1])
+
 #loss(y, ŷ) = mse(ŷ, y[:,1,1,:]);
 
 xyz_init_lookup = readdlm("xyz_by_rotation.txt", ',')
 lv_symbols = [lv[1] for lv in latent_variables]
+joints = ["elbow_r",
+          "elbow_l",
+          "hip",
+          "heel_r",
+          "heel_l"]
+
+
 
 # rotation is encoded as 1 in K in a 72 item digital output
 # this directly corresponds to a row of initial xyz coords before the delta
 
-function accuracy(y, ŷ, thr, acc_array)
+function accuracy(y, ŷ, acc_array)
+    thr = accuracy_threshold(ŷ)
     call = [prob > thr ? 1f0 : 0f0 for prob in softmax(ŷ)]
-
     # something to figure out later: why == is false, isapprox is true
     # if you print call and y, they will show the same values
     # yet report false if you use == 
@@ -77,7 +86,60 @@ function roundto(x::Float64, mod::Float64)
 end
 
 
-function extract_deltas(rotation::Int, detected_locations::Dict)
+# OK setup will be to first pass the whole image into the rotation network.
+# Next, you pass each patch into the patch network. Generative function
+# decides the staggering on the patch initiation, so that it will suggest
+# different locations on each iteration and will narrow down the 
+# right location based on mismatches.
+
+function ray_cast_depthcoords(depthcoords::Tuple, resolution::Int)
+    x, y, depth = depthcoords
+    x /= resolution
+    y /= resolution
+    view_frame = [(-.5, -.5, 1.09375),
+                  (-.5, .5, 1.09375),
+                  (.5, .5, 1.09375)]
+    frame = [(v / (v[3] / depth)) for v in view_frame]
+    min_x, max_x = frame[2][1], frame[3][1]
+    min_y, max_y = frame[1][2], frame[2][2]
+    x_proportion = ((max_x - min_x) * x) + min_x
+    y_proportion = ((max_y - min_y) * y) + min_y
+    camera_matrix =  [(1.0000, 0.0000,  0.0000,  0.0000)
+                      (0.0000, 0.5000, -0.8660, -8.5000)
+                      (0.0000, 0.8660,  0.5000,  5.0000)
+                      (0.0000, 0.0000,  0.0000,  1.0000)]
+    xyz_location = camera_matrix * (x_proportion, y_proportion, -1*depth)
+    return xyz_location
+end
+
+function neural_proposal(depth_stimulus, patch_dim::Int, rot_net::Chain,
+                         depth_net::Chain, patch_net::Chain)
+    start_x = {:start_x} ~ uniform(1, patch_dim)
+    start_y = {:start_y} ~ uniform(1, patch_dim)
+    resx, resy = size(depth_stimulus)
+    detected_rotation = rot_net(depth_stimulus)
+    rot_z_proposal = deg2rad(onecold(detected_rotation), 0:20:340))
+    joint_locations = Dict()
+    for y in start_y:patchdim:im_height-patchdim
+        for x in start_x:patchdim:im_width-patchdim
+            patch = image[y:y+patchdim-1, x:x+patchdim-1]
+            p̂ = patch_net(patch)
+            call = [prob > accuracy_threshold(p̂) ? 1f0 : 0f0 for prob in softmax(p̂)]
+            if call != zeros(len(p))
+                key = joints[findfirst(isequal(1.0), call)]
+                # center of patch
+                xyd = (x+patchdim/2, y+patchdim/2, onecold(depth_net(patch), 7:.2:13)
+                joint_locations[key] = ray_cast_depthcoords(xyd, resx)
+            end
+        end
+    end
+    xyz_no_delta = init_xyz(rotation)
+    
+    # have to now go through joint_locations and find out the 
+    
+    
+
+function extract_deltas(rotation::Int, detected_location::Tuple, metric::Symbol)
     rotated_xyz = init_xyz(rotation)
     deltas = Dict([(lv, detected_locations[lv] - rotated_xyz[lv]) for lv in lv_symbols])
     # THIS WILL BE FED BACK AS THE CANDIDATE DELTAS
@@ -88,10 +150,14 @@ init_xyz(rotation) = Dict([(lv, xyz) for (lv, xyz) in  zip(
     lv_symbols[1:length(detected_locations)],
     xyz_init_lookup[rotation, :])])
 
+    
+
+        
+
 # HAVE TO WRITE A DEPTH TO WORLD CALCULATOR THAT
 # IS A HARD-CODED MATRIX TRANSFORM.
 
-# FORM OF NN OUTPUT IS 
+
 
 function world_groundtruth(trace)
     init_xyz_index = round(rad2deg(trace[:rot_z]) / 5)
@@ -219,7 +285,7 @@ end
 
 # accuracy for me is simply the number of times in a batch the
 # call is correct vs incorrect. 
-function eval_validation_set(loader, model, device, acc_thresh)
+function eval_validation_set(loader, model, device)
     total_loss = 0f0
     accuracy_array = zeros(4)
     false_neg = 0
@@ -229,7 +295,7 @@ function eval_validation_set(loader, model, device, acc_thresh)
         image, gt = image |> device, gt |> device
         ŷ = model(image)
         total_loss += loss(ŷ, gt)
-        accuracy_array = accuracy(gt, ŷ, acc_thresh, accuracy_array)
+        accuracy_array = accuracy(gt, ŷ, accuracy_array)
     end
     return (loss = round(total_loss, digits=4),
             true_pos = accuracy_array[1], 
@@ -248,8 +314,8 @@ function indep_validation(nn_model::Chain, validation_set, acc_thresh)
     test_model_performance = eval_validation_set(
         validation_loader, 
         nn_model,
-        cpu,
-        acc_thresh)
+        cpu)
+
     return test_model_performance
 end
     
@@ -260,7 +326,6 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
     use_cuda = nn_args.cuda && CUDAapi.has_cuda_gpu()
     # make thresh 25% higher than uniform. works perfect for
     # patches and depths
-    accuracy_threshold = 1.25 * (1.0 / size(validation_set[2])[1])
     if use_cuda
         device = gpu
         @info "Training on GPU"
@@ -290,8 +355,8 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
             test_model_performance = eval_validation_set(
                 validation_loader, 
                 nn_model,
-                device,
-                accuracy_threshold)
+                device)
+
             println("Epoch: $epoch Validation: $(test_model_performance)")            
             if nn_args.tblogger
                 set_step!(tblogger, epoch)
