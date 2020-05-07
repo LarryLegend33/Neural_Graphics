@@ -9,6 +9,7 @@ using Flux.Data: DataLoader
 using Flux.Optimise: Optimiser, WeightDecay, ADAM
 using DelimitedFiles
 using Debugger
+using StatsBase
 import BSON
 import DrWatson: savename, struct2dict
 import ProgressMeter
@@ -92,17 +93,15 @@ end
 # different locations on each iteration and will narrow down the 
 # right location based on mismatches.
 
+# THIS WHOLE FUNCTION IS CORRECT. 
 function ray_cast_depthcoords(depthcoords::Tuple, resolution::Int)
-    println("DEPTH")
     x, y, depth = depthcoords
-    println(x, y, depth)
     x /= resolution
     y /= resolution
     view_frame = [[-.5, -.5, 1.09375],
                   [-.5, .5, 1.09375],
                   [.5, .5, 1.09375]]
     frame = [(v / (v[3] / depth)) for v in view_frame]
-    println(frame)
     min_x, max_x = frame[2][1], frame[3][1]
     min_y, max_y = frame[1][2], frame[2][2]
     x_proportion = ((max_x - min_x) * x) + min_x
@@ -112,10 +111,12 @@ function ray_cast_depthcoords(depthcoords::Tuple, resolution::Int)
                      0.0 0.866 0.5 5.0;
                      0.0 0.0 0.0 1.0]
     # need the 1 b/c blender works in 4D vectors for translation
-    println([x_proportion, y_proportion, -1*depth, 1])
     xyz_location = camera_matrix * [x_proportion, y_proportion, -1*depth, 1]
     return xyz_location
 end
+
+
+
 
 function neural_proposal(depth_stimulus, patchdim::Int, rot_net::Chain,
                          depth_net::Chain, patch_net::Chain)
@@ -124,29 +125,30 @@ function neural_proposal(depth_stimulus, patchdim::Int, rot_net::Chain,
     start_x = 1
     start_y = 1
     resx, resy = size(depth_stimulus)
-    r̂ = rot_net(depth_stimulus)
-#    rotation_call = [prob > accuracy_threshold(r̂) ? 1f0 : 0f0 for prob in softmax(r̂)]
-    max_ind = findmax(softmax(r̂))[2][1]
-    println(max_ind)
-    rotation_call = [ind == max_ind ? 1f0 : 0f0 for (ind, r) in enumerate(r̂)]
-    # if there is not a unique call, return nothing b/c you don't know rotation
-    println(sum(rotation_call))
-    if sum(rotation_call) != 1
-        return Dict()
-    end
-
-    rot_z_proposal = deg2rad(onecold(rotation_call, 0:5:355)[1])
+    r̂ = softmax(rot_net(depth_stimulus))
+    r̂_weights = ProbabilityWeights(r̂[:,1])
+    rotation_call = sample(r̂_weights)
+    rot_z_proposal = deg2rad(rotation_call * 5)
     joint_locations = Dict()
     for y in start_y:patchdim:resy-patchdim
         for x in start_x:patchdim:resx-patchdim
             patch = depth_stimulus[y:y+patchdim-1, x:x+patchdim-1]
             p̂ = patch_net(patch)
             call = [prob > accuracy_threshold(p̂) ? 1f0 : 0f0 for prob in softmax(p̂)]
+
+            # HERE ALMOST EVERYTHING GETS CALLED! NOT THE SAME AS DURING TRAINING.
+            # MAYBE B/C THE NET JUST GOT GOOD AT THE SAMPLES YOU GAVE IT.
+            # ALL THE CODE WORKS EXCEPT NN_s ARE TOO EAGER. 
+            
             if call != zeros(length(p̂))
-                key_joint = joints[findfirst(isequal(1.0), call)]
+                p̂_weights = ProbabilityWeights(p̂[:, 1])
+                key_joint = joints[sample(p̂_weights)]
                 # center of patch
-                xyd = (x+patchdim/2, y+patchdim/2, onecold(depth_net(patch), 7:.2:13)[1])
+                det_depth = onecold(depth_net(patch), 7:.2:13)[1]
+                println(det_depth)
+                xyd = (x+patchdim/2, y+patchdim/2, det_depth)
                 proj_3D = ray_cast_depthcoords(xyd, resx)
+                println(xyd)
                 if key_joint != :hip
                     joint_locations[Symbol(key_joint, "_x")] = proj_3D[1]
                     joint_locations[Symbol(key_joint, "_y")] = proj_3D[2]
@@ -156,19 +158,24 @@ function neural_proposal(depth_stimulus, patchdim::Int, rot_net::Chain,
         end
     end
     # each init coord is indexed by a symbol from LVs.
-    xyz_baseline = init_xyz(findfirst(isequal(1), rotation_call)[1])
+    xyz_baseline = init_xyz(rotation_call)
+    println("BASELINE AND DETECTED LOCATIONS")
+    println(xyz_baseline)
+    println(joint_locations)
     # proposed deltas for all detected joints
     deltas = Dict(
         [(k, joint_locations[k] - xyz_baseline[k]) for k in keys(joint_locations)])
     return rot_z_proposal, deltas
 end 
 
-
-# THIS IS WRONG B/C ITS IN JOINT SPACE NOT LATENT VARIABLE SPACE
-# EASY TO FIX. 
+# note hip_x and hip_y are not latent variables, but are included
+# as xyz coordinates for the hip. NN will also propose an
+# X and Y location for the hip. ignore it here, b/c its ignored
+# in the proposal. 
 init_xyz(rotation) = Dict([(lv, xyz) for (lv, xyz) in  zip(
-    lv_symbols[1:12],
-    xyz_init_lookup[rotation, :])])
+    lv_symbols[1:13],
+    [xyz_init_lookup[rotation, 1:6];
+     xyz_init_lookup[rotation, 9:end]])])
 
     
 
@@ -292,8 +299,8 @@ end
     λ = 0                # L2 regularizer param, implemented as weight decay
     batchsize = 2       # batch size
     epochs = 200           # number of epochs
-    training_samples = 100
-    validation_samples = 20
+    training_samples = 10
+    validation_samples = 10
     seed = 0             # set seed > 0 for reproducibility
     cuda = true          # if true use cuda (if available)
     infotime = 1 	 # report every `infotime` epochs
@@ -327,7 +334,7 @@ end
     # write a gen model to make a NN and mcmc the params
 # for good performance.
 
-function indep_validation(nn_model::Chain, validation_set, acc_thresh)
+function indep_validation(nn_model::Chain, validation_set)
     validation_loader = DataLoader(
         validation_set...,
         batchsize=1)
@@ -335,7 +342,6 @@ function indep_validation(nn_model::Chain, validation_set, acc_thresh)
         validation_loader, 
         nn_model,
         cpu)
-
     return test_model_performance
 end
     
@@ -389,10 +395,10 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
             end
             epoch == 0 && run(`tensorboard --logdir logging`, wait=false)
         end
-        for (sample, groundtruth) in training_loader
-            sample, groundtruth = sample |> device, groundtruth |> device
+        for (samples, groundtruth) in training_loader
+            samples, groundtruth = samples |> device, groundtruth |> device
             grads = Flux.gradient(nn_params) do
-                ŷ = nn_model(sample)
+                ŷ = nn_model(samples)
                 loss(ŷ, groundtruth)
            #     loss(ŷ, groundtruth[:, :, 1, :])
             end
@@ -411,29 +417,87 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
     end
     end
     return nn_model
-end    
+end
 
-# nn_args = Args(epochs=100)
-# println(nn_args.batchsize)
-# #validation_data = make_training_data(nn_args.validation_samples)
-# training_data = make_training_data(nn_args.training_samples)
-# rotation_net = LeNet5(;imgsize=(256,256,1), nclasses=length(0:5:355))
 
-# patch_net = LeNet5(;imgsize=(30,30,1), nclasses=5)
-# depth_net = LeNet5(;imgsize=(30,30,1), nclasses=length(7:.2:13))
+# going to do logging in here. the status bar is fine for the training networks
+# just to make sure they are learning -- but you know this is true.
+# run independent validation on the network after each learning epoch log this to TB. 
 
-# Absolutely perfect using logitcrossentropy as the
-# loss function
-# rotation_model = train_nn_on_dataset(rotation_net, 
-#                                      nn_args,
-#                                      (training_data["gen images"],
-#                                       training_data["rotation_gt"]),
-#                                      (training_data["gen images"],
-#                                       training_data["rotation_gt"]))
 
+function train_on_model(iter::Int, rotation_net::Chain, depth_net::Chain,
+                        patch_net::Chain, logger::TBLogger, nn_args::Args, finish::Int)
+    iter == 0 && run(`tensorboard --logdir logging`, wait=false)
+    if nn_args.cuda && CUDAapi.has_cuda_gpu()
+        device = gpu
+    else
+        device = cpu
+    end
+    if iter == finish
+        return rotation_net, depth_net, patch_net
+    end
+    validation_data = make_training_data(nn_args.validation_samples)
+    training_data = make_training_data(nn_args.training_samples)        
+    rotation_net = train_nn_on_dataset(rotation_net, nn_args,
+                                       (training_data["gen images"], training_data["rotation_gt"]),
+                                       (training_data["gen images"], training_data["rotation_gt"]))
+    patch_net = train_nn_on_dataset(patch_net, nn_args,
+                                    (training_data["patches"], training_data["codes_gt"]),
+                                    (training_data["patches"], training_data["codes_gt"]))
+    depth_net = train_nn_on_dataset(depth_net, nn_args,
+                                    (training_data["patches_depth"], training_data["depth_gt"]),
+                                    (training_data["patches_depth"], training_data["depth_gt"]))
+    test_rot_performance = eval_validation_set(
+        DataLoader(validation_data["gen images"],
+                   validation_data["rotation_gt"], batchsize=1), 
+        rotation_net, device)
+    test_patch_performance = eval_validation_set(
+        DataLoader(validation_data["patches"],
+                   validation_data["codes_gt"], batchsize=1),
+        patch_net, device)
+                   
+    test_depth_performance = eval_validation_set(
+        DataLoader(validation_data["patches_depth"],
+                   validation_data["depth_gt"], batchsize=1),
+        depth_net, device)
+    set_step!(logger, iter)
+    with_logger(logger) do
+        @info "train" loss_r=test_rot_performance.loss
+        @info "train" true_pos_r=test_rot_performance.true_pos
+        @info "train" false_pos_r=test_rot_performance.false_pos
+        @info "train" true_neg_r=test_rot_performance.true_neg
+        @info "train" false_neg_r=test_rot_performance.false_neg
+        @info "train" loss_p=test_patch_performance.loss
+        @info "train" true_pos_p=test_patch_performance.true_pos
+        @info "train" false_pos_p=test_patch_performance.false_pos
+        @info "train" true_neg_p=test_patch_performance.true_neg
+        @info "train" false_neg_p=test_patch_performance.false_neg
+        @info "train" loss_d=test_depth_performance.loss
+        @info "train" true_pos_d=test_depth_performance.true_pos
+        @info "train" false_pos_d=test_depth_performance.false_pos
+        @info "train" true_neg_d=test_depth_performance.true_neg
+        @info "train" false_neg_d=test_depth_performance.false_neg
+    end
+    train_on_model(iter+1, rotation_net, depth_net, patch_net, logger, nn_args, finish)
+end
+
+
+# EVENTUALLY HAVE AN ARG SET FOR EACH MODEL
+# MAKE SURE THAT THE SAVEPATH IS PROPERLY SET
+
+rotation_net = LeNet5(;imgsize=(256,256,1), nclasses=length(0:5:355))
+patch_net = LeNet5(;imgsize=(30,30,1), nclasses=5)
+depth_net = LeNet5(;imgsize=(30,30,1), nclasses=length(7:.2:13))
+nn_args = Args(epochs=2, tblogger=false)
+tblogger = TBLogger(nn_args.savepath, tb_overwrite)
+set_step_increment!(tblogger, 0) # 0 auto increment since we manually set_step!
+@info "TensorBoard logging at \"$(nn_args.savepath)\""
+@info "Start Training"
+rotation_net, patch_net, depth_net = train_on_model(1, rotation_net, depth_net, patch_net,
+                                                    tblogger, nn_args, 3)    
 trace = Gen.simulate(body_pose_model, ());
-proposed_deltas = neural_proposal(trace[:image], 30, rotation_model,
-                                  depth_model, patch_model)
+proposed_deltas = neural_proposal(trace[:image], 30, rotation_net,
+                                  depth_net, patch_net)
 
 
 #indep_validation(rotation_model, (training_data["gen images"], training_data["rotation_gt"]), .1)

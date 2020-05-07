@@ -220,7 +220,8 @@ joint_positions = open('bone_positions3D.txt', 'w')
 joint_positions.writelines([str(
     tuple(blender_creator.bone_locations_after_pose[j]))[1:-1]+"\n" for j in joints])
 joint_positions.close()
-blender_creator.world_from_depth_coords([50,50,8])
+print(blender_creator.groundtruth_xy[joints[0]])
+print(blender_creator.world_from_depth_coords(blender_creator.groundtruth_xy[joints[0]]))
 
 
 
