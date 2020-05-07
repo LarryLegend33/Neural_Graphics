@@ -42,11 +42,11 @@ accuracy_threshold(x) = 1.25 * (1.0 / size(x)[1])
 
 xyz_init_lookup = readdlm("xyz_by_rotation.txt", ',')
 lv_symbols = [lv[1] for lv in latent_variables]
-joints = ["elbow_r",
-          "elbow_l",
-          "hip",
-          "heel_r",
-          "heel_l"]
+joints = [:elbow_r, 
+          :elbow_l,
+          :hip,
+          :heel_r,
+          :heel_l]
 
 
 
@@ -93,61 +93,81 @@ end
 # right location based on mismatches.
 
 function ray_cast_depthcoords(depthcoords::Tuple, resolution::Int)
+    println("DEPTH")
     x, y, depth = depthcoords
+    println(x, y, depth)
     x /= resolution
     y /= resolution
-    view_frame = [(-.5, -.5, 1.09375),
-                  (-.5, .5, 1.09375),
-                  (.5, .5, 1.09375)]
+    view_frame = [[-.5, -.5, 1.09375],
+                  [-.5, .5, 1.09375],
+                  [.5, .5, 1.09375]]
     frame = [(v / (v[3] / depth)) for v in view_frame]
+    println(frame)
     min_x, max_x = frame[2][1], frame[3][1]
     min_y, max_y = frame[1][2], frame[2][2]
     x_proportion = ((max_x - min_x) * x) + min_x
     y_proportion = ((max_y - min_y) * y) + min_y
-    camera_matrix =  [(1.0000, 0.0000,  0.0000,  0.0000)
-                      (0.0000, 0.5000, -0.8660, -8.5000)
-                      (0.0000, 0.8660,  0.5000,  5.0000)
-                      (0.0000, 0.0000,  0.0000,  1.0000)]
-    xyz_location = camera_matrix * (x_proportion, y_proportion, -1*depth)
+    camera_matrix = [1.0 0.0 0.0 0.0;
+                     0.0 0.5 -0.866 -8.5;
+                     0.0 0.866 0.5 5.0;
+                     0.0 0.0 0.0 1.0]
+    # need the 1 b/c blender works in 4D vectors for translation
+    println([x_proportion, y_proportion, -1*depth, 1])
+    xyz_location = camera_matrix * [x_proportion, y_proportion, -1*depth, 1]
     return xyz_location
 end
 
-function neural_proposal(depth_stimulus, patch_dim::Int, rot_net::Chain,
+function neural_proposal(depth_stimulus, patchdim::Int, rot_net::Chain,
                          depth_net::Chain, patch_net::Chain)
-    start_x = {:start_x} ~ uniform(1, patch_dim)
-    start_y = {:start_y} ~ uniform(1, patch_dim)
+#    start_x = {:start_x} ~ uniform(1, patch_dim)
+    #    start_y = {:start_y} ~ uniform(1, patch_dim)
+    start_x = 1
+    start_y = 1
     resx, resy = size(depth_stimulus)
-    detected_rotation = rot_net(depth_stimulus)
-    rot_z_proposal = deg2rad(onecold(detected_rotation), 0:20:340))
+    r̂ = rot_net(depth_stimulus)
+#    rotation_call = [prob > accuracy_threshold(r̂) ? 1f0 : 0f0 for prob in softmax(r̂)]
+    max_ind = findmax(softmax(r̂))[2][1]
+    println(max_ind)
+    rotation_call = [ind == max_ind ? 1f0 : 0f0 for (ind, r) in enumerate(r̂)]
+    # if there is not a unique call, return nothing b/c you don't know rotation
+    println(sum(rotation_call))
+    if sum(rotation_call) != 1
+        return Dict()
+    end
+
+    rot_z_proposal = deg2rad(onecold(rotation_call, 0:5:355)[1])
     joint_locations = Dict()
-    for y in start_y:patchdim:im_height-patchdim
-        for x in start_x:patchdim:im_width-patchdim
-            patch = image[y:y+patchdim-1, x:x+patchdim-1]
+    for y in start_y:patchdim:resy-patchdim
+        for x in start_x:patchdim:resx-patchdim
+            patch = depth_stimulus[y:y+patchdim-1, x:x+patchdim-1]
             p̂ = patch_net(patch)
             call = [prob > accuracy_threshold(p̂) ? 1f0 : 0f0 for prob in softmax(p̂)]
-            if call != zeros(len(p))
-                key = joints[findfirst(isequal(1.0), call)]
+            if call != zeros(length(p̂))
+                key_joint = joints[findfirst(isequal(1.0), call)]
                 # center of patch
-                xyd = (x+patchdim/2, y+patchdim/2, onecold(depth_net(patch), 7:.2:13)
-                joint_locations[key] = ray_cast_depthcoords(xyd, resx)
+                xyd = (x+patchdim/2, y+patchdim/2, onecold(depth_net(patch), 7:.2:13)[1])
+                proj_3D = ray_cast_depthcoords(xyd, resx)
+                if key_joint != :hip
+                    joint_locations[Symbol(key_joint, "_x")] = proj_3D[1]
+                    joint_locations[Symbol(key_joint, "_y")] = proj_3D[2]
+                end
+                joint_locations[Symbol(key_joint, "_z")] = proj_3D[3]                    
             end
         end
     end
-    xyz_no_delta = init_xyz(rotation)
-    
-    # have to now go through joint_locations and find out the 
-    
-    
+    # each init coord is indexed by a symbol from LVs.
+    xyz_baseline = init_xyz(findfirst(isequal(1), rotation_call)[1])
+    # proposed deltas for all detected joints
+    deltas = Dict(
+        [(k, joint_locations[k] - xyz_baseline[k]) for k in keys(joint_locations)])
+    return rot_z_proposal, deltas
+end 
 
-function extract_deltas(rotation::Int, detected_location::Tuple, metric::Symbol)
-    rotated_xyz = init_xyz(rotation)
-    deltas = Dict([(lv, detected_locations[lv] - rotated_xyz[lv]) for lv in lv_symbols])
-    # THIS WILL BE FED BACK AS THE CANDIDATE DELTAS
-    return deltas
-end
 
+# THIS IS WRONG B/C ITS IN JOINT SPACE NOT LATENT VARIABLE SPACE
+# EASY TO FIX. 
 init_xyz(rotation) = Dict([(lv, xyz) for (lv, xyz) in  zip(
-    lv_symbols[1:length(detected_locations)],
+    lv_symbols[1:12],
     xyz_init_lookup[rotation, :])])
 
     
@@ -219,7 +239,7 @@ function make_training_data(num_samples::Int)
     trace = Gen.simulate(body_pose_model, ());
     image_size = size(trace[:image])
     patch_dim = 30
-    rot_res = 20.0
+    rot_res = 5.0
     depth_res = .2
     one_in_k_rot = convert(Int, 360 / rot_res)
     onehot_depth = 7:depth_res:13
@@ -393,14 +413,14 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
     return nn_model
 end    
 
-nn_args = Args(epochs=100)
-println(nn_args.batchsize)
-#validation_data = make_training_data(nn_args.validation_samples)
-#training_data = make_training_data(nn_args.training_samples)
-rotation_net = LeNet5(;imgsize=(256,256,1), nclasses=length(0:20:355))
+# nn_args = Args(epochs=100)
+# println(nn_args.batchsize)
+# #validation_data = make_training_data(nn_args.validation_samples)
+# training_data = make_training_data(nn_args.training_samples)
+# rotation_net = LeNet5(;imgsize=(256,256,1), nclasses=length(0:5:355))
 
-patch_net = LeNet5(;imgsize=(30,30,1), nclasses=5)
-depth_net = LeNet5(;imgsize=(30,30,1), nclasses=length(7:.2:13))
+# patch_net = LeNet5(;imgsize=(30,30,1), nclasses=5)
+# depth_net = LeNet5(;imgsize=(30,30,1), nclasses=length(7:.2:13))
 
 # Absolutely perfect using logitcrossentropy as the
 # loss function
@@ -410,6 +430,11 @@ depth_net = LeNet5(;imgsize=(30,30,1), nclasses=length(7:.2:13))
 #                                       training_data["rotation_gt"]),
 #                                      (training_data["gen images"],
 #                                       training_data["rotation_gt"]))
+
+trace = Gen.simulate(body_pose_model, ());
+proposed_deltas = neural_proposal(trace[:image], 30, rotation_model,
+                                  depth_model, patch_model)
+
 
 #indep_validation(rotation_model, (training_data["gen images"], training_data["rotation_gt"]), .1)
 
@@ -421,11 +446,11 @@ depth_net = LeNet5(;imgsize=(30,30,1), nclasses=length(7:.2:13))
 
 # unreal performance using logitcrossentropy as the loss function
 # in 10 epochs get 200 true positives. run a bit longer? 
-patch_model = train_nn_on_dataset(
-    patch_net,
-    nn_args,
-    (training_data["patches"], training_data["codes_gt"]),
-    (training_data["patches"], training_data["codes_gt"]))
+# patch_model = train_nn_on_dataset(
+#     patch_net,
+#     nn_args,
+#     (training_data["patches"], training_data["codes_gt"]),
+#     (training_data["patches"], training_data["codes_gt"]))
 
 # completely perfect calls after 200 epochs with
 # accuracy threshold set well (1.25 value above)

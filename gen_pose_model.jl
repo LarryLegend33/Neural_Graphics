@@ -109,7 +109,7 @@ end
 
 function build_initial_positions()
     open("xyz_by_rotation.txt", "w") do file
-        for rotation in 0:5:10
+        for rotation in 0:5:360
             pose = zeros(length(latent_variables))
             pose[length(latent_variables)] = deg2rad(rotation)
             render_pose(pose, "depth")
@@ -132,7 +132,7 @@ end
         
 
 #build_initial_positions()
-trace = Gen.simulate(body_pose_model, ());
+#trace = Gen.simulate(body_pose_model, ());
             
 
 

@@ -134,8 +134,6 @@ class Blender_Setup():
         x /= self.scene.render.resolution_x
         y /= self.scene.render.resolution_y
         view_frame = [-v for v in self.camera.data.view_frame()[:3]]
-        print("VIEW FRAME")
-        print(view_frame)
         frame = [(v / (v.z / z_depth)) for v in view_frame]
         min_x, max_x = frame[1].x, frame[2].x
         min_y, max_y = frame[0].y, frame[1].y
@@ -143,8 +141,6 @@ class Blender_Setup():
         co_local.x = ((max_x - min_x) * x) + min_x
         co_local.y = ((max_y - min_y) * y) + min_y
         co_local.z = -z_depth
-        print("cam matrix")
-        print(self.camera.matrix_world.normalized())
         xyz_location = self.camera.matrix_world.normalized() @ co_local
         return xyz_location
 
