@@ -130,30 +130,25 @@ function neural_proposal(depth_stimulus, patchdim::Int, rot_net::Chain,
     rotation_call = sample(r̂_weights)
     rot_z_proposal = deg2rad(rotation_call * 5)
     joint_locations = Dict()
+    max_probabilities = zeros(length(joints))
     for y in start_y:patchdim:resy-patchdim
         for x in start_x:patchdim:resx-patchdim
             patch = depth_stimulus[y:y+patchdim-1, x:x+patchdim-1]
-            p̂ = patch_net(patch)
-            call = [prob > accuracy_threshold(p̂) ? 1f0 : 0f0 for prob in softmax(p̂)]
-
-            # HERE ALMOST EVERYTHING GETS CALLED! NOT THE SAME AS DURING TRAINING.
-            # MAYBE B/C THE NET JUST GOT GOOD AT THE SAMPLES YOU GAVE IT.
-            # ALL THE CODE WORKS EXCEPT NN_s ARE TOO EAGER. 
-            
-            if call != zeros(length(p̂))
-                p̂_weights = ProbabilityWeights(p̂[:, 1])
-                key_joint = joints[sample(p̂_weights)]
-                # center of patch
-                det_depth = onecold(depth_net(patch), 7:.2:13)[1]
-                println(det_depth)
-                xyd = (x+patchdim/2, y+patchdim/2, det_depth)
+            p̂ = softmax(patch_net(patch))
+            max_prob, max_index = findmax(p̂)
+            # can also sample here instead of finding max.
+#            p̂_weights = ProbabilityWeights(p̂[:,1])
+#            patch_call = sample(p̂_weights)
+            if max_prob > max_probabilities[max_index]
+                detected_depth = onecold(depth_net(patch), 7:.2:13)[1]
+                xyd = (x+patchdim/2, y+patchdim/2, detected_depth)
                 proj_3D = ray_cast_depthcoords(xyd, resx)
-                println(xyd)
+                key_joint = joints[max_index]
                 if key_joint != :hip
                     joint_locations[Symbol(key_joint, "_x")] = proj_3D[1]
                     joint_locations[Symbol(key_joint, "_y")] = proj_3D[2]
                 end
-                joint_locations[Symbol(key_joint, "_z")] = proj_3D[3]                    
+                joint_locations[Symbol(key_joint, "_z")] = proj_3D[3]
             end
         end
     end
@@ -176,14 +171,6 @@ init_xyz(rotation) = Dict([(lv, xyz) for (lv, xyz) in  zip(
     lv_symbols[1:13],
     [xyz_init_lookup[rotation, 1:6];
      xyz_init_lookup[rotation, 9:end]])])
-
-    
-
-        
-
-# HAVE TO WRITE A DEPTH TO WORLD CALCULATOR THAT
-# IS A HARD-CODED MATRIX TRANSFORM.
-
 
 
 function world_groundtruth(trace)
@@ -293,18 +280,16 @@ function make_training_data(num_samples::Int)
 end
 
 
-
 @with_kw mutable struct Args
     η = 3e-4             # learning rate
     λ = 0                # L2 regularizer param, implemented as weight decay
     batchsize = 2       # batch size
-    epochs = 200           # number of epochs
-    training_samples = 10
-    validation_samples = 10
+    epochs = 100           # number of epochs
+    training_samples = 100
+    validation_samples = 50
     seed = 0             # set seed > 0 for reproducibility
     cuda = true          # if true use cuda (if available)
     infotime = 1 	 # report every `infotime` epochs
-    save_every_n_epochs = epochs / 2   # Save the model every x epochs.
     tblogger = true       # log training with tensorboard
     savepath = "/Users/nightcrawler2/Neural_Graphics/logging"
 end
@@ -385,6 +370,7 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
 
             println("Epoch: $epoch Validation: $(test_model_performance)")            
             if nn_args.tblogger
+                epoch == 0 && run(`tensorboard --logdir logging`, wait=false)
                 set_step!(tblogger, epoch)
                 with_logger(tblogger) do
                     @info "train" loss=test_model_performance.loss
@@ -392,29 +378,18 @@ function train_nn_on_dataset(nn_model::Chain, nn_args::Args,
                     @info "train" false_pos=test_model_performance.false_pos
                     @info "train" true_neg=test_model_performance.true_neg
                     @info "train" false_neg=test_model_performance.false_neg
+                end
             end
-            epoch == 0 && run(`tensorboard --logdir logging`, wait=false)
         end
         for (samples, groundtruth) in training_loader
             samples, groundtruth = samples |> device, groundtruth |> device
             grads = Flux.gradient(nn_params) do
                 ŷ = nn_model(samples)
                 loss(ŷ, groundtruth)
-           #     loss(ŷ, groundtruth[:, :, 1, :])
             end
             Flux.Optimise.update!(opt, nn_params, grads)
             ProgressMeter.next!(p)   # comment out for no progress bar
         end
-                
-        if epoch > 0 && epoch % nn_args.save_every_n_epochs == 0
-            !ispath(nn_args.savepath) && mkpath(nn_args.savepath)
-            modelpath = joinpath(nn_args.savepath, "nn_model.bson") 
-            let model=cpu(nn_model), nn_args=struct2dict(nn_args)
-                BSON.@save modelpath nn_model epoch nn_args
-            end
-            @info "Model saved in \"$(modelpath)\""
-        end
-    end
     end
     return nn_model
 end
@@ -427,7 +402,7 @@ end
 
 function train_on_model(iter::Int, rotation_net::Chain, depth_net::Chain,
                         patch_net::Chain, logger::TBLogger, nn_args::Args, finish::Int)
-    iter == 0 && run(`tensorboard --logdir logging`, wait=false)
+    iter == 1 && run(`tensorboard --logdir logging`, wait=false)
     if nn_args.cuda && CUDAapi.has_cuda_gpu()
         device = gpu
     else
@@ -455,7 +430,6 @@ function train_on_model(iter::Int, rotation_net::Chain, depth_net::Chain,
         DataLoader(validation_data["patches"],
                    validation_data["codes_gt"], batchsize=1),
         patch_net, device)
-                   
     test_depth_performance = eval_validation_set(
         DataLoader(validation_data["patches_depth"],
                    validation_data["depth_gt"], batchsize=1),
@@ -493,11 +467,19 @@ tblogger = TBLogger(nn_args.savepath, tb_overwrite)
 set_step_increment!(tblogger, 0) # 0 auto increment since we manually set_step!
 @info "TensorBoard logging at \"$(nn_args.savepath)\""
 @info "Start Training"
-rotation_net, patch_net, depth_net = train_on_model(1, rotation_net, depth_net, patch_net,
-                                                    tblogger, nn_args, 3)    
-trace = Gen.simulate(body_pose_model, ());
-proposed_deltas = neural_proposal(trace[:image], 30, rotation_net,
-                                  depth_net, patch_net)
+rotation_net, depth_net, patch_net = train_on_model(
+    1, rotation_net, depth_net, patch_net,
+    tblogger, nn_args, 20)
+
+!ispath(nn_args.savepath) && mkpath(nn_args.savepath)
+modelpath = joinpath(nn_args.savepath, "neural_proposal.bson") 
+let rnet=cpu(rotation_net), dnet=cpu(depth_net), pnet=cpu(patch_net)
+    BSON.@save modelpath rnet dnet pnet nn_args
+end
+
+# trace = Gen.simulate(body_pose_model, ());
+# proposed_deltas = neural_proposal(trace[:image], 30, rotation_net,
+#                                   depth_net, patch_net)
 
 
 #indep_validation(rotation_model, (training_data["gen images"], training_data["rotation_gt"]), .1)
