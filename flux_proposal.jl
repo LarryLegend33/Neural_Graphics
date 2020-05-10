@@ -286,7 +286,7 @@ end
     batchsize = 2       # batch size
     epochs = 100           # number of epochs
     training_samples = 100
-    validation_samples = 50
+    validation_samples = 30
     seed = 0             # set seed > 0 for reproducibility
     cuda = true          # if true use cuda (if available)
     infotime = 1 	 # report every `infotime` epochs
@@ -402,26 +402,17 @@ end
 
 function train_on_model(iter::Int, rotation_net::Chain, depth_net::Chain,
                         patch_net::Chain, logger::TBLogger, nn_args::Args, finish::Int)
+
     iter == 1 && run(`tensorboard --logdir logging`, wait=false)
+
     if nn_args.cuda && CUDAapi.has_cuda_gpu()
         device = gpu
     else
         device = cpu
     end
-    if iter == finish
-        return rotation_net, depth_net, patch_net
-    end
+    
     validation_data = make_training_data(nn_args.validation_samples)
-    training_data = make_training_data(nn_args.training_samples)        
-    rotation_net = train_nn_on_dataset(rotation_net, nn_args,
-                                       (training_data["gen images"], training_data["rotation_gt"]),
-                                       (training_data["gen images"], training_data["rotation_gt"]))
-    patch_net = train_nn_on_dataset(patch_net, nn_args,
-                                    (training_data["patches"], training_data["codes_gt"]),
-                                    (training_data["patches"], training_data["codes_gt"]))
-    depth_net = train_nn_on_dataset(depth_net, nn_args,
-                                    (training_data["patches_depth"], training_data["depth_gt"]),
-                                    (training_data["patches_depth"], training_data["depth_gt"]))
+    training_data = make_training_data(nn_args.training_samples)
     test_rot_performance = eval_validation_set(
         DataLoader(validation_data["gen images"],
                    validation_data["rotation_gt"], batchsize=1), 
@@ -434,25 +425,48 @@ function train_on_model(iter::Int, rotation_net::Chain, depth_net::Chain,
         DataLoader(validation_data["patches_depth"],
                    validation_data["depth_gt"], batchsize=1),
         depth_net, device)
+    
     set_step!(logger, iter)
     with_logger(logger) do
-        @info "train" loss_r=test_rot_performance.loss
-        @info "train" true_pos_r=test_rot_performance.true_pos
-        @info "train" false_pos_r=test_rot_performance.false_pos
-        @info "train" true_neg_r=test_rot_performance.true_neg
-        @info "train" false_neg_r=test_rot_performance.false_neg
-        @info "train" loss_p=test_patch_performance.loss
-        @info "train" true_pos_p=test_patch_performance.true_pos
-        @info "train" false_pos_p=test_patch_performance.false_pos
-        @info "train" true_neg_p=test_patch_performance.true_neg
-        @info "train" false_neg_p=test_patch_performance.false_neg
-        @info "train" loss_d=test_depth_performance.loss
-        @info "train" true_pos_d=test_depth_performance.true_pos
-        @info "train" false_pos_d=test_depth_performance.false_pos
-        @info "train" true_neg_d=test_depth_performance.true_neg
-        @info "train" false_neg_d=test_depth_performance.false_neg
+        @info "rotation" loss_r=test_rot_performance.loss
+        @info "rotation" true_pos_r=test_rot_performance.true_pos
+        @info "rotation" false_pos_r=test_rot_performance.false_pos
+        @info "rotation" true_neg_r=test_rot_performance.true_neg
+        @info "rotation" false_neg_r=test_rot_performance.false_neg
+        @info "patches" loss_p=test_patch_performance.loss
+        @info "patches" true_pos_p=test_patch_performance.true_pos
+        @info "patches" false_pos_p=test_patch_performance.false_pos
+        @info "patches" true_neg_p=test_patch_performance.true_neg
+        @info "patches" false_neg_p=test_patch_performance.false_neg
+        @info "depth" loss_d=test_depth_performance.loss
+        @info "depth" true_pos_d=test_depth_performance.true_pos
+        @info "depth" false_pos_d=test_depth_performance.false_pos
+        @info "depth" true_neg_d=test_depth_performance.true_neg
+        @info "depth" false_neg_d=test_depth_performance.false_neg
     end
-    train_on_model(iter+1, rotation_net, depth_net, patch_net, logger, nn_args, finish)
+    
+    rotation_net = train_nn_on_dataset(rotation_net, nn_args,
+                                       (training_data["gen images"], training_data["rotation_gt"]),
+                                       (training_data["gen images"], training_data["rotation_gt"]))
+    patch_net = train_nn_on_dataset(patch_net, nn_args,
+                                    (training_data["patches"], training_data["codes_gt"]),
+                                    (training_data["patches"], training_data["codes_gt"]))
+    depth_net = train_nn_on_dataset(depth_net, nn_args,
+                                    (training_data["patches_depth"], training_data["depth_gt"]),
+                                    (training_data["patches_depth"], training_data["depth_gt"]))
+
+    if iter % 20 == 0 || iter == finish:
+        !ispath(nn_args.savepath) && mkpath(nn_args.savepath)
+        modelpath = joinpath(nn_args.savepath, "neural_proposal.bson") 
+        let rnet=cpu(rotation_net), dnet=cpu(depth_net), pnet=cpu(patch_net)
+            BSON.@save modelpath rnet dnet pnet nn_args
+        end
+    
+    if iter == finish
+        return rotation_net, depth_net, patch_net
+    else
+        train_on_model(iter+1, rotation_net, depth_net, patch_net, logger, nn_args, finish)
+    end
 end
 
 
@@ -462,20 +476,16 @@ end
 rotation_net = LeNet5(;imgsize=(256,256,1), nclasses=length(0:5:355))
 patch_net = LeNet5(;imgsize=(30,30,1), nclasses=5)
 depth_net = LeNet5(;imgsize=(30,30,1), nclasses=length(7:.2:13))
-nn_args = Args(epochs=2, tblogger=false)
+nn_args = Args(tblogger=false)
 tblogger = TBLogger(nn_args.savepath, tb_overwrite)
 set_step_increment!(tblogger, 0) # 0 auto increment since we manually set_step!
 @info "TensorBoard logging at \"$(nn_args.savepath)\""
 @info "Start Training"
 rotation_net, depth_net, patch_net = train_on_model(
     1, rotation_net, depth_net, patch_net,
-    tblogger, nn_args, 20)
+    tblogger, nn_args, 21)
 
-!ispath(nn_args.savepath) && mkpath(nn_args.savepath)
-modelpath = joinpath(nn_args.savepath, "neural_proposal.bson") 
-let rnet=cpu(rotation_net), dnet=cpu(depth_net), pnet=cpu(patch_net)
-    BSON.@save modelpath rnet dnet pnet nn_args
-end
+
 
 # trace = Gen.simulate(body_pose_model, ());
 # proposed_deltas = neural_proposal(trace[:image], 30, rotation_net,
