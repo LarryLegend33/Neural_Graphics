@@ -14,33 +14,19 @@ import BSON
 import DrWatson: savename, struct2dict
 import ProgressMeter
 
-
-# Do three things here
-# First, just create a model that can be trained on
-# the generative model.
-
 # array syntax: undef initializes the array with nans
 # the rest are dimensions of the array.
 # 28 x 28 x 1 x 10 means each element is a 28x28 image and there
-# are 10 elements. lsp-mode
-
-
+# are 10 elements. 
 
 # NOTE Y HAT IS THE RETURN VALUE OF THE MODEL ALWAYS
 # Y IS THE GROUNDTRUTH. GROUNDTRUTH COMES OUT IN 4D. HAVE TO REDUCE
 # IT TO 2D B/C THE MODELS OUTPUT IN 2D
 
-# will bring in latent variables symbols and params
 include("gen_pose_model.jl");
-
-
-
 #loss(ŷ, y) = mse(ŷ, y[:,1,1,:]);
 loss(ŷ, y) = logitcrossentropy(ŷ, y[:,1,1,:]);
 accuracy_threshold(x) = 1.25 * (1.0 / size(x)[1])
-
-#loss(y, ŷ) = mse(ŷ, y[:,1,1,:]);
-
 xyz_init_lookup = readdlm("xyz_by_rotation.txt", ',')
 lv_symbols = [lv[1] for lv in latent_variables]
 joints = [:elbow_r, 
@@ -49,11 +35,8 @@ joints = [:elbow_r,
           :heel_r,
           :heel_l]
 
-
-
 # rotation is encoded as 1 in K in a 72 item digital output
 # this directly corresponds to a row of initial xyz coords before the delta
-
 function accuracy(y, ŷ, acc_array)
     thr = accuracy_threshold(ŷ)
     call = [prob > thr ? 1f0 : 0f0 for prob in softmax(ŷ)]
