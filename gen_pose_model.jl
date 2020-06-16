@@ -20,9 +20,13 @@ import BSON
 # another hurdle is getting rid of blender. each rendering
 # takes seconds and prints ~1000 lines of code to the screen.
 
-#trained_nn_bson = BSON.load("./logging/neural_proposal.bson")
-#xyz_init_lookup = readdlm("xyz_by_rotation.txt", ',')
-
+trained_nn_bson = BSON.load("./logging/neural_proposal.bson")
+xyz_init_lookup = readdlm("xyz_by_rotation.txt", ',')
+joints = [:elbow_r, 
+          :elbow_l,
+          :hip,
+          :heel_r,
+          :heel_l]
 
 latent_variables = [(:elbow_r_x, [-.5, .5]),
                     (:elbow_r_y, [-1.2, 1.2]),
@@ -39,32 +43,30 @@ latent_variables = [(:elbow_r_x, [-.5, .5]),
                     (:heel_l_z, [0, 2]),
                     (:elbow_r_rot, [-π, 0]),
                     (:elbow_l_rot, [-π, 0]),
-                    (:rot_z, [0,2*π])]
+                    (:rot_z, [0,(2*π) - .087])]
 
 init_xyz(rotation) = Dict([(lv, xyz) for (lv, xyz) in  zip(
     [l[1] for l in latent_variables[1:13]],
     [xyz_init_lookup[rotation, 1:6];
      xyz_init_lookup[rotation, 9:end]])])
 
-
-@gen function neural_proposal(rot_z::Float64, deltas::Dict)
-    lv_keys = [l[1] for l in latent_variables[1:13]]
-    rot_param = ({ :rot_z } ~ normal(rot_z, 1))
-    pose_params = [({lvk} ~ normal(deltas[lvk], 1)) for lvk in lv_keys]
-end
+@gen function neural_proposal(current_trace, deltas)
+    pose_params = [({lvk} ~ normal(deltas[lvk], 1)) for lvk in keys(deltas)]
+end;
     
-function neural_mh_update(tr)
-    (tr, _) = mh(tr, neural_proposal, ())
+function neural_mh_update(tr, proposed_values)
+    (tr, _) = mh(tr, neural_proposal, (proposed_values,))
     tr
 end
 
-function neural_inference(constraints)
+function neural_inference(constraints, proposed_values)
     (tr, )  = generate(body_pose_model, (), constraints)
-    for iter =1:50
-        tr = neural_mh_update(tr)
+    for iter = 1:5
+        tr = neural_mh_update(tr, proposed_values)
     end
     tr
-end    
+end
+
 
 struct NoisyMatrix <: Gen.Distribution{Matrix{Float64}} end
 
@@ -101,6 +103,20 @@ function render_pose(pose, render_type)
     image_matrix = convert(Matrix{Float32}, image_png)
     return image_matrix, groundtruths
 end
+
+
+function compare_renderings(trace_list)
+    labels = ["observed.png", "mh_only.png", "nn_mh.png"]
+    for (trace, label) in zip(trace_list, labels)
+        pose = [trace[lv] for (lv, win) in latent_variables]
+        render_pose(pose, "wire")
+        mv("wire.png", label, force=true)
+        if label == "observed.png"
+            render_pose(pose, "depth")
+            mv("depth.png", "observed_depth.png")
+        end
+    end
+end     
 
 
 @gen function body_pose_model()
@@ -155,9 +171,6 @@ end
 
 function neural_detection(depth_stimulus, patchdim::Int, rot_net::Chain,
                          depth_net::Chain, patch_net::Chain)
-#    start_x = {:start_x} ~ uniform(1, patch_dim)
-    #    start_y = {:start_y} ~ uniform(1, patch_dim)
-    # want randomness so you can get as close to the actual position as possible. 
     start_x = 1
     start_y = 1 
     resx, resy = size(depth_stimulus)
@@ -175,9 +188,9 @@ function neural_detection(depth_stimulus, patchdim::Int, rot_net::Chain,
             # can also sample here instead of finding max.
 #            p̂_weights = ProbabilityWeights(p̂[:,1])
 #            patch_call = sample(p̂_weights)
-            if max_prob > max_probabilities[max_index]b
+            if max_prob > max_probabilities[max_index]
                 max_probabilities[max_index] = max_prob
-                detected_depth = onecold(depth_net(patch), 7:.2:13)[1]
+                detected_depth = onecold(depth_net(patch), 5:.2:15)[1]
                 xyd = (x+patchdim/2, y+patchdim/2, detected_depth)
                 proj_3D = ray_cast_depthcoords(xyd, resx)
                 key_joint = joints[max_index]
@@ -191,17 +204,12 @@ function neural_detection(depth_stimulus, patchdim::Int, rot_net::Chain,
     end
     # each init coord is indexed by a symbol from LVs.
     xyz_baseline = init_xyz(rotation_call)
-    # println("BASELINE AND DETECTED LOCATIONS")
-    # println(xyz_baseline)
-    # println(joint_locations)
     # proposed deltas for all detected joints
     deltas = Dict(
         [(k, joint_locations[k] - xyz_baseline[k]) for k in keys(joint_locations)])
-    return rot_z_proposal, deltas
+    deltas[:rot_z] = rot_z_proposal
+    return deltas
 end 
-
-
-
 
 
 #build_initial_positions()
@@ -217,7 +225,13 @@ proposed_deltas = neural_detection(observed_trace[:image],
                                    trained_nn_bson[:rnet],
                                    trained_nn_bson[:dnet],
                                    trained_nn_bson[:pnet])
+no_nn_trace = neural_inference(constraints, Dict())
+nn_trace = neural_inference(constraints, proposed_deltas)
+compare_renderings([observed_trace, no_nn_trace, nn_trace])
 
+
+
+# run these commands in the repl for now. for each iteration, save the image. 
 
 
 

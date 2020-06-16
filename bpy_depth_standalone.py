@@ -113,8 +113,6 @@ class Blender_Setup():
         self.groundtruth_xy = {
             j: resolution_matrix @ self.world_to_camera_view(
                 self.bone_locations_after_pose[j]) for j in self.joints}
-#        print(self.bone_locations_after_pose)
-#        print(self.groundtruth_xy)
 
     def world_to_camera_view(self, coords):
         co_local = self.camera.matrix_world.normalized().inverted() @ coords
@@ -185,7 +183,8 @@ class Blender_Setup():
 
 # here just pass pose statistics and then set_body_pose, then render.
 # this class organizes the stochastic choices into vectors
-print(sys.argv)
+
+
 pose_dict_values = [float(pd) for pd in sys.argv[sys.argv.index("--") + 1:-1]]
 pose_dict_keys = ['elbow_r_x',
                   'elbow_r_y',
@@ -217,7 +216,6 @@ joints = ["arm elbow_R",
 
 pose_dict = dict(zip(pose_dict_keys, pose_dict_values))
 if sys.argv[-1] == "depth":
-  #  width, height = (256, 256)
     width, height = (256, 256)
 elif sys.argv[-1] == "wire":
     width, height = (512, 512)
@@ -231,8 +229,8 @@ joint_positions = open('bone_positions3D.txt', 'w')
 joint_positions.writelines([str(
     tuple(blender_creator.bone_locations_after_pose[j]))[1:-1]+"\n" for j in joints])
 joint_positions.close()
-print(blender_creator.groundtruth_xy[joints[0]])
-print(blender_creator.world_from_depth_coords(blender_creator.groundtruth_xy[joints[0]]))
+
+
 
 
 

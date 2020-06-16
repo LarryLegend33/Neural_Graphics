@@ -134,7 +134,8 @@ function make_training_data(num_samples::Int)
     rot_res = 5.0
     depth_res = .2
     one_in_k_rot = convert(Int, 360 / rot_res)
-    onehot_depth = 7:depth_res:13
+    # new priors yield wider depth values. 
+    onehot_depth = 5:depth_res:15
     generated_images = Array{Float32}(undef, image_size...,
                                       1, num_samples)
     rotation_groundtruths = Array{Float32}(undef, one_in_k_rot,
@@ -380,7 +381,7 @@ end
 
 rotation_net = LeNet5(;imgsize=(256,256,1), nclasses=length(0:5:355))
 patch_net = LeNet5(;imgsize=(30,30,1), nclasses=5)
-depth_net = LeNet5(;imgsize=(30,30,1), nclasses=length(7:.2:13))
+depth_net = LeNet5(;imgsize=(30,30,1), nclasses=length(5:.2:15))
 nn_args = Args(tblogger=false)
 tblogger = TBLogger(nn_args.savepath, tb_overwrite)
 set_step_increment!(tblogger, 0) # 0 auto increment since we manually set_step!
@@ -390,8 +391,8 @@ rotation_net, depth_net, patch_net, training, validation  = train_on_model(
     1, rotation_net, depth_net, patch_net,
     tblogger, nn_args, 3)
 trace = Gen.simulate(body_pose_model, ());
-proposed_deltas = neural_detection(trace[:image], 30, bs[:rnet],
-                                   bs[:dnet], bs[:pnet])
+# proposed_deltas = neural_detection(trace[:image], 30, bs[:rnet],
+#                                    bs[:dnet], bs[:pnet])
 #trained_bson = BSON.load("./logging/neural_proposal.bson")
 
 
