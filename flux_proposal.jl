@@ -70,92 +70,6 @@ function roundto(x::Float64, mod::Float64)
 end
 
 
-# OK setup will be to first pass the whole image into the rotation network.
-# Next, you pass each patch into the patch network. Generative function
-# decides the staggering on the patch initiation, so that it will suggest
-# different locations on each iteration and will narrow down the 
-# right location based on mismatches.
-
-# THIS WHOLE FUNCTION IS CORRECT. 
-function ray_cast_depthcoords(depthcoords::Tuple, resolution::Int)
-    x, y, depth = depthcoords
-    x /= resolution
-    y /= resolution
-    view_frame = [[-.5, -.5, 1.09375],
-                  [-.5, .5, 1.09375],
-                  [.5, .5, 1.09375]]
-    frame = [(v / (v[3] / depth)) for v in view_frame]
-    min_x, max_x = frame[2][1], frame[3][1]
-    min_y, max_y = frame[1][2], frame[2][2]
-    x_proportion = ((max_x - min_x) * x) + min_x
-    y_proportion = ((max_y - min_y) * y) + min_y
-    camera_matrix = [1.0 0.0 0.0 0.0;
-                     0.0 0.5 -0.866 -8.5;
-                     0.0 0.866 0.5 5.0;
-                     0.0 0.0 0.0 1.0]
-    # need the 1 b/c blender works in 4D vectors for translation
-    xyz_location = camera_matrix * [x_proportion, y_proportion, -1*depth, 1]
-    return xyz_location
-end
-
-
-
-
-function neural_proposal(depth_stimulus, patchdim::Int, rot_net::Chain,
-                         depth_net::Chain, patch_net::Chain)
-#    start_x = {:start_x} ~ uniform(1, patch_dim)
-    #    start_y = {:start_y} ~ uniform(1, patch_dim)
-    start_x = 1
-    start_y = 1
-    resx, resy = size(depth_stimulus)
-    r̂ = softmax(rot_net(depth_stimulus))
-    r̂_weights = ProbabilityWeights(r̂[:,1])
-    rotation_call = sample(r̂_weights)
-    rot_z_proposal = deg2rad(rotation_call * 5)
-    joint_locations = Dict()
-    max_probabilities = zeros(length(joints))
-    for y in start_y:patchdim:resy-patchdim
-        for x in start_x:patchdim:resx-patchdim
-            patch = depth_stimulus[y:y+patchdim-1, x:x+patchdim-1]
-            p̂ = softmax(patch_net(patch))
-            max_prob, max_index = findmax(p̂)
-            # can also sample here instead of finding max.
-#            p̂_weights = ProbabilityWeights(p̂[:,1])
-#            patch_call = sample(p̂_weights)
-            if max_prob > max_probabilities[max_index]
-                detected_depth = onecold(depth_net(patch), 7:.2:13)[1]
-                xyd = (x+patchdim/2, y+patchdim/2, detected_depth)
-                proj_3D = ray_cast_depthcoords(xyd, resx)
-                key_joint = joints[max_index]
-                if key_joint != :hip
-                    joint_locations[Symbol(key_joint, "_x")] = proj_3D[1]
-                    joint_locations[Symbol(key_joint, "_y")] = proj_3D[2]
-                end
-                joint_locations[Symbol(key_joint, "_z")] = proj_3D[3]
-            end
-        end
-    end
-    # each init coord is indexed by a symbol from LVs.
-    xyz_baseline = init_xyz(rotation_call)
-    println("BASELINE AND DETECTED LOCATIONS")
-    println(xyz_baseline)
-    println(joint_locations)
-    # proposed deltas for all detected joints
-    deltas = Dict(
-        [(k, joint_locations[k] - xyz_baseline[k]) for k in keys(joint_locations)])
-    return rot_z_proposal, deltas
-end 
-
-# note hip_x and hip_y are not latent variables, but are included
-# as xyz coordinates for the hip. NN will also propose an
-# X and Y location for the hip. ignore it here, b/c its ignored
-# in the proposal. 
-init_xyz(rotation) = Dict([(lv, xyz) for (lv, xyz) in  zip(
-    lv_symbols[1:13],
-    [xyz_init_lookup[rotation, 1:6];
-     xyz_init_lookup[rotation, 9:end]])])
-
-
 function world_groundtruth(trace)
     init_xyz_index = round(rad2deg(trace[:rot_z]) / 5)
     rotated_xyz = init_xyz(init_xyz_index)
@@ -200,21 +114,22 @@ end
 function LeNet5(; imgsize=(28,28,1), nclasses=10) 
     out_conv_size = (imgsize[1]÷4 - 3, imgsize[2]÷4 - 3, 16)
     return Chain(
-            x -> reshape(x, imgsize..., :),
-            Conv((5, 5), imgsize[end]=>6, relu),
-            MaxPool((2, 2)),
-            Conv((5, 5), 6=>16, relu),
-            MaxPool((2, 2)),
-            x -> reshape(x, :, size(x, 4)),
-            Dense(prod(out_conv_size), 120, relu), 
-            Dense(120, 84, relu), 
-            Dense(84, nclasses)
-          )
+        x -> reshape(x, imgsize..., :),
+        Conv((5, 5), imgsize[end]=>6, relu),
+        MaxPool((2, 2)),
+        Conv((5, 5), 6=>16, relu),
+        MaxPool((2, 2)),
+        x -> reshape(x, :, size(x, 4)),
+        Dense(prod(out_conv_size), 120, relu), 
+        Dense(120, 84, relu), 
+        Dense(84, nclasses)
+    )
 end
 
 function make_training_data(num_samples::Int)
     trace = Gen.simulate(body_pose_model, ());
     image_size = size(trace[:image])
+    groundtruths = Gen.get_retval(trace)
     patch_dim = 30
     rot_res = 5.0
     depth_res = .2
@@ -234,7 +149,7 @@ function make_training_data(num_samples::Int)
         rotation_groundtruths[:,:,:,i] = onehot(
             roundto(rad2deg(trace[:rot_z]), rot_res), 0:rot_res:360-rot_res)
         (patches, codes, depths) = patches_w_joint_gts(trace[:image],
-                                                     trace[:groundtruths],
+                                                     groundtruths,
                                                      patch_dim)
         patches_all = vcat(patches_all, patches)
         codes_all = vcat(codes_all, codes)
@@ -263,13 +178,17 @@ function make_training_data(num_samples::Int)
 end
 
 
+#  weight decay of .1 stops loss from decreasing. batchsize 2 is fine.
+# batchsize 5 w/ no decay is fast and effective. by epoch 90 is 100% correct.
+# so code works for multiple different batch sizes, for both rot and patch nets. 
+
 @with_kw mutable struct Args
     η = 3e-4             # learning rate
-    λ = 0                # L2 regularizer param, implemented as weight decay
-    batchsize = 2       # batch size
-    epochs = 100           # number of epochs
-    training_samples = 100
-    validation_samples = 30
+    λ = 1e-4            # L2 regularizer param, implemented as weight decay
+    batchsize = 5       # batch size
+    epochs = 50           # number of epochs
+    training_samples = 20
+    validation_samples = 5
     seed = 0             # set seed > 0 for reproducibility
     cuda = true          # if true use cuda (if available)
     infotime = 1 	 # report every `infotime` epochs
@@ -438,23 +357,26 @@ function train_on_model(iter::Int, rotation_net::Chain, depth_net::Chain,
                                     (training_data["patches_depth"], training_data["depth_gt"]),
                                     (training_data["patches_depth"], training_data["depth_gt"]))
 
-    if iter % 20 == 0 || iter == finish:
+    if iter % 2 == 0 || iter == finish
         !ispath(nn_args.savepath) && mkpath(nn_args.savepath)
         modelpath = joinpath(nn_args.savepath, "neural_proposal.bson") 
         let rnet=cpu(rotation_net), dnet=cpu(depth_net), pnet=cpu(patch_net)
             BSON.@save modelpath rnet dnet pnet nn_args
         end
-    
+    end
     if iter == finish
-        return rotation_net, depth_net, patch_net
+        return rotation_net, depth_net, patch_net, training_data, validation_data
     else
         train_on_model(iter+1, rotation_net, depth_net, patch_net, logger, nn_args, finish)
     end
 end
 
 
-# EVENTUALLY HAVE AN ARG SET FOR EACH MODEL
-# MAKE SURE THAT THE SAVEPATH IS PROPERLY SET
+
+# UNCOMMENT FOR TRAINING
+#Note on round 1, batch size of 2, no softmax in net. Poor results. 
+#Round 2, softmax is directly in the net. Are doing gradient on softmax results.
+#Round 3, if it still doesn't look promising, use an optimizer. 
 
 rotation_net = LeNet5(;imgsize=(256,256,1), nclasses=length(0:5:355))
 patch_net = LeNet5(;imgsize=(30,30,1), nclasses=5)
@@ -464,55 +386,17 @@ tblogger = TBLogger(nn_args.savepath, tb_overwrite)
 set_step_increment!(tblogger, 0) # 0 auto increment since we manually set_step!
 @info "TensorBoard logging at \"$(nn_args.savepath)\""
 @info "Start Training"
-rotation_net, depth_net, patch_net = train_on_model(
+rotation_net, depth_net, patch_net, training, validation  = train_on_model(
     1, rotation_net, depth_net, patch_net,
-    tblogger, nn_args, 21)
-
-
-
-# trace = Gen.simulate(body_pose_model, ());
-# proposed_deltas = neural_proposal(trace[:image], 30, rotation_net,
-#                                   depth_net, patch_net)
+    tblogger, nn_args, 3)
+trace = Gen.simulate(body_pose_model, ());
+proposed_deltas = neural_detection(trace[:image], 30, bs[:rnet],
+                                   bs[:dnet], bs[:pnet])
+#trained_bson = BSON.load("./logging/neural_proposal.bson")
 
 
 #indep_validation(rotation_model, (training_data["gen images"], training_data["rotation_gt"]), .1)
 
 #     (training_data["patches"], training_data["codes_gt"]))
 
-
-# WORKS AWESOME WITH PROBABILITY THRESH SET AT .25
-# really examine the loss function's inner workings.
-
-# unreal performance using logitcrossentropy as the loss function
-# in 10 epochs get 200 true positives. run a bit longer? 
-# patch_model = train_nn_on_dataset(
-#     patch_net,
-#     nn_args,
-#     (training_data["patches"], training_data["codes_gt"]),
-#     (training_data["patches"], training_data["codes_gt"]))
-
-# completely perfect calls after 200 epochs with
-# accuracy threshold set well (1.25 value above)
-# depth_model = train_nn_on_dataset(
-#     depth_net,
-#     nn_args,
-#     (training_data["patches_depth"], training_data["depth_gt"]),
-#     (training_data["patches_depth"], training_data["depth_gt"]))
-
-
-
-# OK so now custom proposal has to take the patch IDs and 
-# convert them to deltas in the joint positions 
-
-
-# may be useful to have network know the rotation before searching, and
-# be trained with rotation as an input, coded as a 1 in K addon to the image. 
-# ORDER OF NEURAL NETWORK HAS TO BE ROTATION FIRST. THEN RUN
-# FILTERS OVER PATCHES OF INPUT. EACH PATCH WILL HAVE A DIGITAL OUTPUT
-# THAT NOTES THE PRESENCE OR ABSENCE OF A FEATURE. CUSTOM PROPOSAL WILL
-# CHANGE THE PHASE OF THE FILTERS SO THAT THE CENTER OF THE FILTER
-# WILL BE IN DIFFERENT SPOTS, AND UNIQUE OUTPUTS WILL ARISE (i.e. the different
-# phases will resolve XY more accurately). NEXT EACH PATCH IS PASSED INTO
-# A DEPTH CALCULATOR. THIS IS A NET TRAINED ON PATCHES WITH KNOWN DEPTHS.
-# OUTPUT IS A XY AND DEPTH FOR EACH JOINT. 
 

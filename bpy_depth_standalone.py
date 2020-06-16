@@ -5,6 +5,7 @@ from mathutils import Vector, Matrix, Euler
 from bpy_extras.object_utils import world_to_camera_view
 import numpy as np
 
+
 class Blender_Setup():
     
     def __init__(self, pose, width, height, joints):
@@ -144,7 +145,6 @@ class Blender_Setup():
         xyz_location = self.camera.matrix_world.normalized() @ co_local
         return xyz_location
 
-
     # WORKS!!! YOU GET THE EXACT RIGHT BUMP FROM THE POSE. 
     def set_body_pose(self):
         self.rig.rotation_euler = Euler([0, 0, self.pose['rot_z']], 'XYZ')
@@ -160,16 +160,27 @@ class Blender_Setup():
                                   Vector([self.pose['heel_r_x'] / 2,
                                           self.pose['heel_r_y'] / 2,
                                           self.pose['heel_r_z'] / 2]))
+        self.update_bone_location("heel_R",
+                                  Vector([0,
+                                          0,
+                                          self.pose['heel_r_z'] / 2]))
+
+        self.update_bone_location("heel_L",
+                                  Vector([0,
+                                          0, 
+                                          self.pose['heel_l_z'] / 2]))
+
+        
         self.update_bone_location("heel_L",
                                   Vector([self.pose['heel_l_x'] / 2,
                                           self.pose['heel_l_y'] / 2,
                                           self.pose['heel_l_z'] / 2]))
         self.update_bone_location("hip",
-                                  Vector([0,0, self.pose['hip_z'] / 2]))
+                                  Vector([0, 0, self.pose['hip_z'] / 2]))
         self.bone("arm elbow_L").rotation_euler = Euler(
-            [0, 0, self.pose['elbow_l_rot']], 'XYZ')
+            [self.pose['elbow_l_rot'], 0, 0], 'XYZ')
         self.bone("arm elbow_R").rotation_euler = Euler(
-            [0, 0, self.pose['elbow_r_rot']], 'XYZ')
+            [self.pose['elbow_r_rot'], 0, 0], 'XYZ')
         self.context.view_layer.update()
 
 # here just pass pose statistics and then set_body_pose, then render.
