@@ -8,6 +8,7 @@ using Base.Iterators
 using DelimitedFiles
 using Flux
 using Flux: crossentropy, logitcrossentropy, mse, onehot, onecold
+using Luxor;
 import BSON
 
 
@@ -51,7 +52,7 @@ init_xyz(rotation) = Dict([(lv, xyz) for (lv, xyz) in  zip(
      xyz_init_lookup[rotation, 9:end]])])
 
 @gen function neural_proposal(current_trace, deltas)
-    pose_params = [({lvk} ~ normal(deltas[lvk], 1)) for lvk in keys(deltas)]
+    pose_params = [({lvk} ~ normal(deltas[lvk], 1)) for lvk in keys(deltas) if lvk == :rot_z]
 end;
     
 function neural_mh_update(tr, proposed_values)
@@ -61,7 +62,7 @@ end
 
 function neural_inference(constraints, proposed_values)
     (tr, )  = generate(body_pose_model, (), constraints)
-    for iter = 1:5
+    for iter = 1:20
         tr = neural_mh_update(tr, proposed_values)
     end
     tr
@@ -113,7 +114,7 @@ function compare_renderings(trace_list)
         mv("wire.png", label, force=true)
         if label == "observed.png"
             render_pose(pose, "depth")
-            mv("depth.png", "observed_depth.png")
+            mv("depth.png", "observed_depth.png", force=true)
         end
     end
 end     
@@ -171,17 +172,18 @@ end
 
 function neural_detection(depth_stimulus, patchdim::Int, rot_net::Chain,
                          depth_net::Chain, patch_net::Chain)
-    start_x = 1
-    start_y = 1 
+    start_x = 40
+    start_y = 40
     resx, resy = size(depth_stimulus)
     r̂ = softmax(rot_net(depth_stimulus))
     r̂_weights = ProbabilityWeights(r̂[:,1])
     rotation_call = sample(r̂_weights)
     rot_z_proposal = deg2rad(rotation_call * 5)
+    joint_xyd = Dict()
     joint_locations = Dict()
     max_probabilities = zeros(length(joints))
-    for y in start_y:patchdim:resy-patchdim
-        for x in start_x:patchdim:resx-patchdim
+    for y in start_y:patchdim:resy-patchdim-40
+        for x in start_x:patchdim:resx-patchdim-40
             patch = depth_stimulus[y:y+patchdim-1, x:x+patchdim-1]
             p̂ = softmax(patch_net(patch))
             max_prob, max_index = findmax(p̂)
@@ -199,6 +201,7 @@ function neural_detection(depth_stimulus, patchdim::Int, rot_net::Chain,
                     joint_locations[Symbol(key_joint, "_y")] = proj_3D[2]
                 end
                 joint_locations[Symbol(key_joint, "_z")] = proj_3D[3]
+                joint_xyd[key_joint] = xyd
             end
         end
     end
@@ -208,9 +211,33 @@ function neural_detection(depth_stimulus, patchdim::Int, rot_net::Chain,
     deltas = Dict(
         [(k, joint_locations[k] - xyz_baseline[k]) for k in keys(joint_locations)])
     deltas[:rot_z] = rot_z_proposal
-    return deltas
-end 
+    joint_xyd[:rot_z] = rot_z_proposal
+    return deltas, joint_xyd
+end
 
+
+function draw_joints(joint_xyd)
+    # multiply by 2 b/c wires are twice as high resolution
+    image = readpng("observed.png")
+    w = image.width
+    h = image.height
+    fname = "annoted_image.png"
+    Drawing(w, h, fname)
+    placeimage(image, 0, 0)
+    setline(0.3)
+    sethue("blue")
+    fontsize(10)
+    for jt in keys(joint_xyd)
+        if jt != :rot_z
+            xyd = joint_xyd[jt]
+            label(string(jt), :NE, Point(xyd[1] * 2, xyd[2] * 2), leader=true, offset=25)
+        else
+            text(string("rotation = ", joint_xyd[:rot_z]), Point(10, 10))
+        end
+    end
+    finish()
+end
+        
 
 #build_initial_positions()
 
@@ -220,14 +247,16 @@ end
 observed_trace = Gen.simulate(body_pose_model, ());
 constraints = Gen.choicemap()
 constraints[:image] = observed_trace[:image]
-proposed_deltas = neural_detection(observed_trace[:image],
-                                   30,
-                                   trained_nn_bson[:rnet],
-                                   trained_nn_bson[:dnet],
-                                   trained_nn_bson[:pnet])
+proposed_deltas, joint_xyd = neural_detection(observed_trace[:image],
+                                              30,
+                                              trained_nn_bson[:rnet],
+                                              trained_nn_bson[:dnet],
+                                              trained_nn_bson[:pnet])
 no_nn_trace = neural_inference(constraints, Dict())
 nn_trace = neural_inference(constraints, proposed_deltas)
 compare_renderings([observed_trace, no_nn_trace, nn_trace])
+draw_joints(joint_xyd)
+
 
 
 

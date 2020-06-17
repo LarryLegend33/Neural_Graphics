@@ -187,8 +187,8 @@ end
     η = 3e-4             # learning rate
     λ = 1e-4            # L2 regularizer param, implemented as weight decay
     batchsize = 5       # batch size
-    epochs = 50           # number of epochs
-    training_samples = 20
+    epochs = 100           # number of epochs
+    training_samples = 100
     validation_samples = 5
     seed = 0             # set seed > 0 for reproducibility
     cuda = true          # if true use cuda (if available)
@@ -389,7 +389,7 @@ set_step_increment!(tblogger, 0) # 0 auto increment since we manually set_step!
 @info "Start Training"
 rotation_net, depth_net, patch_net, training, validation  = train_on_model(
     1, rotation_net, depth_net, patch_net,
-    tblogger, nn_args, 3)
+    tblogger, nn_args, 5)
 trace = Gen.simulate(body_pose_model, ());
 # proposed_deltas = neural_detection(trace[:image], 30, bs[:rnet],
 #                                    bs[:dnet], bs[:pnet])
