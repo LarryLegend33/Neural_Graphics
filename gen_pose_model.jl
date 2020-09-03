@@ -8,8 +8,9 @@ using Base.Iterators
 using DelimitedFiles
 using Flux
 using Flux: crossentropy, logitcrossentropy, mse, onehot, onecold
-using Luxor;
+#using Luxor;
 import BSON
+
 
 
 # currently each of these windows is loosely
@@ -20,8 +21,8 @@ import BSON
 # also next iteration must assure non-collision of body parts.
 # another hurdle is getting rid of blender. each rendering
 # takes seconds and prints ~1000 lines of code to the screen.
+# trained_nn_bson = BSON.load("./logging/neural_proposal.bson")
 
-trained_nn_bson = BSON.load("./logging/neural_proposal.bson")
 xyz_init_lookup = readdlm("xyz_by_rotation.txt", ',')
 joints = [:elbow_r, 
           :elbow_l,
@@ -120,6 +121,7 @@ function compare_renderings(trace_list)
 end     
 
 
+
 @gen function body_pose_model()
     # locations of relevant joints
     pose_params = [({lv} ~ uniform(win[1], win[2])) 
@@ -129,6 +131,7 @@ end
     noisy_image = ({ :image } ~ noisy_matrix(blurred_depth_image, 0.1))
     return two_d_groundtruth
 end
+
 
 
 function build_initial_positions()
@@ -155,6 +158,7 @@ function ray_cast_depthcoords(depthcoords::Tuple, resolution::Int)
     view_frame = [[-.5, -.5, 1.09375],
                   [-.5, .5, 1.09375],
                   [.5, .5, 1.09375]]
+
     frame = [(v / (v[3] / depth)) for v in view_frame]
     min_x, max_x = frame[2][1], frame[3][1]
     min_y, max_y = frame[1][2], frame[2][2]
@@ -244,18 +248,18 @@ end
 # RUN INFERENCE HERE. FIRST GENERATE AN IMAGE. MAKE CONSTRAINTS WHICH IS THE
 # IMAGE CREATED BY THE TRACE. 
 
-observed_trace = Gen.simulate(body_pose_model, ());
-constraints = Gen.choicemap()
-constraints[:image] = observed_trace[:image]
-proposed_deltas, joint_xyd = neural_detection(observed_trace[:image],
-                                              30,
-                                              trained_nn_bson[:rnet],
-                                              trained_nn_bson[:dnet],
-                                              trained_nn_bson[:pnet])
-no_nn_trace = neural_inference(constraints, Dict())
-nn_trace = neural_inference(constraints, proposed_deltas)
-compare_renderings([observed_trace, no_nn_trace, nn_trace])
-draw_joints(joint_xyd)
+# observed_trace = Gen.simulate(body_pose_model, ());
+# constraints = Gen.choicemap()
+# constraints[:image] = observed_trace[:image]
+# proposed_deltas, joint_xyd = neural_detection(observed_trace[:image],
+#                                               30,
+#                                               trained_nn_bson[:rnet],
+#                                               trained_nn_bson[:dnet],
+#                                               trained_nn_bson[:pnet])
+# no_nn_trace = neural_inference(constraints, Dict())
+# nn_trace = neural_inference(constraints, proposed_deltas)
+# compare_renderings([observed_trace, no_nn_trace, nn_trace])
+# draw_joints(joint_xyd)
 
 
 

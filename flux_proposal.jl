@@ -198,6 +198,8 @@ end
 end
 
 
+
+
 # accuracy for me is simply the number of times in a batch the
 # call is correct vs incorrect. 
 function eval_validation_set(loader, model, device)
@@ -389,7 +391,7 @@ set_step_increment!(tblogger, 0) # 0 auto increment since we manually set_step!
 @info "Start Training"
 rotation_net, depth_net, patch_net, training, validation  = train_on_model(
     1, rotation_net, depth_net, patch_net,
-    tblogger, nn_args, 5)
+    tblogger, nn_args, 2)
 trace = Gen.simulate(body_pose_model, ());
 # proposed_deltas = neural_detection(trace[:image], 30, bs[:rnet],
 #                                    bs[:dnet], bs[:pnet])
