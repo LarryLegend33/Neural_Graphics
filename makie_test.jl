@@ -5,43 +5,50 @@ using GLMakie
 # Want to have the template
 # And also the currently inferred velocity.
 # And a graph that describes how close the proposal is to the correctc answer
-# Also a scene graph estimate with probabilities.
+# Also a scene graph estimate with probabilities i.e. Austin's pres. 
 # But for now two side by side renderings is good. 
 
+"""WORKS AT BASICALLY FULL SPEED AT 1000 RESOLUTION"""
 
-#= this is a list of 7 dot locations ranging from -25/2 to 25/2 in both axes. 
-the idea is to create 1000 instances of 7 dot coordinates =#
 res = 1000
 outer_padding = 0
-scene, layout = layoutscene(outer_padding, 
-                        resolution=(2*res, res), 
-                        backgroundcolor=RGBf0(0,0,0))
+num_updates = 180
+scene, layout = layoutscene(outer_padding,
+                            resolution = (2*res, res), 
+                        backgroundcolor=RGBf0(0, 0, 0))
 
-dot1 = [(rand(range(0, stop=300)), rand(range(0, stop=300))) for i in range(1, stop=1000)]
+dot1 = [(rand(range(0, stop=1000)), rand(range(0, stop=1000))) for i in range(1, stop=1000)]
+dot2 = [(i, .5) for i in range(0, stop=1, length=num_updates)]
 
-f(t, coords) = (coords[t][1], coords[t][2])
+f(t, coords) = coords[t]
 
 ncols = 2
 nrows = 1
 # create a grid of LAxis objects
-axes = [LAxis(scene) for i in 1:nrows, j in 1:ncols]
-# and place them into the layout
+axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:nrows, j in 1:ncols]
 layout[1:nrows, 1:ncols] = axes
 
-time_node = Node(0.0)
+# and place them into the layout
 
-scatter!(axes[1, 1], lift(t -> f.(t, dot1), time_node))
-#scatter!(axes[1, 2], [coord[t][1]], [coord[1][2]], markersize = 20)
 
-#s = scene[end] # last plot in scene
-# record(scene, "output.mp4", r) do m
-#     s[1] = m[:, 1]
-#     s[2] = m[:, 2]
+time_node = Node(1)
 
-record(scene, "output.mp4", range(1, stop=1000), framerate=20) do i
+scatter!(axes[1], lift(t -> f(t, dot2), time_node), markersize=20px, color=RGBf0(255, 255, 255))
+limits!(axes[1], BBox(0, 1, 0, 1))
+scatter!(axes[2], lift(t -> f(t, dot2), time_node), markersize=20px, color=RGBf0(255, 255, 255))
+limits!(axes[2], BBox(0, 1, 0, 1))
+display(scene)
+
+for i in range(1, stop=num_updates)
     time_node[] = i
-end
+    sleep(1/60)
+end    
 
+""" Adding a recording step significantly slows down onscreen animation, but movie is fine """
+# record(scene, "output.mp4", range(1, stop=num_updates), framerate=60, compression=0) do i
+#     time_node[] = i
+# end
 
+GLMakie.destroy!(GLMakie.global_gl_screen())
 
 
