@@ -1,0 +1,147 @@
+using Images
+using Makie
+using AbstractPlotting
+using AbstractPlotting.MakieLayout
+using GLMakie
+using ImageFiltering
+using Random
+using Statistics
+using ShiftedArrays
+using PyCall
+using LinearAlgebra
+
+brian2 = pyimport("brian2")
+tiffstack = load("/Users/nightcrawler2/Desktop/2P_analysis/Fish1_visstim_340_zoom2_single_dot_slow_0.tif");
+ts_gray = Gray.(tiffstack);
+im_res = size(ts_gray[:,:,1])[1]
+kernel_width = 100
+im_center = im_res ÷ 2
+kernel_boundaries = im_center - kernel_width ÷ 2 : im_center + kernel_width ÷ 2
+
+# Note 2P values are a direct count of photons. There is a max
+# cutoff at 10 -- so norm to 255 / 10 for display, but not analysis. 
+
+outer_padding = 0
+scene, layout = layoutscene(outer_padding, resolution = (im_res, im_res),
+                            backgroundcolor=RGBf0(0,0,0))
+
+
+
+"""Creates an average image of the entire stack"""
+
+function project_stack(stack::Array{Gray{Normed{UInt8, 8}}, 3})
+    ms_stack_sum = sum(stack, dims=3) .- mean(sum(stack, dims=3))
+    max_stack, min_stack = findmax(ms_stack_sum)[1], findmin(ms_stack_sum)[1]
+    normed_stack = (ms_stack_sum .- min_stack) ./ (max_stack - min_stack)
+    convert_to_nof8 = convert(Array{Gray{Normed{UInt8, 8}}, 2}, normed_stack[:,:,1])
+    image!(scene, convert_to_nof8)
+    display(scene)
+    return convert_to_nof8
+end
+
+"""Finds the maximum 2D correlation position of the kernel (summed stack) run over the image of interest"""
+
+function crosscorr_images(img::Array{Gray{Normed{UInt8,8}},2}, template::Array{Gray{Float64}, 3})
+    # note there is a call to the GPU you can make here. would speed up significantly off the laptop
+    z = imfilter(img .- mean(img), centered(template[:,:,1] .- mean(template[:,:,1])), Inner(), Algorithm.FIR())
+    max_inds = findmax(z)
+    return max_inds
+end    
+
+
+
+"""Recursively aligns each image in the stack using cross correlation"""
+
+function motion_correct_xy(indices,
+                           stack::Array{Gray{Normed{UInt8,8}},3})
+    if isempty(indices)
+        return stack
+    end
+    id_to_align = rand(indices)
+    image_to_align = stack[:, :, id_to_align]
+    max_corr_coords = crosscorr_images(image_to_align,
+                                       sum(stack[kernel_boundaries, kernel_boundaries, 1:end .!=id_to_align], dims=3))
+    shift_coords = convert(Tuple, max_corr_coords[2] - CartesianIndex(im_res÷2, im_res÷2))
+    aligned_image = ShiftedArray(image_to_align, shift_coords, default=Gray{N0f8}(0.0))
+    motion_correct_xy(filter(x -> x!=id_to_align, indices), 
+                      cat(stack[:, :, 1:id_to_align-1],
+                          aligned_image,
+                          stack[:, :, id_to_align+1:end], dims=3))
+end
+
+"""Retrieves all pixel coordinates"""
+
+get_pixels(stack, brightness_thresh) = [[x, y] for x in range(1, stop=size(stack)[1]),
+                                        y in range(1, stop=size(stack)[2]) if sum(stack[x, y, :]) > brightness_thresh]
+
+abstract type RoiNode end
+
+
+
+struct Roi_InternalNode <: RoiNode
+    pixel::Tuple
+    avg_activity::Array{Float64}
+    left::Node
+    right::Node
+    up::Node
+    down::Node
+    ul::Node
+    ur::Node
+    ll::Node
+    lr::Node
+end
+
+struct Roi_LeafNode <: RoiNode
+    pixel::Array{Int64, 1}
+    activity::Array{Float64}
+end
+
+function roi_activity(roi_tree::Array{Any, 1})
+    
+
+function generate_roi_tree(pixels::Array{Int64, 1}, 
+                           stack::Array{Gray{Normed{UInt8,8}},3})
+    pix = rand(pixels)
+    neighbors = filter(x -> x!= pix && norm(x-pix) < 2)
+    if isempty(neighbors)
+        return Roi_LeafNode(pix, stack[pix[1], pix[2], :])
+    else
+        
+
+function roi_constructor(pixels::Array{Tuple{Int64, Int64}, 2}, 
+                         stack::Array{Gray{Normed{UInt8,8}},3}
+                         roi_trees::Array{Any, 1})
+    if isempty(pixels)
+        return roi_trees
+    
+
+
+        roi_constructor(brightness_threshold,
+                        filter(x -> x!= pix, pixels)
+                        stack)
+    end
+    
+# Wrap roi_constructor in a funcction that makes roi trees and stores them. 
+
+aligned_stack = motion_correct_xy(range(1, stop=size(ts_gray)[3]),
+                                  ts_gray);
+
+
+
+
+
+    
+
+
+
+
+
+#= XY ALIGN STACK first. Take each image in the stack and align it to the 
+sum of the stack without that image. You do this by filter2D of the stack sum with 
+the image itself. This yields a cross correlation matrix where the image is a moving
+window over the stack. If it's properly aligned, the position where the filter 
+best matches the image will be at the center (i.e. the middle position of center iteration over 
+the image starting in the top left corner and ending at the bottom right). The shift
+for a particular image is the max of the cross correlation matrix minus the center. 
+Want to do the alignment randomly and replace the sum's extracted image-of-interest as you go. =#
+

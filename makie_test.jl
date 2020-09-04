@@ -28,9 +28,6 @@ nrows = 1
 axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:nrows, j in 1:ncols]
 layout[1:nrows, 1:ncols] = axes
 
-# and place them into the layout
-
-
 time_node = Node(1)
 
 scatter!(axes[1], lift(t -> f(t, dot2), time_node), markersize=20px, color=RGBf0(255, 255, 255))
