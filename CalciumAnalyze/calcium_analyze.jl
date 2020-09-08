@@ -76,19 +76,17 @@ get_pixels(stack, brightness_thresh) = [[x, y] for x in range(1, stop=size(stack
 
 abstract type RoiNode end
 
-
-
 struct Roi_InternalNode <: RoiNode
     pixel::Tuple
-    avg_activity::Array{Float64}
-    left::Node
-    right::Node
-    up::Node
-    down::Node
-    ul::Node
-    ur::Node
-    ll::Node
-    lr::Node
+    activity::Array{Float64}
+    n1::RoiNode
+    n2::RoiNode
+    n3::RoiNode
+    n4::RoiNode
+    n5::RoiNode
+    n6::RoiNode
+    n7::RoiNode
+    n8::RoiNode
 end
 
 struct Roi_LeafNode <: RoiNode
@@ -96,35 +94,54 @@ struct Roi_LeafNode <: RoiNode
     activity::Array{Float64}
 end
 
-function roi_activity(roi_tree::Array{Any, 1})
-    
+                       
 
-function generate_roi_tree(pixels::Array{Int64, 1}, 
+function roi_activity(roi_tree::Array{Any, 1})
+end
+
+
+function generate_roi_tree(pix::Array{Int64, 1},
+                           pixels::Array{Array{Int64, 1}},
                            stack::Array{Gray{Normed{UInt8,8}},3})
-    pix = rand(pixels)
-    neighbors = filter(x -> x!= pix && norm(x-pix) < 2)
+
+    neighbors = filter(c -> c != pix && abs(c[1] - pix[1]) <= 1 && abs(c[2]-pix[2]) <= 1,
+                       pixels)
     if isempty(neighbors)
         return Roi_LeafNode(pix, stack[pix[1], pix[2], :])
-    else
+    end
+
+    
+
+    # make Internal have a list. Reduce over the list, returning the pixel list.
+    # make the reduce function operate on Roi_Internal Node.
+
+    
+
+    
+end
+
+    
+function generate_roi_tree(pixels::Array{Array{Int64, 1}}, 
+                           stack::Array{Gray{Normed{UInt8,8}},3})
+    pix = rand(pixels)
+    generate_roi_tree(pix, pixels, stack)
+end    
+                           
+                           
         
 
 function roi_constructor(pixels::Array{Tuple{Int64, Int64}, 2}, 
-                         stack::Array{Gray{Normed{UInt8,8}},3}
+                         stack::Array{Gray{Normed{UInt8,8}},3},
                          roi_trees::Array{Any, 1})
     if isempty(pixels)
         return roi_trees
-    
-
-
-        roi_constructor(brightness_threshold,
-                        filter(x -> x!= pix, pixels)
-                        stack)
+    end
     end
     
 # Wrap roi_constructor in a funcction that makes roi trees and stores them. 
 
-aligned_stack = motion_correct_xy(range(1, stop=size(ts_gray)[3]),
-                                  ts_gray);
+#aligned_stack = motion_correct_xy(range(1, stop=size(ts_gray)[3]),
+ #                                 ts_gray);
 
 
 
