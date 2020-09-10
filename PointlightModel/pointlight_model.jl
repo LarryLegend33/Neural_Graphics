@@ -49,7 +49,7 @@ end
         add_edge!(motion_tree, parent_dot, nv(motion_tree))
         return motion_tree
     else
-        add_node(motion_tree, filter(λ -> λ != parent_dot, candidate_parents))
+        {*} ~ add_node(motion_tree, filter(λ -> λ != parent_dot, candidate_parents))
     end
 end    
 
