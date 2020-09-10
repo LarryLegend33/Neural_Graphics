@@ -32,24 +32,24 @@ end
 
 
 @gen function add_node(motion_tree::MetaDiGraph{Int64, Float64}, 
-                       candidate_nodes::Array{Int64, 1})
-    if isempty(candidate_nodes)
+                       candidate_parents::Array{Int64, 1})
+    if isempty(candidate_parents)
         add_vertex!(motion_tree)
         return motion_tree
     end
-    dot = first(candidate_nodes)
-    if isempty(inneighbors(motion_tree, dot))
-        parent_to_node = { :parent } ~ bernoulli(.5)
+    parent_dot = first(candidate_parents)
+    if isempty(inneighbors(motion_tree, parent_dot))
+        parent_to_node = {(:parent, parent_dot, nv(motion_tree) + 1)} ~ bernoulli(.5)
     else
-        parent_to_node = { :parent } ~ bernoulli(.2)
+        parent_to_node = {(:parent, parent_dot, nv(motion_tree) + 1)} ~ bernoulli(.2)
     end
 
     if parent_to_node
         add_vertex!(motion_tree)
-        add_edge!(motion_tree, dot, nv(motion_tree))
+        add_edge!(motion_tree, parent_dot, nv(motion_tree))
         return motion_tree
     else
-        add_node(motion_tree, filter(λ -> λ != dot, candidate_nodes))
+        add_node(motion_tree, filter(λ -> λ != parent_dot, candidate_parents))
     end
 end    
 
@@ -72,11 +72,11 @@ end
         end
         cov_func_x = {(:cov_tree_x, dot)} ~ covariance_prior()
         cov_func_y = {(:cov_tree_y, dot)} ~ covariance_prior()
-        noise = { :noise } ~  gamma_bounded_below(1, 1, 0.01)
+        noise = {(:noise, dot)} ~  gamma_bounded_below(1, 1, 0.01)
         covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, noise, ts)
-        x_vel = { :x_vel } ~ mvnormal(zeros(length(ts)), covmat_x)
-        y_vel = { :y_vel } ~ mvnormal(zeros(length(ts)), covmat_y)
+        x_vel = {(:x_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
+        y_vel = {(:y_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
         if !isempty(parent)
             x_vel += parent_velocity_x
             y_vel += parent_velocity_y
@@ -85,7 +85,7 @@ end
         # the kernel-derived covariance matrix.
         set_props!(motion_tree, dot,
                    Dict(:Position=>[xinit, yinit], :Velocity_X=>x_vel, :Velocity_Y=>y_vel))
-        assign_positions_and_velocities(motion_tree, dot+1, ts)
+        {*} ~ assign_positions_and_velocities(motion_tree, dot+1, ts)
     end
 end    
 # next think about exactly what format you want these in           
@@ -96,10 +96,10 @@ end
                             motion_tree::MetaGraph{Int64, Float64},
                             num_dots::Int64)
     if nv(motion_tree) < num_dots
-        motion_tree_updated = add_node(motion_tree, shuffle(vertices(motion_tree)))
-        generate_dotmotion(ts, motion_tree_updated, num_dots)
+        motion_tree_updated = {*} ~ add_node(motion_tree, shuffle(vertices(motion_tree)))
+        {*} ~ generate_dotmotion(ts, motion_tree_updated, num_dots)
     else
-        motion_tree_assigned = assign_positions_and_velocities(motion_tree, 1, ts)
+        motion_tree_assigned = {*} ~ assign_positions_and_velocities(motion_tree, 1, ts)
         return motion_tree_assigned
     end
 end    
@@ -139,7 +139,7 @@ function render_simulation(num_dots::Int64)
                                 resolution = (2*res, res), 
                                 backgroundcolor=RGBf0(0, 0, 0))
     ts = range(1, stop=time_duration, length=time_duration*framerate)
-    trace = simulate(generate_dotmotion, (convert(Array{Float64}, ts), MetaDiGraph(), num_dots))
+    trace = Gen.simulate(generate_dotmotion, (convert(Array{Float64}, ts), MetaDiGraph(), num_dots))
     motion_tree = get_retval(trace)
     dotmotion = tree_to_coords(motion_tree)
     axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:n_rows, j in 1:n_cols]
@@ -155,7 +155,7 @@ function render_simulation(num_dots::Int64)
         time_node[] = i
         sleep(1/framerate)
     end
-    return motion_tree
+    return trace
 end    
 
     
@@ -368,7 +368,7 @@ end
     covariance_fn = { :tree } ~ covariance_prior()
     
     # Sample a global noise level
-    noise ~ gamma_bounded_below(1, 1, 0.01)
+    noise ~ gamma_bounded_below(.01, .01, 0.01)
     
     # Compute the covariance between every pair (xs[i], xs[j])
     cov_matrix = compute_cov_matrix_vectorized(covariance_fn, noise, ts)
