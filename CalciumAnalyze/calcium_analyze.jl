@@ -7,10 +7,13 @@ using ImageFiltering
 using Random
 using Statistics
 using ShiftedArrays
-using PyCall
+#using PyCall
 using LinearAlgebra
+using LightGraphs
+using MetaGraphs
 
-brian2 = pyimport("brian2")
+
+#brian2 = pyimport("brian2")
 tiffstack = load("/Users/nightcrawler2/Desktop/2P_analysis/Fish1_visstim_340_zoom2_single_dot_slow_0.tif");
 ts_gray = Gray.(tiffstack);
 im_res = size(ts_gray[:,:,1])[1]
@@ -74,71 +77,94 @@ end
 get_pixels(stack, brightness_thresh) = [[x, y] for x in range(1, stop=size(stack)[1]),
                                         y in range(1, stop=size(stack)[2]) if sum(stack[x, y, :]) > brightness_thresh]
 
-abstract type RoiNode end
+# are going to add seed to a function. has to check the neighbors
 
-struct Roi_InternalNode <: RoiNode
-    pixel::Tuple
-    activity::Array{Float64}
-    n1::RoiNode
-    n2::RoiNode
-    n3::RoiNode
-    n4::RoiNode
-    n5::RoiNode
-    n6::RoiNode
-    n7::RoiNode
-    n8::RoiNode
-end
+# use size(find_longest_path(g).longest_path)[1]
 
-struct Roi_LeafNode <: RoiNode
-    pixel::Array{Int64, 1}
-    activity::Array{Float64}
-end
-
-                       
-
-function roi_activity(roi_tree::Array{Any, 1})
+function roi_activity(roi_tree::MetaDiGraph{Int64, Float64})
+    #this function will pull average activity out of a metagraph
+    a = 5
 end
 
 
-function generate_roi_tree(pix::Array{Int64, 1},
-                           pixels::Array{Array{Int64, 1}},
+function add_edges_to_seed(seed::Array{Int64, 1},
+                           neighbors::Array{Array{Int64, 1}},
+                           roi_tree::MetaDiGraph{Int64, Float64},
                            stack::Array{Gray{Normed{UInt8,8}},3})
-
-    neighbors = filter(c -> c != pix && abs(c[1] - pix[1]) <= 1 && abs(c[2]-pix[2]) <= 1,
-                       pixels)
     if isempty(neighbors)
-        return Roi_LeafNode(pix, stack[pix[1], pix[2], :])
+        return roi_tree
+    else
+        new_vertex_coord = neighbors[1]
+        add_vertex!(roi_tree)
+        new_vertex_id = nv(roi_tree)
+        add_edge!(roi_tree,
+                  filter(i -> get_prop(roi_tree, i)[:coord] == seed,
+                         vertices(roi_tree))[1],
+                  new_vertex_id)
+        props(new_vertex_id, Dict(:coord => new_vertex_coord,
+                                  :timeseries => stack[new_vertex_coord[1],
+                                                       new_vertex_coord[2],:]))
+        add_edges_to_seed(seed, neighbors[2:end], roi_tree, stack)
     end
+end    
 
-    
 
-    # make Internal have a list. Reduce over the list, returning the pixel list.
-    # make the reduce function operate on Roi_Internal Node.
+        
+#Initialize this with empty list, brightpixels, empty graph, stack
+# a graph can also end if ALL neighbors are empty 
 
-    
-
-    
-end
-
-    
-function generate_roi_tree(pixels::Array{Array{Int64, 1}}, 
+function generate_roi_tree(graphlist::Array{MetaDiGraph{Int64, Float64}, 1}, 
+                           bright_pixels::Array{Array{Int64, 1}},
+                           roi_tree::MetaDiGraph{Int64, Float64}, 
                            stack::Array{Gray{Normed{UInt8,8}},3})
-    pix = rand(pixels)
-    generate_roi_tree(pix, pixels, stack)
+    if isempty(bright_pixels)
+        return graphlist
+    else
+        seed = rand(bright_pixels)
+        add_vertex!(roi_tree)
+        props(roi_tree, nv(roi_tree), Dict(:coord => seed, 
+                                           :timeseries => stack[seed[1],
+                                                               seed[2],:]))
+        generate_roi_tree([seed], graphlist,
+                          filter(x -> x!=seed, bright_pixels), roi_tree, stack)
+    end
+end    
+
+        
+function generate_roi_tree(seeds::Array{Array{Int64, 1}},
+                           graphlist::Array{MetaDiGraph{Int64, Float64}, 1}, 
+                           bright_pixels::Array{Array{Int64, 1}},
+                           roi_tree::MetaDiGraph{Int64, Float64}, 
+                           stack::Array{Gray{Normed{UInt8,8}},3})
+    seed = seeds[1]
+    corr_thresh = .8
+    neighbors = filter(
+        c -> !(c in seeds) && abs(
+            c[1] - seed[1]) <= 1 && abs(
+                c[2]-seed[2]) <= 1 && cor(stack[seed[1], seed[2], :],
+                                          stack[c[1], c[2], :]) > corr_thresh,
+        bright_pixels)
+    
+    if isempty(neighbors)
+        if size(seeds)[1] == 1 || nv(roi_tree) > 50
+            push!(graphlist, roi_tree)
+            generate_roi_tree(graphlist, bright_pixels, MetaDiGraph(), stack)
+        else
+            generate_roi_tree(seeds[2:end], graphlist,
+                              filter(x -> x!=seed, bright_pixels),
+                              roi_tree, stack)
+        end
+    else 
+        roi_tree_update = add_edges_to_seed(seed, neighbors, roi_tree, stack)
+        generate_roi_tree(neighbors, graphlist,
+                          filter(x -> x!=seed && !(x in neighbors), bright_pixels),
+                          roi_tree, stack)
+    end
 end    
                            
                            
         
 
-function roi_constructor(pixels::Array{Tuple{Int64, Int64}, 2}, 
-                         stack::Array{Gray{Normed{UInt8,8}},3},
-                         roi_trees::Array{Any, 1})
-    if isempty(pixels)
-        return roi_trees
-    end
-    end
-    
-# Wrap roi_constructor in a funcction that makes roi trees and stores them. 
 
 #aligned_stack = motion_correct_xy(range(1, stop=size(ts_gray)[3]),
  #                                 ts_gray);

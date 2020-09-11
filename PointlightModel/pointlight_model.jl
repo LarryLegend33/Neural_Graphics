@@ -1,12 +1,12 @@
 using Makie
-using AbstractPlotting.MakieLayout
+using AbstractPlotting
+using MakieLayout
 using Gen
 using LinearAlgebra
 using LightGraphs
 using MetaGraphs
 using Random
-
-
+#using TikzGraphs
 
 #- One main question is whether we are going to try to reconstruct the identity after the fact. I.e. Are the xs and ys completely known in time and space? We can do simultaneous inference on x and y values wrt t. Can also do sequential monte carlo. 
 
@@ -14,7 +14,11 @@ using Random
 
 #-PASS THIS FUNCTION A SET OF TIMES AND AN EMPTY METADIGRAPH TO START - MetaDiGraph()
 #- Involution will be you remove the edge and subtract the velocity, sample a uniform XY.
-#- New edge will be you add the velocity and sample from a gaussian. 
+#- New edge will be you add the velocity and sample from a gaussian.
+
+# RENDERING A REALLY NICE GRAPH:
+
+
 
 @dist function beta_peak(μ)
     σ = √(μ*(1-μ)) / 2
@@ -22,14 +26,6 @@ using Random
     β = α*((1/μ) - 1)
     beta(α, β)
 end    
-
-# @dist function truncated_normal(μ, σ, lb, ub)
-#     sample = normal(μ, σ)
-#     if sample < lb || sample > ub
-#         sample = truncated_normal(mu, sig, lb, ub)
-#     end
-# end
-
 
 @gen function add_node(motion_tree::MetaDiGraph{Int64, Float64}, 
                        candidate_parents::Array{Int64, 1})
@@ -88,7 +84,6 @@ end
         {*} ~ assign_positions_and_velocities(motion_tree, dot+1, ts)
     end
 end    
-# next think about exactly what format you want these in           
             
         
 
@@ -126,6 +121,14 @@ function tree_to_coords(tree::MetaDiGraph{Int64, Float64})
     return dotmotion_tuples
 end
 
+function visualize_graph(motion_tree::MetaDiGraph{Int64, Float64})
+    g = TikzGraphs.plot(motion_tree.graph, options="scale=10");
+    TikzPictures.save(PDF("test"), g);
+    graphimage = load("test.pdf");
+    rot_image = imrotate(graphimage, π/2);
+    return rot_image.parent
+end    
+
 
 function render_simulation(num_dots::Int64)
     res = 1000
@@ -134,15 +137,18 @@ function render_simulation(num_dots::Int64)
     outer_padding = 0
     num_updates = 180
     n_rows = 1
-    n_cols = 2
+    n_cols = 3
     scene, layout = layoutscene(outer_padding,
-                                resolution = (2*res, res), 
+                                resolution = (3*res, res), 
                                 backgroundcolor=RGBf0(0, 0, 0))
     ts = range(1, stop=time_duration, length=time_duration*framerate)
     trace = Gen.simulate(generate_dotmotion, (convert(Array{Float64}, ts), MetaDiGraph(), num_dots))
     motion_tree = get_retval(trace)
+    graph_image = visualize_graph(motion_tree)
     dotmotion = tree_to_coords(motion_tree)
-    axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:n_rows, j in 1:n_cols]
+    time_node = Node(1);
+    f(t, coords) = coords[t]
+    axes = [LAxis(scene, backgroundcolor=RGBf0(50, 50, 50)) for i in 1:n_rows, j in 1:n_cols]
     layout[1:n_rows, 1:n_cols] = axes
     time_node = Node(1);
     f(t, coords) = coords[t]
@@ -151,6 +157,8 @@ function render_simulation(num_dots::Int64)
     scatter!(axes[2], lift(t -> f(t, dotmotion), time_node), markersize=20px, color=RGBf0(255, 255, 255))
     limits!(axes[2], BBox(0, 1, 0, 1))
     display(scene)
+    image!(axes[3], graph_image) 
+    display(scene)
     for i in 1:num_updates
         time_node[] = i
         sleep(1/framerate)
@@ -158,9 +166,16 @@ function render_simulation(num_dots::Int64)
     return trace
 end    
 
-    
+function plot_motiontree(g::Array{Int64, 2})
 
-    
+    graphplot(g,
+          x=[0,-1/tan(π/3),1/tan(π/3)], y=[1,0,0],
+          nodeshape=:circle, nodesize=1.1,
+          axis_buffer=0.6,
+          curves=false,
+          color=:black,
+          linewidth=10)
+end    
 # Currently in makie_test. Takes a tree and renders the tree and the stimulus.
 
 
@@ -368,7 +383,8 @@ end
     covariance_fn = { :tree } ~ covariance_prior()
     
     # Sample a global noise level
-    noise ~ gamma_bounded_below(.01, .01, 0.01)
+    #    noise ~ gamma_bounded_below(.01, .01, 0.01)
+    noise = 0
     
     # Compute the covariance between every pair (xs[i], xs[j])
     cov_matrix = compute_cov_matrix_vectorized(covariance_fn, noise, ts)
