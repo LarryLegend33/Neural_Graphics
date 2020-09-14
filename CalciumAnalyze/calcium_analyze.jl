@@ -74,8 +74,8 @@ end
 
 """Retrieves all pixel coordinates"""
 
-get_pixels(stack, brightness_thresh) = [[x, y] for x in range(1, stop=size(stack)[1]),
-                                        y in range(1, stop=size(stack)[2]) if sum(stack[x, y, :]) > brightness_thresh]
+get_bright_pixels(stack, brightness_thresh) = [[x, y] for x in range(1, stop=size(stack)[1]),
+                                               y in range(1, stop=size(stack)[2]) if sum(stack[x, y, :]) > brightness_thresh]
 
 # are going to add seed to a function. has to check the neighbors
 
@@ -83,7 +83,7 @@ get_pixels(stack, brightness_thresh) = [[x, y] for x in range(1, stop=size(stack
 
 function roi_activity(roi_tree::MetaDiGraph{Int64, Float64})
     #this function will pull average activity out of a metagraph
-    a = 5
+    a=5
 end
 
 
@@ -97,13 +97,13 @@ function add_edges_to_seed(seed::Array{Int64, 1},
         new_vertex_coord = neighbors[1]
         add_vertex!(roi_tree)
         new_vertex_id = nv(roi_tree)
+        set_props!(roi_tree, new_vertex_id, Dict(:coord => new_vertex_coord,
+                                                 :timeseries => stack[new_vertex_coord[1],
+                                                                      new_vertex_coord[2],:]))
         add_edge!(roi_tree,
-                  filter(i -> get_prop(roi_tree, i)[:coord] == seed,
+                  filter(i -> get_prop(roi_tree, i, :coord) == seed,
                          vertices(roi_tree))[1],
                   new_vertex_id)
-        props(new_vertex_id, Dict(:coord => new_vertex_coord,
-                                  :timeseries => stack[new_vertex_coord[1],
-                                                       new_vertex_coord[2],:]))
         add_edges_to_seed(seed, neighbors[2:end], roi_tree, stack)
     end
 end    
@@ -113,7 +113,7 @@ end
 #Initialize this with empty list, brightpixels, empty graph, stack
 # a graph can also end if ALL neighbors are empty 
 
-function generate_roi_tree(graphlist::Array{MetaDiGraph{Int64, Float64}, 1}, 
+function generate_roi_tree(graphlist::Array{Any, 1}, 
                            bright_pixels::Array{Array{Int64, 1}},
                            roi_tree::MetaDiGraph{Int64, Float64}, 
                            stack::Array{Gray{Normed{UInt8,8}},3})
@@ -122,54 +122,71 @@ function generate_roi_tree(graphlist::Array{MetaDiGraph{Int64, Float64}, 1},
     else
         seed = rand(bright_pixels)
         add_vertex!(roi_tree)
-        props(roi_tree, nv(roi_tree), Dict(:coord => seed, 
-                                           :timeseries => stack[seed[1],
-                                                               seed[2],:]))
+        set_props!(roi_tree, nv(roi_tree), Dict(:coord => seed, 
+                                                :timeseries => stack[seed[1],
+                                                                     seed[2],:]))
         generate_roi_tree([seed], graphlist,
                           filter(x -> x!=seed, bright_pixels), roi_tree, stack)
     end
 end    
 
-        
+# problem that there's no return here? should there be a catch for no bright pixels? i think.         
 function generate_roi_tree(seeds::Array{Array{Int64, 1}},
-                           graphlist::Array{MetaDiGraph{Int64, Float64}, 1}, 
+                           graphlist::Array{Any, 1}, 
                            bright_pixels::Array{Array{Int64, 1}},
                            roi_tree::MetaDiGraph{Int64, Float64}, 
                            stack::Array{Gray{Normed{UInt8,8}},3})
+    println(size(bright_pixels))
     seed = seeds[1]
-    corr_thresh = .8
+    corr_thresh = .6
     neighbors = filter(
         c -> !(c in seeds) && abs(
             c[1] - seed[1]) <= 1 && abs(
                 c[2]-seed[2]) <= 1 && cor(stack[seed[1], seed[2], :],
                                           stack[c[1], c[2], :]) > corr_thresh,
         bright_pixels)
-    
+
     if isempty(neighbors)
-        if size(seeds)[1] == 1 || nv(roi_tree) > 50
+        # this scenario hits if a random seed has no partners, or if the neighbor pass is over. 
+        if size(seeds)[1] == 1
             push!(graphlist, roi_tree)
-            generate_roi_tree(graphlist, bright_pixels, MetaDiGraph(), stack)
+            generate_roi_tree(graphlist, filter(x -> x!=seed, bright_pixels),
+                              MetaDiGraph(), stack)
         else
             generate_roi_tree(seeds[2:end], graphlist,
                               filter(x -> x!=seed, bright_pixels),
                               roi_tree, stack)
         end
-    else 
+    else
+        println("neighbors detected")
         roi_tree_update = add_edges_to_seed(seed, neighbors, roi_tree, stack)
+        if nv(roi_tree_update) > 30
+            push!(graphlist, roi_tree)
+            generate_roi_tree(graphlist, filter(x->x!=seed, bright_pixels),
+                              MetaDiGraph(), stack)
+        end
         generate_roi_tree(neighbors, graphlist,
                           filter(x -> x!=seed && !(x in neighbors), bright_pixels),
                           roi_tree, stack)
     end
 end    
                            
-                           
+function make_graph_list(bright_pixels::Array{Array{Int64, 1}},
+                         roi_tree::MetaDiGraph{Int64, Float64}, 
+                         stack::Array{Gray{Normed{UInt8,8}},3})
+
+    while !isempty(bright_pixels)
+        
         
 
 
 #aligned_stack = motion_correct_xy(range(1, stop=size(ts_gray)[3]),
- #                                 ts_gray);
+#                                  ts_gray);
 
+graph_list = generate_roi_tree([], get_bright_pixels(aligned_stack, 4), MetaDiGraph(), aligned_stack)
 
+# there's no tail call optimization in julia! so be careful how many max times you want the function to be called.
+# slows down significantly after ~1000 calls. instead, return a graph and a pixel list after each seed. 
 
 
 
