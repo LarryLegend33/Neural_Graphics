@@ -113,26 +113,21 @@ end
 #Initialize this with empty list, brightpixels, empty graph, stack
 # a graph can also end if ALL neighbors are empty 
 
-function generate_roi_tree(graphlist::Array{Any, 1}, 
-                           bright_pixels::Array{Array{Int64, 1}},
+function generate_roi_tree(bright_pixels::Array{Array{Int64, 1}},
                            roi_tree::MetaDiGraph{Int64, Float64}, 
                            stack::Array{Gray{Normed{UInt8,8}},3})
-    if isempty(bright_pixels)
-        return graphlist
-    else
-        seed = rand(bright_pixels)
-        add_vertex!(roi_tree)
-        set_props!(roi_tree, nv(roi_tree), Dict(:coord => seed, 
-                                                :timeseries => stack[seed[1],
-                                                                     seed[2],:]))
-        generate_roi_tree([seed], graphlist,
-                          filter(x -> x!=seed, bright_pixels), roi_tree, stack)
-    end
+    seed = rand(bright_pixels)
+    add_vertex!(roi_tree)
+    set_props!(roi_tree, nv(roi_tree), Dict(:coord => seed, 
+                                            :timeseries => stack[seed[1],
+                                                                 seed[2],:]))
+    generate_roi_tree([seed],
+                      filter(x -> x!=seed, bright_pixels),
+                      roi_tree, stack)
 end    
 
 # problem that there's no return here? should there be a catch for no bright pixels? i think.         
 function generate_roi_tree(seeds::Array{Array{Int64, 1}},
-                           graphlist::Array{Any, 1}, 
                            bright_pixels::Array{Array{Int64, 1}},
                            roi_tree::MetaDiGraph{Int64, Float64}, 
                            stack::Array{Gray{Normed{UInt8,8}},3})
@@ -149,11 +144,9 @@ function generate_roi_tree(seeds::Array{Array{Int64, 1}},
     if isempty(neighbors)
         # this scenario hits if a random seed has no partners, or if the neighbor pass is over. 
         if size(seeds)[1] == 1
-            push!(graphlist, roi_tree)
-            generate_roi_tree(graphlist, filter(x -> x!=seed, bright_pixels),
-                              MetaDiGraph(), stack)
+            return filter(x -> x!=seed, bright_pixels), roi_tree
         else
-            generate_roi_tree(seeds[2:end], graphlist,
+            generate_roi_tree(seeds[2:end],
                               filter(x -> x!=seed, bright_pixels),
                               roi_tree, stack)
         end
@@ -161,29 +154,30 @@ function generate_roi_tree(seeds::Array{Array{Int64, 1}},
         println("neighbors detected")
         roi_tree_update = add_edges_to_seed(seed, neighbors, roi_tree, stack)
         if nv(roi_tree_update) > 30
-            push!(graphlist, roi_tree)
-            generate_roi_tree(graphlist, filter(x->x!=seed, bright_pixels),
-                              MetaDiGraph(), stack)
+            return filter(x -> x!=seed, bright_pixels), roi_tree_update
         end
-        generate_roi_tree(neighbors, graphlist,
+        generate_roi_tree(neighbors,
                           filter(x -> x!=seed && !(x in neighbors), bright_pixels),
                           roi_tree, stack)
     end
 end    
                            
 function make_graph_list(bright_pixels::Array{Array{Int64, 1}},
-                         roi_tree::MetaDiGraph{Int64, Float64}, 
                          stack::Array{Gray{Normed{UInt8,8}},3})
-
+    graph_list = []
     while !isempty(bright_pixels)
-        
+        bright_pixels, roi_tree = generate_roi_tree(bright_pixels, MetaDiGraph(), stack)
+        push!(graph_list, roi_tree)
+    end
+    return graph_list
+end        
         
 
 
 #aligned_stack = motion_correct_xy(range(1, stop=size(ts_gray)[3]),
 #                                  ts_gray);
 
-graph_list = generate_roi_tree([], get_bright_pixels(aligned_stack, 4), MetaDiGraph(), aligned_stack)
+graph_list = make_graph_list(get_bright_pixels(aligned_stack, 4), aligned_stack);
 
 # there's no tail call optimization in julia! so be careful how many max times you want the function to be called.
 # slows down significantly after ~1000 calls. instead, return a graph and a pixel list after each seed. 
