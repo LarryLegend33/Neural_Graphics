@@ -1,3 +1,6 @@
+using ComputationalResources
+#using Libdl
+#using ArrayFire
 using Images
 using Makie
 using AbstractPlotting
@@ -7,26 +10,23 @@ using ImageFiltering
 using Random
 using Statistics
 using ShiftedArrays
-#using PyCall
+using PyCall
 using LinearAlgebra
 using LightGraphs
 using MetaGraphs
-
 
 #brian2 = pyimport("brian2")
 tiffstack = load("/Users/nightcrawler2/Desktop/2P_analysis/Fish1_visstim_340_zoom2_single_dot_slow_0.tif");
 ts_gray = Gray.(tiffstack);
 im_res = size(ts_gray[:,:,1])[1]
-kernel_width = 100
+kernel_width = 170
 im_center = im_res ÷ 2
 kernel_boundaries = im_center - kernel_width ÷ 2 : im_center + kernel_width ÷ 2
+addresource(ArrayFireLibs)
 
 # Note 2P values are a direct count of photons. There is a max
 # cutoff at 10 -- so norm to 255 / 10 for display, but not analysis. 
 
-outer_padding = 0
-scene, layout = layoutscene(outer_padding, resolution = (im_res, im_res),
-                            backgroundcolor=RGBf0(0,0,0))
 
 
 
@@ -37,8 +37,6 @@ function project_stack(stack::Array{Gray{Normed{UInt8, 8}}, 3})
     max_stack, min_stack = findmax(ms_stack_sum)[1], findmin(ms_stack_sum)[1]
     normed_stack = (ms_stack_sum .- min_stack) ./ (max_stack - min_stack)
     convert_to_nof8 = convert(Array{Gray{Normed{UInt8, 8}}, 2}, normed_stack[:,:,1])
-    image!(scene, convert_to_nof8)
-    display(scene)
     return convert_to_nof8
 end
 
@@ -46,18 +44,22 @@ end
 
 function crosscorr_images(img::Array{Gray{Normed{UInt8,8}},2}, template::Array{Gray{Float64}, 3})
     # note there is a call to the GPU you can make here. would speed up significantly off the laptop
+#    z = imfilter(ArrayFireLibs(), img .- mean(img), centered(template[:,:,1] .- mean(template[:,:,1])), Inner(), Algorithm.FIR())
     z = imfilter(img .- mean(img), centered(template[:,:,1] .- mean(template[:,:,1])), Inner(), Algorithm.FIR())
     max_inds = findmax(z)
     return max_inds
 end    
 
 
-
 """Recursively aligns each image in the stack using cross correlation"""
+
+
+
 
 function motion_correct_xy(indices,
                            stack::Array{Gray{Normed{UInt8,8}},3})
     if isempty(indices)
+        save("motion_corrected.tif", stack)
         return stack
     end
     id_to_align = rand(indices)
@@ -77,14 +79,89 @@ end
 get_bright_pixels(stack, brightness_thresh) = [[x, y] for x in range(1, stop=size(stack)[1]),
                                                y in range(1, stop=size(stack)[2]) if sum(stack[x, y, :]) > brightness_thresh]
 
+
 # are going to add seed to a function. has to check the neighbors
 
 # use size(find_longest_path(g).longest_path)[1]
 
-function roi_activity(roi_tree::MetaDiGraph{Int64, Float64})
+function roi_activity(roi_tree::MetaDiGraph{Int64, Float64},
+                      stack::Array{Gray{Normed{UInt8,8}},3})
     #this function will pull average activity out of a metagraph
-    a=5
+    scene, layout = layoutscene(backgroundcolor=RGBf0(255,255,255), resolution=(2000,1000));
+    ncols = 2
+    nrows = 1
+    # create a grid of LAxis objects
+    axes = [LAxis(scene, backgroundcolor=RGBf0(255, 255, 255)) for i in 1:nrows, j in 1:ncols]
+    layout[1:nrows, 1:ncols] = axes
+    node_activities = [[n.val for n in get_prop(roi_tree, v, :activity)] for v in vertices(roi_tree)]
+    [lines!(axes[1], na, color=:gray) for na in node_activities]
+    lines!(axes[1], mean(node_activities), color=RGBf0(220, 0, 0))
+    image!(axes[2], project_stack(stack))
+  
+    display(scene)
+    return node_activities
 end
+
+function roi_activity(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
+                      stack::Array{Gray{Normed{UInt8,8}},3})
+    #this function will pull average activity out of a metagraph
+    scene, layout = layoutscene(backgroundcolor=RGBf0(255,255,255), resolution=(2000,1000));
+    ncols = 2
+    nrows = 1
+    # create a grid of LAxis objects
+    axes = [LAxis(scene, backgroundcolor=RGBf0(255, 255, 255)) for i in 1:nrows, j in 1:ncols]
+    layout[1:nrows, 1:ncols] = axes
+    s1 = slider!(scene, range(1, stop=size(stack)[3]), raw=true, camera=campixel!, start=size(stack)[3])
+    # current_roi = 1
+    # current_roi = lift(scene.events.keyboardbuttons) do but
+    #     ispressed(but, Keyboard.left) && current_roi + 1
+    #     ispressed(but, Keyboard.right) && current_roi - 1
+#    end
+    brainslice = lift(s1[end][:value]) do v
+        stack[:, :, convert(Int64, v)] * (255 / 10)
+    end
+    node_activities = [[n.val for n in get_prop(roi_tree, v, :activity)] for v in vertices(roi_tree)]
+    [lines!(axes[1], na, color=:gray) for na in node_activities]
+    lines!(axes[1], mean(node_activities), color=RGBf0(220, 0, 0))
+    image!(axes[2], brainslice)
+    #  scatter!(axes[2], [Tuple(get_prop(roi_tree, v, :coord)) for v in vertices(roi_tree)], strokecolor=:transparent, color=:red, alpha=0.9)
+    scatter!(axes[2], [Tuple(mean([get_prop(roi_tree, v, :coord) for v in vertices(roi_tree)]))], color=:transparent, strokecolor=:red, markersize=25)
+    display(scene)
+    println("press for next ROI")
+    rl = readline()
+
+end
+
+function roi_activity(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
+                      stack::Array{Gray{Normed{UInt8,8}},3})
+    #this function will pull average activity out of a metagraph
+    scene, layout = layoutscene(backgroundcolor=RGBf0(255,255,255), resolution=(2000,1000));
+    ncols = 2
+    nrows = 1
+    # create a grid of LAxis objects
+    axes = [LAxis(scene, backgroundcolor=RGBf0(255, 255, 255)) for i in 1:nrows, j in 1:ncols]
+    layout[1:nrows, 1:ncols] = axes
+    s1 = slider!(scene, range(1, stop=size(stack)[3]), raw=true, camera=campixel!, start=size(stack)[3])
+    current_roi = 1
+    current_roi = lift(scene.events.keyboardbuttons) do but
+        ispressed(but, Keyboard.left) && current_roi.val + 1
+        ispressed(but, Keyboard.right) && current_roi.val - 1
+        true && current_roi
+    end
+    brainslice = lift(s1[end][:value]) do v
+        stack[:, :, convert(Int64, v)] * (255 / 10)
+    end
+    node_activities = [[n.val for n in get_prop(
+        roi_trees[current_roi.val], v, :activity)] for v in vertices(roi_trees[current_roi.val])]
+    [lines!(axes[1], na, color=:gray) for na in node_activities]
+    lines!(axes[1], mean(node_activities), color=RGBf0(220, 0, 0))
+    image!(axes[2], brainslice)
+    #  scatter!(axes[2], [Tuple(get_prop(roi_tree, v, :coord)) for v in vertices(roi_tree)], strokecolor=:transparent, color=:red, alpha=0.9)
+    scatter!(axes[2], [Tuple(mean([get_prop(roi_trees[current_roi.val], v, :coord) for v in vertices(roi_trees[current_roi.val])]))],
+             color=:transparent, strokecolor=:red, markersize=25)
+    display(scene)
+end
+
 
 
 function add_edges_to_seed(seed::Array{Int64, 1},
@@ -98,8 +175,8 @@ function add_edges_to_seed(seed::Array{Int64, 1},
         add_vertex!(roi_tree)
         new_vertex_id = nv(roi_tree)
         set_props!(roi_tree, new_vertex_id, Dict(:coord => new_vertex_coord,
-                                                 :timeseries => stack[new_vertex_coord[1],
-                                                                      new_vertex_coord[2],:]))
+                                                 :activity => stack[new_vertex_coord[1],
+                                                                    new_vertex_coord[2],:]))
         add_edge!(roi_tree,
                   filter(i -> get_prop(roi_tree, i, :coord) == seed,
                          vertices(roi_tree))[1],
@@ -119,8 +196,8 @@ function generate_roi_tree(bright_pixels::Array{Array{Int64, 1}},
     seed = rand(bright_pixels)
     add_vertex!(roi_tree)
     set_props!(roi_tree, nv(roi_tree), Dict(:coord => seed, 
-                                            :timeseries => stack[seed[1],
-                                                                 seed[2],:]))
+                                            :activity => stack[seed[1],
+                                                               seed[2],:]))
     generate_roi_tree([seed],
                       filter(x -> x!=seed, bright_pixels),
                       roi_tree, stack)
@@ -171,20 +248,17 @@ function make_graph_list(bright_pixels::Array{Array{Int64, 1}},
     end
     return graph_list
 end        
-        
 
 
-#aligned_stack = motion_correct_xy(range(1, stop=size(ts_gray)[3]),
-#                                  ts_gray);
-
-graph_list = make_graph_list(get_bright_pixels(aligned_stack, 4), aligned_stack);
+aligned_stack = motion_correct_xy(range(1, stop=size(ts_gray)[3]), ts_gray);
+#aligned_stack = load("aligned_stack.tif")
+graph_list = make_graph_list(get_bright_pixels(aligned_stack, 3), aligned_stack);
 
 # there's no tail call optimization in julia! so be careful how many max times you want the function to be called.
 # slows down significantly after ~1000 calls. instead, return a graph and a pixel list after each seed. 
 
 
 
-    
 
 
 

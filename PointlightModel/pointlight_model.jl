@@ -6,7 +6,7 @@ using LinearAlgebra
 using LightGraphs
 using MetaGraphs
 using Random
-#using TikzGraphs
+using TikzGraphs
 
 #- One main question is whether we are going to try to reconstruct the identity after the fact. I.e. Are the xs and ys completely known in time and space? We can do simultaneous inference on x and y values wrt t. Can also do sequential monte carlo. 
 
@@ -409,8 +409,8 @@ end
 tree_types = ["AllFree", "OneFree", "Connected", "SharedParent"]
 @dist choose_tree_type() = tree_types[categorical([0.25, 0.25, 0.25, 0.25])]
 
-                                          
-                                          
+
+
 
                                           
 
