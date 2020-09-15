@@ -1,6 +1,9 @@
+using Pkg
+pkg"activate ."
 using ComputationalResources
 #using Libdl
 #using ArrayFire
+
 using Images
 using Makie
 using AbstractPlotting
@@ -97,12 +100,12 @@ function roi_activity(roi_tree::MetaDiGraph{Int64, Float64},
     [lines!(axes[1], na, color=:gray) for na in node_activities]
     lines!(axes[1], mean(node_activities), color=RGBf0(220, 0, 0))
     image!(axes[2], project_stack(stack))
-  
     display(scene)
     return node_activities
 end
 
-function roi_activity(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
+
+ofunction roi_activity(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
                       stack::Array{Gray{Normed{UInt8,8}},3})
     #this function will pull average activity out of a metagraph
     scene, layout = layoutscene(backgroundcolor=RGBf0(255,255,255), resolution=(2000,1000));
@@ -110,55 +113,31 @@ function roi_activity(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
     nrows = 1
     # create a grid of LAxis objects
     axes = [LAxis(scene, backgroundcolor=RGBf0(255, 255, 255)) for i in 1:nrows, j in 1:ncols]
+    axes[1].ylabel = "Photon Count"
     layout[1:nrows, 1:ncols] = axes
     s1 = slider!(scene, range(1, stop=size(stack)[3]), raw=true, camera=campixel!, start=size(stack)[3])
-    # current_roi = 1
-    # current_roi = lift(scene.events.keyboardbuttons) do but
-    #     ispressed(but, Keyboard.left) && current_roi + 1
-    #     ispressed(but, Keyboard.right) && current_roi - 1
-#    end
-    brainslice = lift(s1[end][:value]) do v
-        stack[:, :, convert(Int64, v)] * (255 / 10)
-    end
-    node_activities = [[n.val for n in get_prop(roi_tree, v, :activity)] for v in vertices(roi_tree)]
-    [lines!(axes[1], na, color=:gray) for na in node_activities]
-    lines!(axes[1], mean(node_activities), color=RGBf0(220, 0, 0))
-    image!(axes[2], brainslice)
-    #  scatter!(axes[2], [Tuple(get_prop(roi_tree, v, :coord)) for v in vertices(roi_tree)], strokecolor=:transparent, color=:red, alpha=0.9)
-    scatter!(axes[2], [Tuple(mean([get_prop(roi_tree, v, :coord) for v in vertices(roi_tree)]))], color=:transparent, strokecolor=:red, markersize=25)
-    display(scene)
-    println("press for next ROI")
-    rl = readline()
-
-end
-
-function roi_activity(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
-                      stack::Array{Gray{Normed{UInt8,8}},3})
-    #this function will pull average activity out of a metagraph
-    scene, layout = layoutscene(backgroundcolor=RGBf0(255,255,255), resolution=(2000,1000));
-    ncols = 2
-    nrows = 1
-    # create a grid of LAxis objects
-    axes = [LAxis(scene, backgroundcolor=RGBf0(255, 255, 255)) for i in 1:nrows, j in 1:ncols]
-    layout[1:nrows, 1:ncols] = axes
-    s1 = slider!(scene, range(1, stop=size(stack)[3]), raw=true, camera=campixel!, start=size(stack)[3])
-    current_roi = 1
+    roi_id = 1
+    roi_outline(id) = [Tuple(mean([get_prop(roi_trees[id], v, :coord) for v in vertices(roi_trees[id])]))]
+    mean_node(id) = mean([[n.val for n in get_prop(roi_trees[id], v, :activity)] for v in vertices(roi_trees[id])])
+    max_fluorval = maximum([maximum(mean_node(i)) for i in 1:size(roi_trees)[1]])
     current_roi = lift(scene.events.keyboardbuttons) do but
-        ispressed(but, Keyboard.left) && current_roi.val + 1
-        ispressed(but, Keyboard.right) && current_roi.val - 1
-        true && current_roi
+        if ispressed(but, Keyboard.left)
+            return roi_id -= 1
+        elseif ispressed(but, Keyboard.right)
+            return roi_id += 1
+        else
+            return roi_id
+        end
     end
     brainslice = lift(s1[end][:value]) do v
+        println(current_roi)
         stack[:, :, convert(Int64, v)] * (255 / 10)
     end
-    node_activities = [[n.val for n in get_prop(
-        roi_trees[current_roi.val], v, :activity)] for v in vertices(roi_trees[current_roi.val])]
-    [lines!(axes[1], na, color=:gray) for na in node_activities]
-    lines!(axes[1], mean(node_activities), color=RGBf0(220, 0, 0))
+    lines!(axes[1], lift(x-> mean_node(x), current_roi), backgroundcolor=:black)
+    limits!(axes[1], BBox(0, size(stack)[3], 0, max_fluorval))
     image!(axes[2], brainslice)
-    #  scatter!(axes[2], [Tuple(get_prop(roi_tree, v, :coord)) for v in vertices(roi_tree)], strokecolor=:transparent, color=:red, alpha=0.9)
-    scatter!(axes[2], [Tuple(mean([get_prop(roi_trees[current_roi.val], v, :coord) for v in vertices(roi_trees[current_roi.val])]))],
-             color=:transparent, strokecolor=:red, markersize=25)
+    scatter!(axes[2], lift(x-> roi_outline(x), current_roi), 
+             color=:transparent, strokecolor=:red, strokewidth=3, markersize=25)
     display(scene)
 end
 
@@ -250,8 +229,8 @@ function make_graph_list(bright_pixels::Array{Array{Int64, 1}},
 end        
 
 
-aligned_stack = motion_correct_xy(range(1, stop=size(ts_gray)[3]), ts_gray);
-#aligned_stack = load("aligned_stack.tif")
+#aligned_stack = motion_correct_xy(range(1, stop=size(ts_gray)[3]), ts_gray);
+aligned_stack = load("aligned_stack.tif");
 graph_list = make_graph_list(get_bright_pixels(aligned_stack, 3), aligned_stack);
 
 # there's no tail call optimization in julia! so be careful how many max times you want the function to be called.
