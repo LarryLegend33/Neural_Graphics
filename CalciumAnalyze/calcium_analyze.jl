@@ -105,7 +105,7 @@ function roi_activity(roi_tree::MetaDiGraph{Int64, Float64},
 end
 
 
-ofunction roi_activity(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
+function roi_activity(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
                       stack::Array{Gray{Normed{UInt8,8}},3})
     #this function will pull average activity out of a metagraph
     scene, layout = layoutscene(backgroundcolor=RGBf0(255,255,255), resolution=(2000,1000));

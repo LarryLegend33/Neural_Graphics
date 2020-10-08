@@ -6,25 +6,24 @@ using LinearAlgebra
 using LightGraphs
 using MetaGraphs
 using Random
+using Images
 using TikzGraphs
+using TikzPictures
+using ShiftedArrays
 
 #- One main question is whether we are going to try to reconstruct the identity after the fact. I.e. Are the xs and ys completely known in time and space? We can do simultaneous inference on x and y values wrt t. Can also do sequential monte carlo. 
 
-#- starting with init positions b/c this is the type of custom proposal you will get from the tectum. you won't get offests for free. this model accounts for distance effects and velocity effects by traversing the tree. but it's lousy b/c it is static at 3 dots and merge / split opportunities are slim.
+#- starting with init positions b/c this is the type of custom proposal you will get from the tectum. you won't get offests for free. this model accounts for distance effects and velocity effects by traversing the tree. 
 
-#-PASS THIS FUNCTION A SET OF TIMES AND AN EMPTY METADIGRAPH TO START - MetaDiGraph()
-#- Involution will be you remove the edge and subtract the velocity, sample a uniform XY.
-#- New edge will be you add the velocity and sample from a gaussian.
+#- Definitely should add a random walk covariance matrix (i.e. 0s everywhere but not diagonal). will basically just inherit parent and be easiest to identify as a group member.
 
-# RENDERING A REALLY NICE GRAPH:
-
-
+#- go back to strang determinants to get an intuition for the definition of MV normal. 
 
 @dist function beta_peak(μ)
     σ = √(μ*(1-μ)) / 2
     α = (((1-μ) / σ^2) - (1/μ))*(μ^2)
     β = α*((1/μ) - 1)
-    beta(α, β)
+    beta(α, β) 
 end    
 
 @gen function add_node(motion_tree::MetaDiGraph{Int64, Float64}, 
@@ -52,27 +51,31 @@ end
 
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
                                               dot::Int64, ts::Array{Float64})
+    position_var = 1
     if dot > nv(motion_tree)
         return motion_tree
     else
         parent = inneighbors(motion_tree, dot)
         if isempty(parent)
-            xinit = {(:xinit, dot)} ~ uniform(0, 1)
-            yinit = {(:yinit, dot)} ~ uniform(0, 1)
+            xinit = {(:xinit, dot)} ~ uniform(3, 7)
+            yinit = {(:yinit, dot)} ~ uniform(3, 7)
         else
             parent_position = props(motion_tree, parent[1])[:Position]
             parent_velocity_x = props(motion_tree, parent[1])[:Velocity_X]
             parent_velocity_y = props(motion_tree, parent[1])[:Velocity_Y]
-            xinit = {(:xinit, dot)} ~ beta_peak(parent_position[1])
-            yinit = {(:yinit, dot)} ~ beta_peak(parent_position[2])
+       #     xinit = {(:xinit, dot)} ~ beta_peak(parent_position[1])
+       #     yinit = {(:yinit, dot)} ~ beta_peak(parent_position[2])
+            xinit = {(:xinit, dot)} ~ normal(parent_position[1], position_var)
+            yinit = {(:yinit, dot)} ~ normal(parent_position[2], position_var)
         end
         cov_func_x = {(:cov_tree_x, dot)} ~ covariance_prior()
         cov_func_y = {(:cov_tree_y, dot)} ~ covariance_prior()
-        noise = {(:noise, dot)} ~  gamma_bounded_below(1, 1, 0.01)
+        #        noise = {(:noise, dot)} ~  gamma_bounded_below(1, 1, 0.01)
+        noise = 0.001
         covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, noise, ts)
-        x_vel = {(:x_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
-        y_vel = {(:y_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
+        x_vel = {(:x_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_x) 
+        y_vel = {(:y_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_y) 
         if !isempty(parent)
             x_vel += parent_velocity_x
             y_vel += parent_velocity_y
@@ -103,10 +106,10 @@ end
 
 """Create Makie Rendering Environment"""
 
-function tree_to_coords(tree::MetaDiGraph{Int64, Float64})
+function tree_to_coords(tree::MetaDiGraph{Int64, Float64},
+                        framerate::Int64)
     num_dots = nv(tree)
     dotmotion = fill(zeros(2), num_dots, size(props(tree, 1)[:Velocity_X])[1])
-    framerate = 60
     # Assign first dot positions based on its initial XY position and velocities
     for dot in 1:num_dots
         dot_data = props(tree, dot)
@@ -114,50 +117,58 @@ function tree_to_coords(tree::MetaDiGraph{Int64, Float64})
             dot_data[:Position][1] .+ cumsum(dot_data[:Velocity_X] ./ framerate),
             dot_data[:Position][2] .+ cumsum(dot_data[:Velocity_Y] ./ framerate))]
     end
-
-# FIX THIS IS ONLY FOR 3 DOTS
-    
     dotmotion_tuples = [[Tuple(dotmotion[i, j]) for i in 1:num_dots] for j in 1:size(dotmotion)[2]]
     return dotmotion_tuples
 end
 
-function visualize_graph(motion_tree::MetaDiGraph{Int64, Float64})
-    g = TikzGraphs.plot(motion_tree.graph, options="scale=10");
+function visualize_graph(motion_tree::MetaDiGraph{Int64, Float64},
+                         resolution::Int64)
+    g = TikzGraphs.plot(motion_tree.graph,
+                        edge_style="yellow", 
+                        node_style="draw, rounded corners, fill=blue!20",
+                        options="scale=8, font=\\huge\\sf");
     TikzPictures.save(PDF("test"), g);
     graphimage = load("test.pdf");
     rot_image = imrotate(graphimage, π/2);
-    return rot_image.parent
+    scale_ratio = (resolution-10) / maximum(size(rot_image))
+    resized_image = imresize(rot_image, ratio=scale_ratio)
+    return resized_image
 end    
 
-
 function render_simulation(num_dots::Int64)
-    res = 1000
     framerate = 60
-    time_duration = 3
+    bounds = 10
+    time_duration = 10
+    res = 850
     outer_padding = 0
-    num_updates = 180
+    num_updates = framerate * time_duration
+    ts = range(1, stop=time_duration, length=time_duration*framerate)
+    trace = Gen.simulate(generate_dotmotion, (convert(Array{Float64}, ts), MetaDiGraph(), num_dots))
+    motion_tree = get_retval(trace)
+    graph_image = visualize_graph(motion_tree, res)
+    dotmotion = tree_to_coords(motion_tree, framerate)
+    f(t, coords) = coords[t]
+
     n_rows = 1
     n_cols = 3
     scene, layout = layoutscene(outer_padding,
                                 resolution = (3*res, res), 
                                 backgroundcolor=RGBf0(0, 0, 0))
-    ts = range(1, stop=time_duration, length=time_duration*framerate)
-    trace = Gen.simulate(generate_dotmotion, (convert(Array{Float64}, ts), MetaDiGraph(), num_dots))
-    motion_tree = get_retval(trace)
-    graph_image = visualize_graph(motion_tree)
-    dotmotion = tree_to_coords(motion_tree)
-    time_node = Node(1);
-    f(t, coords) = coords[t]
-    axes = [LAxis(scene, backgroundcolor=RGBf0(50, 50, 50)) for i in 1:n_rows, j in 1:n_cols]
+    
+    axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:n_rows, j in 1:n_cols]
     layout[1:n_rows, 1:n_cols] = axes
     time_node = Node(1);
     f(t, coords) = coords[t]
-    scatter!(axes[1], lift(t -> f(t, dotmotion), time_node), markersize=20px, color=RGBf0(255, 255, 255))
-    limits!(axes[1], BBox(0, 1, 0, 1))
-    scatter!(axes[2], lift(t -> f(t, dotmotion), time_node), markersize=20px, color=RGBf0(255, 255, 255))
-    limits!(axes[2], BBox(0, 1, 0, 1))
-    display(scene)
-    image!(axes[3], graph_image) 
+    scatter!(axes[1], lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
+    limits!(axes[1], BBox(0, bounds, 0, bounds))
+    scatter!(axes[2], lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
+    limits!(axes[2], BBox(0, bounds, 0, bounds))
+    image!(axes[3], graph_image)
+    limits!(axes[3], BBox(0, res, 0, res))
+    for j in 1:num_dots
+        println(trace[(:cov_tree_x, j)])
+        println(trace[(:cov_tree_y, j)])
+    end
     display(scene)
     for i in 1:num_updates
         time_node[] = i
@@ -166,16 +177,44 @@ function render_simulation(num_dots::Int64)
     return trace
 end    
 
-function plot_motiontree(g::Array{Int64, 2})
+function render_simulation(num_dots::Int64,
+                           trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    framerate = 60
+    bounds = 10
+    time_duration = 10
+    res = 850
+    outer_padding = 0
+    num_updates = framerate * time_duration
+    ts = range(1, stop=time_duration, length=time_duration*framerate)
+    motion_tree = get_retval(trace)
+    graph_image = visualize_graph(motion_tree, res)
+    dotmotion = tree_to_coords(motion_tree, framerate)
+    f(t, coords) = coords[t]
 
-    graphplot(g,
-          x=[0,-1/tan(π/3),1/tan(π/3)], y=[1,0,0],
-          nodeshape=:circle, nodesize=1.1,
-          axis_buffer=0.6,
-          curves=false,
-          color=:black,
-          linewidth=10)
+    n_rows = 1
+    n_cols = 3
+    scene, layout = layoutscene(outer_padding,
+                                resolution = (3*res, res), 
+                                backgroundcolor=RGBf0(0, 0, 0))
+    
+    axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:n_rows, j in 1:n_cols]
+    layout[1:n_rows, 1:n_cols] = axes
+    time_node = Node(1);
+    f(t, coords) = coords[t]
+    scatter!(axes[1], lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
+    limits!(axes[1], BBox(0, bounds, 0, bounds))
+    scatter!(axes[2], lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
+    limits!(axes[2], BBox(0, bounds, 0, bounds))
+    image!(axes[3], graph_image)
+    limits!(axes[3], BBox(0, res, 0, res))
+    display(scene)
+    for i in 1:num_updates
+        time_node[] = i
+        sleep(1/framerate)
+    end
+    return trace
 end    
+
 # Currently in makie_test. Takes a tree and renders the tree and the stimulus.
 
 
@@ -198,17 +237,39 @@ Base.size(node::CompositeKernel) = node.size
 
 #- HERE EACH KERNEL TYPE FOR GENERATING TIME SERIES IS DEFINED USING MULTIPLE DISPATCH ON eval_cov AND eval_cov_mat. 
 
+"""Random Walk Kernel"""
+struct RandomWalk <: PrimitiveKernel
+    param::Float64
+end
+
+function eval_cov(node::RandomWalk, t1, t2)
+    if t1 == t2
+        node.param
+    else
+        0
+    end
+end        
+
+function eval_cov_mat(node::RandomWalk, ts::Array{Float64})
+    n = length(ts)
+    Diagonal(node.param * ones(n))
+end
+
+    
 """Constant kernel"""
 struct Constant <: PrimitiveKernel
     param::Float64
 end
 
-eval_cov(node::Constant, x1, x2) = node.param
+eval_cov(node::Constant, t1, t2) = node.param
+
 
 function eval_cov_mat(node::Constant, ts::Array{Float64})
     n = length(ts)
     fill(node.param, (n, n))
 end
+
+
 
 """Linear kernel"""
 struct Linear <: PrimitiveKernel
@@ -352,20 +413,27 @@ end
 # kernel_types = [Constant, Linear, SquaredExponential, Periodic, Plus, Times]
 # @dist choose_kernel_type() = kernel_types[categorical([0.2, 0.2, 0.2, 0.2, 0.1, 0.1])];
 
-kernel_types = [Constant, Linear, Periodic]
-@dist choose_kernel_type() = kernel_types[categorical([0.5, 0.25, 0.25])]
-
+kernel_types = [RandomWalk, Constant, Linear, Periodic]
+@dist choose_kernel_type() = kernel_types[categorical([.97, .01, .01, .01])]
+#@dist choose_kernel_type() = kernel_types[categorical([0, 0, 1])]
 
 # Prior on kernels
 @gen function covariance_prior()
     # Choose a type of kernel
-    kernel_type = { :kenrel_type } ~ choose_kernel_type()
+    kernel_type = { :kernel_type } ~ choose_kernel_type()
     # If this is a composite node, recursively generate subtrees. For now, too complex. 
     if in(kernel_type, [Plus, Times])
         return kernel_type({ :left } ~ covariance_prior(), { :right } ~ covariance_prior())
     end
     # Otherwise, generate parameters for the primitive kernel.
-    kernel_args = (kernel_type == Periodic) ? [{:scale} ~ uniform(0, 1), {:period} ~ uniform(0, 1)] : [{:param} ~ uniform(0, 1)]
+    if kernel_type == Periodic
+        kernel_args = [{ :scale } ~ uniform(0, 1), { :period } ~ uniform(0, 10)]
+    elseif kernel_type == RandomWalk
+        kernel_args = [{ :param } ~ uniform(0, 10)]
+    else
+        kernel_args = [{ :param } ~ uniform(0, 1)]
+    end
+#    kernel_args = (kernel_type == Periodic) ? [{ :scale } ~ uniform(0, 1), { :period } ~ uniform(0, 10)] : [{ :param } ~ uniform(0, 1)]
     return kernel_type(kernel_args...)
 end
 
@@ -391,6 +459,7 @@ end
     
     # Sample from the GP using a multivariate normal distribution with
     # the kernel-derived covariance matrix.
+
     ys ~ mvnormal(zeros(length(ts)), cov_matrix)
     
     # Return the covariance function, for easy printing.
@@ -405,9 +474,6 @@ function serialize_trace(tr, tmin, tmax)
     Dict("y-coords" => tr[:pos], "curveT" => curveT, "curvePos" => curvePos)
 end
 
-
-tree_types = ["AllFree", "OneFree", "Connected", "SharedParent"]
-@dist choose_tree_type() = tree_types[categorical([0.25, 0.25, 0.25, 0.25])]
 
 
 
