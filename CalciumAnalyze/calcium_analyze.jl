@@ -3,7 +3,6 @@ pkg"activate ."
 using ComputationalResources
 #using Libdl
 #using ArrayFire
-
 using Images
 using Makie
 using AbstractPlotting
@@ -17,6 +16,7 @@ using PyCall
 using LinearAlgebra
 using LightGraphs
 using MetaGraphs
+using MultivariateStats
 
 #brian2 = pyimport("brian2")
 tiffstack = load("/Users/nightcrawler2/Desktop/2P_analysis/Fish1_visstim_340_zoom2_single_dot_slow_0.tif");
@@ -30,7 +30,13 @@ addresource(ArrayFireLibs)
 # Note 2P values are a direct count of photons. There is a max
 # cutoff at 10 -- so norm to 255 / 10 for display, but not analysis. 
 
+# NEXT TWO STEPS
+# 1. Choose 4 points using bookmarked makie mousepress on a max projected image. use to create
+# rotated ellipse equation and function (i.e. if less than 1, inside ellipse). Once you've done this,
+# filter out pixels for presence inside the ellipse. run them through the ROI program, but do not restrict the
+# size of the ROI (i.e. the max_pixels variable). this way you can get a blanket of ROIs.
 
+# 2. Want a PCA function that takes in ROI activities. Return the first 3 PCs and create an RGB color from them. 
 
 
 """Creates an average image of the entire stack"""
@@ -53,10 +59,7 @@ function crosscorr_images(img::Array{Gray{Normed{UInt8,8}},2}, template::Array{G
     return max_inds
 end    
 
-
 """Recursively aligns each image in the stack using cross correlation"""
-
-
 
 
 function motion_correct_xy(indices,
@@ -77,36 +80,66 @@ function motion_correct_xy(indices,
                           stack[:, :, id_to_align+1:end], dims=3))
 end
 
+
 """Retrieves all pixel coordinates"""
 
 get_bright_pixels(stack, brightness_thresh) = [[x, y] for x in range(1, stop=size(stack)[1]),
                                                y in range(1, stop=size(stack)[2]) if sum(stack[x, y, :]) > brightness_thresh]
 
+roi_outline(id, roi_trees) = [Tuple(mean([get_prop(roi_trees[id], v, :coord) for v in vertices(roi_trees[id])]))]
 
-# are going to add seed to a function. has to check the neighbors
+mean_node(id, roi_trees) = mean([[n.val for n in get_prop(roi_trees[id], v, :activity)] for v in vertices(roi_trees[id])])
 
-# use size(find_longest_path(g).longest_path)[1]
 
-function roi_activity(roi_tree::MetaDiGraph{Int64, Float64},
-                      stack::Array{Gray{Normed{UInt8,8}},3})
-    #this function will pull average activity out of a metagraph
-    scene, layout = layoutscene(backgroundcolor=RGBf0(255,255,255), resolution=(2000,1000));
-    ncols = 2
-    nrows = 1
-    # create a grid of LAxis objects
-    axes = [LAxis(scene, backgroundcolor=RGBf0(255, 255, 255)) for i in 1:nrows, j in 1:ncols]
-    layout[1:nrows, 1:ncols] = axes
-    node_activities = [[n.val for n in get_prop(roi_tree, v, :activity)] for v in vertices(roi_tree)]
-    [lines!(axes[1], na, color=:gray) for na in node_activities]
-    lines!(axes[1], mean(node_activities), color=RGBf0(220, 0, 0))
-    image!(axes[2], project_stack(stack))
-    display(scene)
-    return node_activities
+# PUT ALL THESE VARBS INTO A DICTIONARY AND PLOT A TRANSPARENT MASK OVER
+# EACH ROI ON A PROJECTED STACK ACCORDING TO THE RGB VALS. 
+
+function pca_on_traces(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
+                       stack::Array{Gray{Normed{UInt8,8}},3})
+    scene = Scene();
+    calcium_traces = [mean_node(id, roi_trees) for id in 1:size(roi_trees)[1]]
+    ca_matrix = hcat(calcium_traces...)
+    pca_m = fit(PCA, ca_matrix)
+    first3PCs = projection(pca_m)[:, 1:3]
+    first3Vars = principalvars(pca_m)[1:3]
+    proj_of_traces = [transform(pca_m, c)[1:3] for c in calcium_traces]
+    pca_dict = Dict("CaTraces" => calcium_traces,
+                    "3PC" => first3PCs, "3Vars" => first3Vars, "Proj" => proj_of_traces);
+    return pca_dict
 end
 
+function plot_pc(pc_dict::Dict,
+                 pc_ind::Integer,
+                 ca_trace_ind::Integer)
+    pc = [convert(Tuple{Float32, Float32}, a) for a in enumerate(pc_dict["3PC"][:,pc_ind])]
+    ca = [convert(Tuple{Float32, Float32}, a) for a in enumerate(pc_dict["CaTraces"][ca_trace_ind])]    
+    s = Scene();
+    scatter!(s, pc, strokecolor=:red)
+    lines!(s, pc, strokecolor=:red)
+    scatter!(s, ca)
+    lines!(s, ca)
+    return s 
+end    
 
-function roi_activity(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
-                      stack::Array{Gray{Normed{UInt8,8}},3})
+function draw_roi(stack::Array{Gray{Normed{UInt8,8}},3})
+    prj = project_stack(stack)
+    s = Scene()
+    image!(s, prj)
+    clicks = Node(Point2f0[(0,0)])
+    on(s.events.mousebuttons) do buttons
+        if ispressed(s, Mouse.left)
+            pos = to_world(s, Point2f0(s.events.mouseposition[]))
+            clicks[] = push!(clicks[], pos)
+        end
+        return
+    end
+    scatter!(s, clicks, color = :red, marker = '+', markersize = 10)
+   # RecordEvents(s, "output")
+   # return s
+end
+    
+function roi_activity_viewer(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
+                             stack::Array{Gray{Normed{UInt8,8}},3})
     #this function will pull average activity out of a metagraph
     scene, layout = layoutscene(backgroundcolor=RGBf0(255,255,255), resolution=(2000,1000));
     ncols = 2
@@ -117,9 +150,7 @@ function roi_activity(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
     layout[1:nrows, 1:ncols] = axes
     s1 = slider!(scene, range(1, stop=size(stack)[3]), raw=true, camera=campixel!, start=size(stack)[3])
     roi_id = 1
-    roi_outline(id) = [Tuple(mean([get_prop(roi_trees[id], v, :coord) for v in vertices(roi_trees[id])]))]
-    mean_node(id) = mean([[n.val for n in get_prop(roi_trees[id], v, :activity)] for v in vertices(roi_trees[id])])
-    max_fluorval = maximum([maximum(mean_node(i)) for i in 1:size(roi_trees)[1]])
+    max_fluorval = maximum([maximum(mean_node(i, roi_trees)) for i in 1:size(roi_trees)[1]])
     current_roi = lift(scene.events.keyboardbuttons) do but
         if ispressed(but, Keyboard.left)
             return roi_id -= 1
@@ -133,14 +164,13 @@ function roi_activity(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
         println(current_roi)
         stack[:, :, convert(Int64, v)] * (255 / 10)
     end
-    lines!(axes[1], lift(x-> mean_node(x), current_roi), backgroundcolor=:black)
+    lines!(axes[1], lift(x-> mean_node(x, roi_trees), current_roi), backgroundcolor=:black)
     limits!(axes[1], BBox(0, size(stack)[3], 0, max_fluorval))
     image!(axes[2], brainslice)
-    scatter!(axes[2], lift(x-> roi_outline(x), current_roi), 
+    scatter!(axes[2], lift(x-> roi_outline(x, roi_trees), current_roi), 
              color=:transparent, strokecolor=:red, strokewidth=3, markersize=25)
     display(scene)
 end
-
 
 
 function add_edges_to_seed(seed::Array{Int64, 1},
@@ -164,14 +194,14 @@ function add_edges_to_seed(seed::Array{Int64, 1},
     end
 end    
 
-
         
 #Initialize this with empty list, brightpixels, empty graph, stack
 # a graph can also end if ALL neighbors are empty 
 
 function generate_roi_tree(bright_pixels::Array{Array{Int64, 1}},
                            roi_tree::MetaDiGraph{Int64, Float64}, 
-                           stack::Array{Gray{Normed{UInt8,8}},3})
+                           stack::Array{Gray{Normed{UInt8,8}},3},
+                           max_pixels::Integer)
     seed = rand(bright_pixels)
     add_vertex!(roi_tree)
     set_props!(roi_tree, nv(roi_tree), Dict(:coord => seed, 
@@ -179,14 +209,15 @@ function generate_roi_tree(bright_pixels::Array{Array{Int64, 1}},
                                                                seed[2],:]))
     generate_roi_tree([seed],
                       filter(x -> x!=seed, bright_pixels),
-                      roi_tree, stack)
+                      roi_tree, stack, max_pixels)
 end    
 
 # problem that there's no return here? should there be a catch for no bright pixels? i think.         
 function generate_roi_tree(seeds::Array{Array{Int64, 1}},
                            bright_pixels::Array{Array{Int64, 1}},
                            roi_tree::MetaDiGraph{Int64, Float64}, 
-                           stack::Array{Gray{Normed{UInt8,8}},3})
+                           stack::Array{Gray{Normed{UInt8,8}},3},
+                           max_pixels::Integer)
     println(size(bright_pixels))
     seed = seeds[1]
     corr_thresh = .6
@@ -204,17 +235,17 @@ function generate_roi_tree(seeds::Array{Array{Int64, 1}},
         else
             generate_roi_tree(seeds[2:end],
                               filter(x -> x!=seed, bright_pixels),
-                              roi_tree, stack)
+                              roi_tree, stack, max_pixels)
         end
     else
         println("neighbors detected")
         roi_tree_update = add_edges_to_seed(seed, neighbors, roi_tree, stack)
-        if nv(roi_tree_update) > 30
+        if nv(roi_tree_update) > max_pixels
             return filter(x -> x!=seed, bright_pixels), roi_tree_update
         end
         generate_roi_tree(neighbors,
                           filter(x -> x!=seed && !(x in neighbors), bright_pixels),
-                          roi_tree, stack)
+                          roi_tree, stack, max_pixels)
     end
 end    
                            
@@ -222,7 +253,7 @@ function make_graph_list(bright_pixels::Array{Array{Int64, 1}},
                          stack::Array{Gray{Normed{UInt8,8}},3})
     graph_list = []
     while !isempty(bright_pixels)
-        bright_pixels, roi_tree = generate_roi_tree(bright_pixels, MetaDiGraph(), stack)
+        bright_pixels, roi_tree = generate_roi_tree(bright_pixels, MetaDiGraph(), stack, 30)
         push!(graph_list, roi_tree)
     end
     return graph_list
@@ -235,12 +266,6 @@ graph_list = make_graph_list(get_bright_pixels(aligned_stack, 3), aligned_stack)
 
 # there's no tail call optimization in julia! so be careful how many max times you want the function to be called.
 # slows down significantly after ~1000 calls. instead, return a graph and a pixel list after each seed. 
-
-
-
-
-
-
 
 
 #= XY ALIGN STACK first. Take each image in the stack and align it to the 

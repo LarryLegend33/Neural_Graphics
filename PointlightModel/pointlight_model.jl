@@ -17,7 +17,11 @@ using ShiftedArrays
 
 #- Definitely should add a random walk covariance matrix (i.e. 0s everywhere but not diagonal). will basically just inherit parent and be easiest to identify as a group member.
 
-#- go back to strang determinants to get an intuition for the definition of MV normal. 
+#- One thing you might want to think about is keeping the same exact structure but resampling the timeseries. If you do this, may be a good way to test good choices in structure vs sample. 
+
+
+
+
 
 @dist function beta_peak(μ)
     σ = √(μ*(1-μ)) / 2
@@ -68,14 +72,19 @@ end
             xinit = {(:xinit, dot)} ~ normal(parent_position[1], position_var)
             yinit = {(:yinit, dot)} ~ normal(parent_position[2], position_var)
         end
-        cov_func_x = {(:cov_tree_x, dot)} ~ covariance_prior()
-        cov_func_y = {(:cov_tree_y, dot)} ~ covariance_prior()
-        #        noise = {(:noise, dot)} ~  gamma_bounded_below(1, 1, 0.01)
+#        cov_func_x = {(:cov_tree_x, dot)} ~ covariance_prior()
+#        cov_func_y = {(:cov_tree_y, dot)} ~ covariance_prior(typeof(cov_func_x))
+#        noise = {(:noise, dot)} ~  gamma_bounded_below(1, 1, 0.01)
+        cov_func = {(:cov_tree, dot)} ~ covariance_prior()
+        flip_y = { (:flip_y, dot) } ~ bernoulli(.5)
         noise = 0.001
-        covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
-        covmat_y = compute_cov_matrix_vectorized(cov_func_y, noise, ts)
+        covmat_x = compute_cov_matrix_vectorized(cov_func, noise, ts)
+        covmat_y = compute_cov_matrix_vectorized(cov_func, noise, ts)
         x_vel = {(:x_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_x) 
-        y_vel = {(:y_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_y) 
+        y_vel = {(:y_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
+        # if flip_y
+        #     y_vel *= -1
+        # end
         if !isempty(parent)
             x_vel += parent_velocity_x
             y_vel += parent_velocity_y
@@ -130,7 +139,7 @@ function visualize_graph(motion_tree::MetaDiGraph{Int64, Float64},
     TikzPictures.save(PDF("test"), g);
     graphimage = load("test.pdf");
     rot_image = imrotate(graphimage, π/2);
-    scale_ratio = (resolution-10) / maximum(size(rot_image))
+    scale_ratio = (resolution*.75) / maximum(size(rot_image))
     resized_image = imresize(rot_image, ratio=scale_ratio)
     return resized_image
 end    
@@ -166,8 +175,8 @@ function render_simulation(num_dots::Int64)
     image!(axes[3], graph_image)
     limits!(axes[3], BBox(0, res, 0, res))
     for j in 1:num_dots
-        println(trace[(:cov_tree_x, j)])
-        println(trace[(:cov_tree_y, j)])
+        println(trace[(:cov_tree, j)])
+#        println(trace[(:cov_tree_y, j)])
     end
     display(scene)
     for i in 1:num_updates
@@ -414,10 +423,11 @@ end
 # @dist choose_kernel_type() = kernel_types[categorical([0.2, 0.2, 0.2, 0.2, 0.1, 0.1])];
 
 kernel_types = [RandomWalk, Constant, Linear, Periodic]
-@dist choose_kernel_type() = kernel_types[categorical([.97, .01, .01, .01])]
-#@dist choose_kernel_type() = kernel_types[categorical([0, 0, 1])]
+@dist choose_kernel_type() = kernel_types[categorical([.25, .25, .25, .25])]
 
 # Prior on kernels
+
+
 @gen function covariance_prior()
     # Choose a type of kernel
     kernel_type = { :kernel_type } ~ choose_kernel_type()
@@ -428,6 +438,10 @@ kernel_types = [RandomWalk, Constant, Linear, Periodic]
     # Otherwise, generate parameters for the primitive kernel.
     if kernel_type == Periodic
         kernel_args = [{ :scale } ~ uniform(0, 1), { :period } ~ uniform(0, 10)]
+    elseif kernel_type == Constant
+        kernel_args = [{ :param } ~ uniform(0, 3)]
+    elseif kernel_type == Linear
+        kernel_args = [{ :param } ~ uniform(0, 1)]
     elseif kernel_type == RandomWalk
         kernel_args = [{ :param } ~ uniform(0, 10)]
     else
@@ -436,6 +450,7 @@ kernel_types = [RandomWalk, Constant, Linear, Periodic]
 #    kernel_args = (kernel_type == Periodic) ? [{ :scale } ~ uniform(0, 1), { :period } ~ uniform(0, 10)] : [{ :param } ~ uniform(0, 1)]
     return kernel_type(kernel_args...)
 end
+
 
 
 @dist gamma_bounded_below(shape, scale, bound) = gamma(shape, scale) + bound
