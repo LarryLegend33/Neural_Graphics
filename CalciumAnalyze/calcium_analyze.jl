@@ -90,6 +90,9 @@ roi_outline(id, roi_trees) = [Tuple(mean([get_prop(roi_trees[id], v, :coord) for
 
 mean_node(id, roi_trees) = mean([[n.val for n in get_prop(roi_trees[id], v, :activity)] for v in vertices(roi_trees[id])])
 
+spatial_filter(bright_pix, ellipse_func, λ_ellipse) = [bp for bp in bright_pix if λ_ellipse(ellipse_func(bp[1], bp[2]))]
+
+# if you want inside ellipse, make λ_ellipse x -> x < 1, outside x -> x > 1
 
 # PUT ALL THESE VARBS INTO A DICTIONARY AND PLOT A TRANSPARENT MASK OVER
 # EACH ROI ON A PROJECTED STACK ACCORDING TO THE RGB VALS. 
@@ -121,22 +124,43 @@ function plot_pc(pc_dict::Dict,
     return s 
 end    
 
+ellipse_bounds = []
+
 function draw_roi(stack::Array{Gray{Normed{UInt8,8}},3})
+    global ellipse_bounds = []
     prj = project_stack(stack)
-    s = Scene()
+    s = Scene(resolution=(800, 800))
     image!(s, prj)
-    clicks = Node(Point2f0[(0,0)])
+    clicks = Node(Point2f0[])
     on(s.events.mousebuttons) do buttons
         if ispressed(s, Mouse.left)
             pos = to_world(s, Point2f0(s.events.mouseposition[]))
             clicks[] = push!(clicks[], pos)
+            push!(ellipse_bounds, pos)
         end
         return
     end
-    scatter!(s, clicks, color = :red, marker = '+', markersize = 10)
-   # RecordEvents(s, "output")
-   # return s
+    scatter!(s, clicks, color = :red, marker = '+', markersize = 20)
+    RecordEvents(s, "output")
+    s
 end
+
+function ROI_ellipse()
+    e_bounds = [e for e in ellipse_bounds if e[1] > 0]
+    ycoords = [e[2] for e in ellipse_bounds]
+    xcoords = [e[1] for e in ellipse_bounds]
+    h = (maximum(xcoords) - minimum(xcoords)) / 2
+    k = (maximum(ycoords) - minimum(ycoords)) / 2
+    rot_coords = e_bounds[findmax(ycoords)[2]] - [h, k]
+    θ = atan(rot_coords[1] / rot_coords[2])
+    a = norm(e_bounds[findmax(ycoords)[2]] - k)
+    b = norm(e_bounds[findmax(xcoords)[2]] - h)
+    f(x, y) = ((((x-h)*cos(θ) + (y-k)*sin(θ))^2) / a^2) +
+        ((((x-h)*sin(θ) - (y-k)*cos(θ))^2) / b^2)
+    return f
+end    
+
+
     
 function roi_activity_viewer(roi_trees::Array{MetaDiGraph{Int64, Float64}, 1},
                              stack::Array{Gray{Normed{UInt8,8}},3})
@@ -250,10 +274,11 @@ function generate_roi_tree(seeds::Array{Array{Int64, 1}},
 end    
                            
 function make_graph_list(bright_pixels::Array{Array{Int64, 1}},
-                         stack::Array{Gray{Normed{UInt8,8}},3})
+                         stack::Array{Gray{Normed{UInt8,8}},3},
+                         max_pixels::Integer)
     graph_list = []
     while !isempty(bright_pixels)
-        bright_pixels, roi_tree = generate_roi_tree(bright_pixels, MetaDiGraph(), stack, 30)
+        bright_pixels, roi_tree = generate_roi_tree(bright_pixels, MetaDiGraph(), stack, max_pixels)
         push!(graph_list, roi_tree)
     end
     return graph_list
