@@ -1,0 +1,9 @@
+* Observations on covariance / stimuli relationships
+
+* Used forced choice assignment of positions to dots. 
+  What you want to do is assign a detected position to a particular dot first. Your graphs then have to incorporate every possible iteration instead of a subset. What you want to do is provide a graph with X amount of nodes. 
+
+** RULES: If there is already an edge going from node M to node N, do not add an edge N to M. Also no loops: i.e. If 1 -> 2, and 2-> 3, can't have 3 -> 1. Can assure there are no loops by stopping at N-1 edges. First enter a randomly ordered list of ints of length X. Are going to ask "is this node a child of any of the other dots? (i.e. it's cdr)" Have a separate recursive matching function that takes the candidate, its cdr, and asks the logical statements above, adding edges if true, not if false. It will return the graph. Recur on the cdr for candidate children. Stop when there are X-1 edges or the candidate children are empty. 
+
+Draw the first number F from the list and ask: for a random draw G from the list sans F
+

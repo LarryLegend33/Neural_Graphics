@@ -33,15 +33,30 @@ end
         return motion_tree
     end
     parent_dot = first(candidate_parents)
-    if isempty(inneighbors(motion_tree, parent_dot))
-        parent_to_node = {(:parent, parent_dot, nv(motion_tree) + 1)} ~ bernoulli(.5)
+    # this controls the depth of the tree. parenting is favored to top level dots.
+    # if a dot is already a child, parenting to it is at lower probability.
+    current_dot = nv(motion_tree) + 1
+    if current_dot - parent_dot == 1
+        if isempty(inneighbors(motion_tree, parent_dot))
+            parent_to_node = {(:parent, parent_dot, current_dot)} ~ bernoulli(.5)
+        else
+            parent_to_node = {(:parent, parent_dot, current_dot)} ~ bernoulli(.2)
+        end
+    elseif !isempty(outneighbors(motion_tree, parent_dot))
+        if isempty(inneighbors(motion_tree, parent_dot))
+            parent_to_node = {(:parent, parent_dot, current_dot)} ~ bernoulli(.5)
+        else
+            parent_to_node = {(:parent, parent_dot, current_dot)} ~ bernoulli(.2)
+        end
     else
-        parent_to_node = {(:parent, parent_dot, nv(motion_tree) + 1)} ~ bernoulli(.2)
+        {*} ~ add_node(motion_tree, filter(λ -> λ != parent_dot, candidate_parents))
     end
-
+                   
+    # if is empty outneighbors too. 
+    
     if parent_to_node
         add_vertex!(motion_tree)
-        add_edge!(motion_tree, parent_dot, nv(motion_tree))
+        add_edge!(motion_tree, parent_dot, current_dot)
         return motion_tree
     else
         {*} ~ add_node(motion_tree, filter(λ -> λ != parent_dot, candidate_parents))
@@ -88,7 +103,6 @@ end
     end
 end    
             
-        
 
 @gen function generate_dotmotion(ts::Array{Float64}, 
                             motion_tree::MetaGraph{Int64, Float64},

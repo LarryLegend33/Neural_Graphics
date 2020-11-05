@@ -19,7 +19,8 @@ using MetaGraphs
 using MultivariateStats
 
 #brian2 = pyimport("brian2")
-tiffstack = load("/Users/nightcrawler2/Desktop/2P_analysis/Fish1_visstim_340_zoom2_single_dot_slow_0.tif");
+#tiffstack = load("/Users/nightcrawler2/Desktop/2P_analysis/Fish1_visstim_340_zoom2_single_dot_slow_0.tif");
+tiffstack = load("/Volumes/Esc_and_2P/201027/Fish1_whole_tectum_lowerdot_0.tif")
 ts_gray = Gray.(tiffstack);
 im_res = size(ts_gray[:,:,1])[1]
 kernel_width = 170
@@ -286,8 +287,8 @@ end
 
 
 #aligned_stack = motion_correct_xy(range(1, stop=size(ts_gray)[3]), ts_gray);
-aligned_stack = load("aligned_stack.tif");
-graph_list = make_graph_list(get_bright_pixels(aligned_stack, 3), aligned_stack);
+aligned_stack = load("motion_corrected.tif");
+graph_list = make_graph_list(get_bright_pixels(aligned_stack, .2), aligned_stack, 30);
 
 # there's no tail call optimization in julia! so be careful how many max times you want the function to be called.
 # slows down significantly after ~1000 calls. instead, return a graph and a pixel list after each seed. 
