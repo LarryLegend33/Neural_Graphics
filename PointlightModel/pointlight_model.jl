@@ -11,6 +11,7 @@ using TikzGraphs
 using TikzPictures
 using ShiftedArrays
 using ColorSchemes
+using Statistics
 
 #- One main question is whether we are going to try to reconstruct the identity after the fact. I.e. Are the xs and ys completely known in time and space? We can do simultaneous inference on x and y values wrt t. Can also do sequential monte carlo. 
 
@@ -18,53 +19,83 @@ using ColorSchemes
 
 #- One thing you might want to think about is keeping the same exact structure but resampling the timeseries. If you do this, may be a good way to test good choices in structure vs sample. 
 
-
 @dist function beta_peak(μ)
     σ = √(μ*(1-μ)) / 2
     α = (((1-μ) / σ^2) - (1/μ))*(μ^2)
     β = α*((1/μ) - 1)
     beta(α, β) 
-end    
+end
 
-@gen function add_node(motion_tree::MetaDiGraph{Int64, Float64}, 
-                       candidate_parents::Array{Int64, 1})
-    if isempty(candidate_parents)
-        add_vertex!(motion_tree)
+@gen function populate_edges(motion_tree::MetaDiGraph{Int64, Float64},
+                             candidate_parents::Array{Int64, 1},
+                             current_dot::Int64)
+    if isempty(candidate_parents) || ne(motion_tree) == nv(motion_tree) - 1 
         return motion_tree
     end
-    parent_dot = first(candidate_parents)
-    if isempty(inneighbors(motion_tree, parent_dot))
-        parent_to_node = {(:parent, parent_dot, nv(motion_tree) + 1)} ~ bernoulli(.5)
+    cand_parent = first(candidate_parents)
+    if has_edge(motion_tree, current_dot, cand_parent)
+        populate_edges(motion_tree, candidate_parents[2:end], current_dot)
     else
-        parent_to_node = {(:parent, parent_dot, nv(motion_tree) + 1)} ~ bernoulli(.2)
-    end
+        if isempty(inneighbors(motion_tree, cand_parent))
+            add_edge = bernoulli(.5)
+        else
+            add_edge = bernoulli(.2)
+        end
+        if add_edge
+            add_edge!(motion_tree, cand_parent, current_dot)
+        end
+        populate_edges(motion_tree, candidate_parents[2:end], current_dot)
+     end
+end
 
-    if parent_to_node
-        add_vertex!(motion_tree)
-        add_edge!(motion_tree, parent_dot, nv(motion_tree))
-        return motion_tree
+
+@gen function generate_dotmotion(ts::Array{Float64}, 
+                                 motion_tree::MetaDiGraph{Int64, Float64},
+                                 candidate_children::Array{Int64, 1})
+    if !isempty(candidate_children)
+        current_dot = first(candidate_children)
+        candidate_parents = shuffle(filter(λ -> λ != current_dot, vertices(motion_tree)))
+        motion_tree_updated = {*} ~ populate_edges(motion_tree, candidate_parents, current_dot)
+        {*} ~ generate_dotmotion(ts,
+                                 motion_tree_updated,
+                                 candidate_children[2:end])
     else
-        {*} ~ add_node(motion_tree, filter(λ -> λ != parent_dot, candidate_parents))
+
+        # order the vertices by number of incoming edges.
+        dot_list = sort(collect(1:nv(motion_tree)), by=(ϕ->size(inneighbors(motion_tree, ϕ))))
+        motion_tree_assigned = {*} ~ assign_positions_and_velocities(motion_tree,
+                                                                     dot_list,
+                                                                     ts)
+        return motion_tree_assigned
     end
 end    
 
+
+# see if motion tree is a traced variable. if so, it will have a score. 
 
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
-                                              dot::Int64, ts::Array{Float64})
+                                              dots::Int64, ts::Array{Float64})
     position_var = 1
-    if dot > nv(motion_tree)
+    if isempty(dots)
         return motion_tree
     else
-        parent = inneighbors(motion_tree, dot)
-        if isempty(parent)
+        # maybe can have two parents?
+        dot = first(dots)
+        parents = inneighbors(motion_tree, dot)
+        if isempty(parents)
             xinit = {(:xinit, dot)} ~ uniform(3, 7)
             yinit = {(:yinit, dot)} ~ uniform(3, 7)
+        # don't assign yet if parents are unassigned
         else
-            parent_position = props(motion_tree, parent[1])[:Position]
-            parent_velocity_x = props(motion_tree, parent[1])[:Velocity_X]
-            parent_velocity_y = props(motion_tree, parent[1])[:Velocity_Y]
+            if size(parents)[1] > 1
+                parent_position = mean([props(motion_tree, p)[:Position] for p in parents])
+            else
+                parent_position = props(motion_tree, parents[1])[:Position]
+            end
             xinit = {(:xinit, dot)} ~ normal(parent_position[1], position_var)
             yinit = {(:yinit, dot)} ~ normal(parent_position[2], position_var)
+            parent_velocities_x = [props(motion_tree, p)[:Velocity_X] for p in parents]
+            parent_velocities_y = [props(motion_tree, p)[:Velocity_Y] for p in parents]
         end
 #        cov_func_x = {(:cov_tree_x, dot)} ~ covariance_prior()
 #        cov_func_y = {(:cov_tree_y, dot)} ~ covariance_prior(typeof(cov_func_x))
@@ -76,32 +107,24 @@ end
         covmat_y = compute_cov_matrix_vectorized(cov_func, noise, ts)
         x_vel = {(:x_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_x) 
         y_vel = {(:y_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
-        if !isempty(parent)
-            x_vel += parent_velocity_x
-            y_vel += parent_velocity_y
+        if !isempty(parents)
+            if size(parents)[1] == 1
+                x_vel += parent_velocities_x[1]
+                y_vel += parent_velocities_y[1]
+            else
+                x_vel += sum(parent_velocities_x)
+                y_vel += sum(parent_velocities_y)
+            end
         end
         # Sample from the GP using a multivariate normal distribution with
         # the kernel-derived covariance matrix.
         set_props!(motion_tree, dot,
                    Dict(:Position=>[xinit, yinit], :Velocity_X=>x_vel, :Velocity_Y=>y_vel))
-        {*} ~ assign_positions_and_velocities(motion_tree, dot+1, ts)
+        {*} ~ assign_positions_and_velocities(motion_tree, dots[2:end], ts)
     end
 end    
             
         
-
-@gen function generate_dotmotion(ts::Array{Float64}, 
-                            motion_tree::MetaGraph{Int64, Float64},
-                            num_dots::Int64)
-    if nv(motion_tree) < num_dots
-        motion_tree_updated = {*} ~ add_node(motion_tree, shuffle(vertices(motion_tree)))
-        {*} ~ generate_dotmotion(ts, motion_tree_updated, num_dots)
-    else
-        motion_tree_assigned = {*} ~ assign_positions_and_velocities(motion_tree, 1, ts)
-        return motion_tree_assigned
-    end
-end    
-    
 
 
 """Create Makie Rendering Environment"""
@@ -143,7 +166,8 @@ function render_simulation(num_dots::Int64)
     outer_padding = 0
     num_updates = framerate * time_duration
     ts = range(1, stop=time_duration, length=time_duration*framerate)
-    trace = Gen.simulate(generate_dotmotion, (convert(Array{Float64}, ts), MetaDiGraph(), num_dots))
+    trace = Gen.simulate(generate_dotmotion, (convert(Array{Float64}, ts),
+                                              MetaDiGraph(num_dots), shuffle(1:num_dots)))
     motion_tree = get_retval(trace)
     graph_image = visualize_graph(motion_tree, res)
     dotmotion = tree_to_coords(motion_tree, framerate)
