@@ -26,14 +26,16 @@ using Statistics
     beta(α, β) 
 end
 
+# Make sure populate edges generates any possible edge combination 
+
 @gen function populate_edges(motion_tree::MetaDiGraph{Int64, Float64},
                              candidate_parents::Array{Int64, 1},
                              current_dot::Int64)
-    if isempty(candidate_parents) || ne(motion_tree) == nv(motion_tree) - 1 
+    if isempty(candidate_parents)
         return motion_tree
     end
     cand_parent = first(candidate_parents)
-    if has_edge(motion_tree, current_dot, cand_parent)
+    if has_edge(motion_tree, current_dot, cand_parent) || ne(motion_tree) == nv(motion_tree) - 1 
         add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(0)
     else
         if isempty(inneighbors(motion_tree, cand_parent))
@@ -45,7 +47,7 @@ end
     if add_edge
         add_edge!(motion_tree, cand_parent, current_dot)
     end
-    populate_edges(motion_tree, candidate_parents[2:end], current_dot)
+    {*} ~ populate_edges(motion_tree, candidate_parents[2:end], current_dot)
 end
 
 
@@ -81,9 +83,10 @@ end
     else
         dot = first(dots)
         parents = inneighbors(motion_tree, dot)
+        start_x = 5
         if isempty(parents)
-            start_x = {(:start_x, dot)} ~ uniform_discrete(3, 7)
-            start_y = {(:start_y, dot)} ~ uniform_discrete(1, 9)
+            #            start_x = {(:start_x, dot)} ~ uniform_discrete(3, 7)
+            start_y = {(:start_y, dot)} ~ uniform_discrete(2, 8)
         else
             if size(parents)[1] > 1
                 avg_parent_position = mean([props(motion_tree, p)[:Position] for p in parents])
@@ -93,7 +96,7 @@ end
             end
           #  start_x = {(:start_x, dot)} ~ normal(parent_position[1], position_var)
           #  start_y = {(:start_y, dot)} ~ normal(parent_position[2], position_var)
-            start_x = {(:start_x, dot)} ~ uniform_discrete(parent_position[1]-1, parent_position[1]+1)
+#            start_x = {(:start_x, dot)} ~ uniform_discrete(parent_position[1]-1, parent_position[1]+1)
             start_y = {(:start_y, dot)} ~ uniform_discrete(parent_position[2]-1, parent_position[2]+1)
 
             parent_velocities_x = [props(motion_tree, p)[:Velocity_X] for p in parents]
@@ -141,31 +144,72 @@ end
     
 # end
 
-# # lets do fast and slow. two choices for each. 
+
+function force_assign_dotpositions(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    #this function will force a particular set of observed positions to start_x and start_y of
+    # a specific dot. 
+end    
+
+
+# make this able to take various lenghts of ts and update with SMC
         
-# function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
-#                                  ts::Array{Float64},
-#                                  num_dots::Int)
-#     enum_constraints = Gen.choicemap()
-#     tt_entry = [[0,1] for i in 1:num_dots]
-#     edge_truthtable = Iterators.product(tt_entry...)
-#     possible_edges = collect(Iterators.product(1:num_dots, 1:num_dots))
+function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    num_dots = nv(get_retval(trace))
+    enum_constraints = Gen.choicemap()
+    kernel_combos = [kernel_types for i in 1:num_dots]
+    kernel_choices = collect(Iterators.product(kernel_combos...))
+    possible_edges = [e for e in Iterators.product(1:num_dots, 1:num_dots) if e[1] != e[2]]
+    truth_entry = [[0,1] for i in 1:size(possible_edges)[1]]
+    edge_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
+    scores = []
+    for eg in edge_truthtable
+        for (eg_id, e) in enumerate(eg)
+            if e == 1
+              enum_constraints[(:edge, possible_edges[eg_id][1], possible_edges[eg_id][2])] = true
+            else
+              enum_constraints[(:edge, possible_edges[eg_id][1], possible_edges[eg_id][2])] = false
+            end
+        end
+        for kc in kernel_choices
+            for (dot, k) in enumerate(kc)
+                enum_constraints[(:kernel_type, dot)] = k
+            end
+            (new_trace, weight, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
+            append!(scores, weight)
+        end
+    end
+    score_matrix = reshape(scores, prod(collect(size(kernel_choices))), size(edge_truthtable)[1])
+    return score_matrix, kernel_choices, edge_truthtable
+end    
     
+function plot_heatmap(score_matrix::Array{Any, 2}, kernels, edge_truth)
+    scene, layout = layoutscene(resolution=(1200,900))
+    axes = [LAxis(scene)]
+    heatmap!(axes[1], score_matrix, colormap=:thermal)
+    layout[1,1] = axes[1]
+    axes[1].xticks = (1:prod(collect(size(kernels))), [string(k) for k in kernels])
+    axes[1].yticks = (1:size(edge_truth)[1], [string(e) for e in edge_truth])
+    display(scene)
+end    
+
+    # possible_edges is an array of all possible connections between dots. truth table
+    # dictates whether the edge exists or not in the current proposed tree
     
-#     for tt, edge in zip(edge_truthtable, possible_edges)
+    # will be 24 possible arrangements of velocity for each tree. 
+        
         
     
-#     # take the trace into this function and use Gen.update to change the choicemap.
+    # take the trace into this function and use Gen.update to change the choicemap.
     
     
 
                          
-#     # have to cycle through all possible states. first make it simple. 4 possible motion choices, xcoord only changing
-#     # then each possible scene graph. 
+    # have to cycle through all possible states. first make it simple. 4 possible motion choices, xcoord only changing
+    # then each possible scene graph. 
     
 
-#     h = heatmap(rand(6,6), show_axis=false, colormap=:thermal)
-    
+
+
     
 
 
@@ -257,7 +301,6 @@ function render_simulation(num_dots::Int64,
     graph_image = visualize_graph(motion_tree, res)
     dotmotion = tree_to_coords(motion_tree, framerate)
     f(t, coords) = coords[t]
-
     n_rows = 1
     n_cols = 3
     scene, layout = layoutscene(outer_padding,
@@ -479,8 +522,11 @@ end
 # This is an array of data types. Each data type takes a parameter, and each data type has a multiple dispatch
 # call associated with it to create a covariance matrix. 
     
-kernel_types = [RandomWalk, Constant, Linear, Periodic]
-@dist choose_kernel_type() = kernel_types[categorical([.25, .25, .25, .25])]
+#kernel_types = [RandomWalk, Constant, Linear, Periodic]
+#@dist choose_kernel_type() = kernel_types[categorical([.25, .25, .25, .25])]
+
+kernel_types = [RandomWalk, Constant, Periodic]
+@dist choose_kernel_type() = kernel_types[categorical([.3, .4, .3])]
 
 
 @gen function covariance_simple(kt)
