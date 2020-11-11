@@ -34,18 +34,18 @@ end
     end
     cand_parent = first(candidate_parents)
     if has_edge(motion_tree, current_dot, cand_parent)
-        populate_edges(motion_tree, candidate_parents[2:end], current_dot)
+        add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(0)
     else
         if isempty(inneighbors(motion_tree, cand_parent))
-            add_edge = bernoulli(.5)
+            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.5)
         else
-            add_edge = bernoulli(.2)
+            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.2)
         end
-        if add_edge
-            add_edge!(motion_tree, cand_parent, current_dot)
-        end
-        populate_edges(motion_tree, candidate_parents[2:end], current_dot)
-     end
+    end
+    if add_edge
+        add_edge!(motion_tree, cand_parent, current_dot)
+    end
+    populate_edges(motion_tree, candidate_parents[2:end], current_dot)
 end
 
 
@@ -74,39 +74,45 @@ end
 # see if motion tree is a traced variable. if so, it will have a score. 
 
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
-                                              dots::Int64, ts::Array{Float64})
+                                              dots::Array{Int64}, ts::Array{Float64})
     position_var = 1
     if isempty(dots)
         return motion_tree
     else
-        # maybe can have two parents?
         dot = first(dots)
         parents = inneighbors(motion_tree, dot)
         if isempty(parents)
-            xinit = {(:xinit, dot)} ~ uniform(3, 7)
-            yinit = {(:yinit, dot)} ~ uniform(3, 7)
-        # don't assign yet if parents are unassigned
+            start_x = {(:start_x, dot)} ~ uniform_discrete(3, 7)
+            start_y = {(:start_y, dot)} ~ uniform_discrete(1, 9)
         else
             if size(parents)[1] > 1
-                parent_position = mean([props(motion_tree, p)[:Position] for p in parents])
+                avg_parent_position = mean([props(motion_tree, p)[:Position] for p in parents])
+                parent_position = [round(Int, pp) for pp in avg_parent_position]
             else
                 parent_position = props(motion_tree, parents[1])[:Position]
             end
-            xinit = {(:xinit, dot)} ~ normal(parent_position[1], position_var)
-            yinit = {(:yinit, dot)} ~ normal(parent_position[2], position_var)
+          #  start_x = {(:start_x, dot)} ~ normal(parent_position[1], position_var)
+          #  start_y = {(:start_y, dot)} ~ normal(parent_position[2], position_var)
+            start_x = {(:start_x, dot)} ~ uniform_discrete(parent_position[1]-1, parent_position[1]+1)
+            start_y = {(:start_y, dot)} ~ uniform_discrete(parent_position[2]-1, parent_position[2]+1)
+
             parent_velocities_x = [props(motion_tree, p)[:Velocity_X] for p in parents]
             parent_velocities_y = [props(motion_tree, p)[:Velocity_Y] for p in parents]
         end
+
 #        cov_func_x = {(:cov_tree_x, dot)} ~ covariance_prior()
 #        cov_func_y = {(:cov_tree_y, dot)} ~ covariance_prior(typeof(cov_func_x))
 #        noise = {(:noise, dot)} ~  gamma_bounded_below(1, 1, 0.01)
-        cov_func = {(:cov_tree, dot)} ~ covariance_prior()
+        #        cov_func = {(:cov_tree, dot)} ~ covariance_prior()
+        #        cov_func = {(:cov_tree, dot)} ~ covariance_simple()
+        cov_func = {*} ~ covariance_simple(dot)
 #        flip_y = { (:flip_y, dot) } ~ bernoulli(.5)
         noise = 0.001
         covmat_x = compute_cov_matrix_vectorized(cov_func, noise, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func, noise, ts)
         x_vel = {(:x_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_x) 
-        y_vel = {(:y_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
+        #   y_vel = {(:y_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
+        y_vel = [0 for xv in x_vel]
         if !isempty(parents)
             if size(parents)[1] == 1
                 x_vel += parent_velocities_x[1]
@@ -119,12 +125,48 @@ end
         # Sample from the GP using a multivariate normal distribution with
         # the kernel-derived covariance matrix.
         set_props!(motion_tree, dot,
-                   Dict(:Position=>[xinit, yinit], :Velocity_X=>x_vel, :Velocity_Y=>y_vel))
+                   Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel))
         {*} ~ assign_positions_and_velocities(motion_tree, dots[2:end], ts)
     end
 end    
-            
+
+#start with this just being the simulated data itself. eventually have it be a biophysical implementation of a
+# tectal map
+
+# function neural_detector()
+#     neural_constraints = Gen.choicemap()
+#     neural_constraints[:start_x] = 0.1
+#     neural_constraints[:start_y] = 0.1
+
+    
+# end
+
+# # lets do fast and slow. two choices for each. 
         
+# function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
+#                                  ts::Array{Float64},
+#                                  num_dots::Int)
+#     enum_constraints = Gen.choicemap()
+#     tt_entry = [[0,1] for i in 1:num_dots]
+#     edge_truthtable = Iterators.product(tt_entry...)
+#     possible_edges = collect(Iterators.product(1:num_dots, 1:num_dots))
+    
+    
+#     for tt, edge in zip(edge_truthtable, possible_edges)
+        
+    
+#     # take the trace into this function and use Gen.update to change the choicemap.
+    
+    
+
+                         
+#     # have to cycle through all possible states. first make it simple. 4 possible motion choices, xcoord only changing
+#     # then each possible scene graph. 
+    
+
+#     h = heatmap(rand(6,6), show_axis=false, colormap=:thermal)
+    
+    
 
 
 """Create Makie Rendering Environment"""
@@ -168,6 +210,7 @@ function render_simulation(num_dots::Int64)
     ts = range(1, stop=time_duration, length=time_duration*framerate)
     trace = Gen.simulate(generate_dotmotion, (convert(Array{Float64}, ts),
                                               MetaDiGraph(num_dots), shuffle(1:num_dots)))
+
     motion_tree = get_retval(trace)
     graph_image = visualize_graph(motion_tree, res)
     dotmotion = tree_to_coords(motion_tree, framerate)
@@ -190,7 +233,7 @@ function render_simulation(num_dots::Int64)
     image!(axes[3], graph_image)
     limits!(axes[3], BBox(0, res, 0, res))
     for j in 1:num_dots
-        println(trace[(:cov_tree, j)])
+        println(trace[(:kernel_type, j)])
 #        println(trace[(:cov_tree_y, j)])
     end
     display(scene)
@@ -433,13 +476,28 @@ function predict_pos(covariance_fn::Kernel, noise::Float64,
     mvnormal(conditional_mu, conditional_cov_matrix)
 end
 
-# kernel_types = [Constant, Linear, SquaredExponential, Periodic, Plus, Times]
-# @dist choose_kernel_type() = kernel_types[categorical([0.2, 0.2, 0.2, 0.2, 0.1, 0.1])];
-
+# This is an array of data types. Each data type takes a parameter, and each data type has a multiple dispatch
+# call associated with it to create a covariance matrix. 
+    
 kernel_types = [RandomWalk, Constant, Linear, Periodic]
 @dist choose_kernel_type() = kernel_types[categorical([.25, .25, .25, .25])]
 
-# Prior on kernels
+
+@gen function covariance_simple(kt)
+    kernel_type = {(:kernel_type, kt)} ~ choose_kernel_type()
+    if kernel_type == Periodic
+        kernel_args = [.5, 5]
+    elseif kernel_type == Constant
+        kernel_args = [3]
+    elseif kernel_type == Linear
+        kernel_args = [.2]
+    elseif kernel_type == RandomWalk
+        kernel_args = [2]
+    else
+        kernel_args = [1]
+    end
+    return kernel_type(kernel_args...)
+end 
 
 
 @gen function covariance_prior()
@@ -464,38 +522,11 @@ kernel_types = [RandomWalk, Constant, Linear, Periodic]
     return kernel_type(kernel_args...)
 end
 
-
-
 @dist gamma_bounded_below(shape, scale, bound) = gamma(shape, scale) + bound
-
-
                                           
-                                          
-                                          
-# Full model
-@gen function cv_generation_model(ts::Vector{Float64})
-    
-    # Generate a covariance kernel
-    covariance_fn = { :tree } ~ covariance_prior()
-    # Sample a global noise level
-    #    noise ~ gamma_bounded_below(.01, .01, 0.01)
-    noise = 0
-    # Compute the covariance between every pair (xs[i], xs[j])
-    cov_matrix = compute_cov_matrix_vectorized(covariance_fn, noise, ts)
-    # Sample from the GP using a multivariate normal distribution with
-    # the kernel-derived covariance matrix.
-    ys ~ mvnormal(zeros(length(ts)), cov_matrix)
-    # Return the covariance function, for easy printing.
-    return covariance_fn
-end;
 
 
-function serialize_trace(tr, tmin, tmax)
-    (ts,) = get_args(tr)
-    curveT = collect(Float64, range(tmin, length=100, stop=tmax))
-    curvePos = [predict_pos(get_retval(tr), 0.00001, ts, tr[:pos],curveT) for i=1:5]
-    Dict("y-coords" => tr[:pos], "curveT" => curveT, "curvePos" => curvePos)
-end
+
 
 
 
