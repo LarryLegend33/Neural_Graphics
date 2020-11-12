@@ -179,17 +179,20 @@ function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{A
         end
     end
     score_matrix = reshape(scores, prod(collect(size(kernel_choices))), size(edge_truthtable)[1])
-    return score_matrix, kernel_choices, edge_truthtable
+    plotvals = [score_matrix, kernel_choices, edge_truthtable]
+    plot_heatmap(plotvals...)
+    return plotvals
 end    
     
 function plot_heatmap(score_matrix::Array{Any, 2}, kernels, edge_truth)
     scene, layout = layoutscene(resolution=(1200,900))
-    axes = [LAxis(scene)]
+    axes = [LAxis(scene, xticklabelrotation = pi/2, xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))]
     heatmap!(axes[1], score_matrix, colormap=:thermal)
     layout[1,1] = axes[1]
-    axes[1].xticks = (1:prod(collect(size(kernels))), [string(k) for k in kernels])
+    axes[1].xticks = (0:prod(collect(size(kernels)))-1, [string(k) for k in kernels])
     axes[1].yticks = (1:size(edge_truth)[1], [string(e) for e in edge_truth])
     display(scene)
+    return scene, axes
 end    
 
     # possible_edges is an array of all possible connections between dots. truth table
