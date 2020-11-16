@@ -1,0 +1,37 @@
+using AbstractPlotting
+using AbstractPlotting.MakieLayout
+using GLMakie
+
+
+
+#= this is a list of 7 dot locations ranging from -25/2 to 25/2 in both axes. 
+the idea is to create 1000 instances of 7 dot coordinates =#
+res = 1000
+
+x = range(1, step=5, res)
+y = [(res / 2)*sin(i) + res / 2 for i in x]
+coord = [j for j in zip(x, y)]
+
+
+
+#r = [rand(1, 2) .* res for i = 1:N];
+
+outer_padding = 0
+scene, layout = layoutscene(outer_padding, 
+                        resolution=(res, res), 
+                        backgroundcolor=RGBf0(0,0,0))
+
+#scatter!(scene, r[1][:, 1], r[1][:, 2], markersize = 10)
+scatter!(scene, [coord[1][1]], [coord[1][2]], markersize = 20)
+
+s = scene[end] # last plot in scene
+# record(scene, "output.mp4", r) do m
+#     s[1] = m[:, 1]
+#     s[2] = m[:, 2]
+
+record(scene, "output.mp4", coord, framerate=20) do m
+    s[1] = [m[1]]
+    s[2] = [m[2]]    
+
+end
+

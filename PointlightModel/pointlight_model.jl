@@ -19,12 +19,7 @@ using Statistics
 
 #- One thing you might want to think about is keeping the same exact structure but resampling the timeseries. If you do this, may be a good way to test good choices in structure vs sample. 
 
-@dist function beta_peak(μ)
-    σ = √(μ*(1-μ)) / 2
-    α = (((1-μ) / σ^2) - (1/μ))*(μ^2)
-    β = α*((1/μ) - 1)
-    beta(α, β) 
-end
+framerate = 60;
 
 # Make sure populate edges generates any possible edge combination 
 
@@ -36,12 +31,12 @@ end
     end
     cand_parent = first(candidate_parents)
     if has_edge(motion_tree, current_dot, cand_parent) || ne(motion_tree) == nv(motion_tree) - 1 
-        add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(0)
+        add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(0.000000001)
     else
         if isempty(inneighbors(motion_tree, cand_parent))
-            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.5)
+            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.3)
         else
-            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.2)
+            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.1)
         end
     end
     if add_edge
@@ -51,20 +46,29 @@ end
 end
 
 
+# perceptual process probably works like this: you look at a single dot, and test out if it is inheriting the motion of two other dots.
+# if it is, assign it. if not, move to the next dot. repeat. 
+
 @gen function generate_dotmotion(ts::Array{Float64}, 
                                  motion_tree::MetaDiGraph{Int64, Float64},
-                                 candidate_children::Array{Int64, 1})
+                                 candidate_children::Array{Int64, 1},
+                                 parent_order::Array{Int64, 1})
     if !isempty(candidate_children)
         current_dot = first(candidate_children)
-        candidate_parents = shuffle(filter(λ -> λ != current_dot, vertices(motion_tree)))
+#        candidate_parents = filter(λ -> λ != current_dot, vertices(motion_tree))
+        candidate_parents = filter(λ -> λ != current_dot, parent_order)
+        # candidate parents are any dot other than itself, in randomized order so as to not favor particular groupings
         motion_tree_updated = {*} ~ populate_edges(motion_tree, candidate_parents, current_dot)
         {*} ~ generate_dotmotion(ts,
                                  motion_tree_updated,
-                                 candidate_children[2:end])
+                                 candidate_children[2:end],
+                                 parent_order)
     else
 
-        # order the vertices by number of incoming edges.
-        dot_list = sort(collect(1:nv(motion_tree)), by=(ϕ->size(inneighbors(motion_tree, ϕ))))
+        # order the vertices by number of incoming edges for assignment of velocities. but have to use outgoing edges
+        # so parents can be specified before children. (i.e. 1->3->2, want to specify 3 before 2, so sort by
+        # incoming edges first (low to high) and outgoing second (high to low)
+        dot_list = sort(collect(1:nv(motion_tree)), by=ϕ->(size(inneighbors(motion_tree, ϕ))[1], -1*size(outneighbors(motion_tree, ϕ))[1]))
         motion_tree_assigned = {*} ~ assign_positions_and_velocities(motion_tree,
                                                                      dot_list,
                                                                      ts)
@@ -73,7 +77,14 @@ end
 end    
 
 
-# see if motion tree is a traced variable. if so, it will have a score. 
+# function sort_second_attribute
+
+# by is the function that is mapped onto the array. lt is the less than function. 
+
+
+# see if motion tree is a traced variable. if so, it will have a score.
+
+
 
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
                                               dots::Array{Int64}, ts::Array{Float64})
@@ -152,15 +163,32 @@ end
 
 
 # make this able to take various lenghts of ts and update with SMC
+
+function loopfilter(edges, truthtab)
+    filtered_truthtab = []
+    for t_entry in truthtab
+        edges_in_entry = [e for (e,t) in zip(edges, t_entry) if t==1]
+        if !any(map(x -> (x[2], x[1]) in edges_in_entry, edges_in_entry))
+            push!(filtered_truthtab, t_entry)
+        end
+    end
+    return filtered_truthtab
+    
+end
         
 function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     num_dots = nv(get_retval(trace))
-    enum_constraints = Gen.choicemap()
+#    enum_constraints = Gen.choicemap()
     kernel_combos = [kernel_types for i in 1:num_dots]
     kernel_choices = collect(Iterators.product(kernel_combos...))
     possible_edges = [e for e in Iterators.product(1:num_dots, 1:num_dots) if e[1] != e[2]]
     truth_entry = [[0,1] for i in 1:size(possible_edges)[1]]
-    edge_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
+    # filters trees with n_dot or more edges
+    unfiltered_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
+    edge_truthtable = loopfilter(possible_edges, unfiltered_truthtable)
+    enum_constraints = Gen.choicemap(get_choices(trace))
+    trace_args = get_args(trace)
+    # have to also filter trees with loops
     scores = []
     for eg in edge_truthtable
         for (eg_id, e) in enumerate(eg)
@@ -173,47 +201,44 @@ function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{A
         for kc in kernel_choices
             for (dot, k) in enumerate(kc)
                 enum_constraints[(:kernel_type, dot)] = k
+             #   enum_constraints[(:x_vel, dot)] = trace_choices[(:x_vel, dot)]
             end
-            (new_trace, weight, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
-            append!(scores, weight)
+      #      (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
+            (tr, w) = Gen.generate(generate_dotmotion, trace_args, enum_constraints)
+          #  w = get_score(new_trace)
+            append!(scores, w)
         end
     end
     score_matrix = reshape(scores, prod(collect(size(kernel_choices))), size(edge_truthtable)[1])
-    plotvals = [score_matrix, kernel_choices, edge_truthtable]
+    plotvals = [score_matrix, kernel_choices, possible_edges, edge_truthtable]
     plot_heatmap(plotvals...)
     return plotvals
 end    
     
-function plot_heatmap(score_matrix::Array{Any, 2}, kernels, edge_truth)
+function plot_heatmap(score_matrix::Array{Any, 2}, kernels, possible_edges, edge_truth)
+    
     scene, layout = layoutscene(resolution=(1200,900))
     axes = [LAxis(scene, xticklabelrotation = pi/2, xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))]
-    heatmap!(axes[1], score_matrix, colormap=:thermal)
+    heatmap!(axes[1], score_matrix, colormap=:viridis)
     layout[1,1] = axes[1]
     axes[1].xticks = (0:prod(collect(size(kernels)))-1, [string(k) for k in kernels])
-    axes[1].yticks = (1:size(edge_truth)[1], [string(e) for e in edge_truth])
+    axes[1].yticks = (1:size(edge_truth)[1], [string([e_entry for (i, e_entry) in enumerate(possible_edges) if et[i] == 1]) for et in edge_truth])
     display(scene)
     return scene, axes
+end
+
+function dotsample(num_dots::Int)
+    time_duration = 10
+    num_updates = framerate * time_duration
+    ts = range(1, stop=time_duration, length=num_updates)
+    perceptual_order = shuffle(1:num_dots)
+    trace = Gen.simulate(generate_dotmotion, (convert(Array{Float64}, ts),
+                                              MetaDiGraph(num_dots), perceptual_order, perceptual_order))
+    println(collect(edges(get_retval(trace))))
+    trace_choices = get_choices(trace)
+    println([trace_choices[(:kernel_type, i)] for i in 1:num_dots])
+    return trace
 end    
-
-    # possible_edges is an array of all possible connections between dots. truth table
-    # dictates whether the edge exists or not in the current proposed tree
-    
-    # will be 24 possible arrangements of velocity for each tree. 
-        
-        
-    
-    # take the trace into this function and use Gen.update to change the choicemap.
-    
-    
-
-                         
-    # have to cycle through all possible states. first make it simple. 4 possible motion choices, xcoord only changing
-    # then each possible scene graph. 
-    
-
-
-
-    
 
 
 """Create Makie Rendering Environment"""
@@ -247,28 +272,25 @@ function visualize_graph(motion_tree::MetaDiGraph{Int64, Float64},
     return resized_image
 end    
 
-function render_simulation(num_dots::Int64)
-    framerate = 60
+function dotwrap(num_dots::Int)
+    trace = dotsample(num_dots)
+    render_dotmotion(trace)
+    return trace
+end    
+
+function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    motion_tree = get_retval(trace)
     bounds = 10
-    time_duration = 10
     res = 850
     outer_padding = 0
-    num_updates = framerate * time_duration
-    ts = range(1, stop=time_duration, length=time_duration*framerate)
-    trace = Gen.simulate(generate_dotmotion, (convert(Array{Float64}, ts),
-                                              MetaDiGraph(num_dots), shuffle(1:num_dots)))
-
-    motion_tree = get_retval(trace)
     graph_image = visualize_graph(motion_tree, res)
     dotmotion = tree_to_coords(motion_tree, framerate)
     f(t, coords) = coords[t]
-
     n_rows = 1
     n_cols = 3
     scene, layout = layoutscene(outer_padding,
                                 resolution = (3*res, res), 
                                 backgroundcolor=RGBf0(0, 0, 0))
-    
     axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:n_rows, j in 1:n_cols]
     layout[1:n_rows, 1:n_cols] = axes
     time_node = Node(1);
@@ -279,54 +301,18 @@ function render_simulation(num_dots::Int64)
     limits!(axes[2], BBox(0, bounds, 0, bounds))
     image!(axes[3], graph_image)
     limits!(axes[3], BBox(0, res, 0, res))
-    for j in 1:num_dots
+    for j in 1:nv(motion_tree)
         println(trace[(:kernel_type, j)])
 #        println(trace[(:cov_tree_y, j)])
     end
     display(scene)
-    for i in 1:num_updates
+    for i in 1:size(props(motion_tree, 1)[:Velocity_X])[1]
         time_node[] = i
         sleep(1/framerate)
     end
     return trace
 end    
 
-function render_simulation(num_dots::Int64,
-                           trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    framerate = 60
-    bounds = 10
-    time_duration = 10
-    res = 850
-    outer_padding = 0
-    num_updates = framerate * time_duration
-    ts = range(1, stop=time_duration, length=time_duration*framerate)
-    motion_tree = get_retval(trace)
-    graph_image = visualize_graph(motion_tree, res)
-    dotmotion = tree_to_coords(motion_tree, framerate)
-    f(t, coords) = coords[t]
-    n_rows = 1
-    n_cols = 3
-    scene, layout = layoutscene(outer_padding,
-                                resolution = (3*res, res), 
-                                backgroundcolor=RGBf0(0, 0, 0))
-    
-    axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:n_rows, j in 1:n_cols]
-    layout[1:n_rows, 1:n_cols] = axes
-    time_node = Node(1);
-    f(t, coords) = coords[t]
-    scatter!(axes[1], lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
-    limits!(axes[1], BBox(0, bounds, 0, bounds))
-    scatter!(axes[2], lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
-    limits!(axes[2], BBox(0, bounds, 0, bounds))
-    image!(axes[3], graph_image)
-    limits!(axes[3], BBox(0, res, 0, res))
-    display(scene)
-    for i in 1:num_updates
-        time_node[] = i
-        sleep(1/framerate)
-    end
-    return trace
-end    
 
 # Currently in makie_test. Takes a tree and renders the tree and the stimulus.
 
@@ -529,7 +515,7 @@ end
 #@dist choose_kernel_type() = kernel_types[categorical([.25, .25, .25, .25])]
 
 kernel_types = [RandomWalk, Constant, Periodic]
-@dist choose_kernel_type() = kernel_types[categorical([.3, .4, .3])]
+@dist choose_kernel_type() = kernel_types[categorical([.2, .6, .2])]
 
 
 @gen function covariance_simple(kt)

@@ -1,0 +1,6 @@
+* Julia setup
+** Editor setup: first install eglot via elpa, then eglot-jl. Had to adjust connection wait time on first call. Get language server started by eglot-jl-init, then eglot. Also simple downloads of julia-mode and julia-repl. 
+** Downloaded julia from homebrew
+** When starting a project, create a folder for it, then nav to it, run julia, start package manager, then activate the environment -- using "activate .". Install packages for the project directly there, which are then managed in the project.toml files that eglot can read. 
+
+

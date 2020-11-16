@@ -1,0 +1,9 @@
+* Jupyter on the Cluster
+** First open an interactive session on the cluster:   
+
+   srun -p test --pty --mem 500 -t 0-06:00 /bin/bash
+   will start a command line shell (/bin/bash) on the test queue with 500 MB of RAM for 6 hours; 1 core on 1 node is assumed as these parameters (-n 1 -N 1) were left out. When the interactive session starts, you will notice that you are no longer on a login node, but rather one of the compute nodes dedicated to this queue. The --pty option allows the session to act like a standard terminal.
+srun -p test --pty --x11 --mem 4000 -t 0-06:00 /bin/bash
+
+   The 4000 is the amount of memory requested, the 300 is the 
+
