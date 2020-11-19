@@ -17,73 +17,84 @@ using Statistics
 
 #- starting with init positions b/c this is the type of custom proposal you will get from the tectum. you won't get offests for free. this model accounts for distance effects and velocity effects by traversing the tree. 
 
-#- One thing you might want to think about is keeping the same exact structure but resampling the timeseries. If you do this, may be a good way to test good choices in structure vs sample. 
+#- One thing you might want to think about is keeping the same exact structure but resampling the timeseries. If you do this, may be a good way to test good choices in structure vs sample.
 
-framerate = 60;
+#solution to the ongoing problems here is to either: 1) make the tree generation an @dist. 
+# make the tree generation a generative function that makes untraced choices that reflect the populate edges schema.
 
-# Make sure populate edges generates any possible edge combination 
+                
+framerate = 60
 
 @gen function populate_edges(motion_tree::MetaDiGraph{Int64, Float64},
-                             candidate_parents::Array{Int64, 1},
-                             current_dot::Int64)
-    if isempty(candidate_parents)
+                             candidate_pairs::Array{Tuple, 1})
+    if isempty(candidate_pairs)
         return motion_tree
     end
-    cand_parent = first(candidate_parents)
-    if has_edge(motion_tree, current_dot, cand_parent) || ne(motion_tree) == nv(motion_tree) - 1 
-        add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(0.000000001)
+    (current_dot, cand_parent) = first(candidate_pairs)
+    if has_edge(motion_tree, current_dot, cand_parent) || ne(motion_tree) == nv(motion_tree) - 1
+        add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(0)
+
     else
         if isempty(inneighbors(motion_tree, cand_parent))
-            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.3)
+            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.5)
         else
-            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.1)
+            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.2)
         end
     end
     if add_edge
         add_edge!(motion_tree, cand_parent, current_dot)
     end
-    {*} ~ populate_edges(motion_tree, candidate_parents[2:end], current_dot)
+    {*} ~ populate_edges(motion_tree, candidate_pairs[2:end])
 end
 
+# note that the graphs can all be mutated. if your arg set is constant, it will still be manipulated if it was created
+# as a variable. declared arg variables mutate inside a generative function.
+
+# note that if you constrain generate_dotmotion on an unallowable edge (e.g. [1,3]) and 
+
+function score_edges(observation)
+    observations = Gen.choicemap()
+    time_duration = 10
+    num_updates = framerate * time_duration
+    ts = range(1, stop=time_duration, length=num_updates)
+    num_dots = 3
+    observed_graph = MetaGraph(3)
+    if !isempty(observation)
+        add_edge!(observed_graph, observation[1], observation[2])
+        observations[:motion_tree] = observed_graph
+    end
+ #   t_args = (MetaDiGraph(3), [2,3], 1)
+    #   (t, w) = Gen.generate(populate_edges, t_args, observations)
+    t_args = (convert(Array{Float64}, ts), num_dots)
+    #   (t, w) = Gen.generate(generate_dotmotion, t_args, observations)
+  #  observations = Gen.choicemap()
+    (t, w) = Gen.generate(generate_dotmotion, t_args, observations)
+    return t
+end    
 
 # perceptual process probably works like this: you look at a single dot, and test out if it is inheriting the motion of two other dots.
 # if it is, assign it. if not, move to the next dot. repeat. 
 
+# make sure to arrange dots before entering assign_positions_and_velocities function
+# have to specify position and velocity of all parents first b/c child nodes depend on it.
+# arranging by number of inneighbors first and outneighbors second (inverted) guarantees parents
+# are specified before children. 
+
 @gen function generate_dotmotion(ts::Array{Float64}, 
-                                 motion_tree::MetaDiGraph{Int64, Float64},
-                                 candidate_children::Array{Int64, 1},
-                                 parent_order::Array{Int64, 1})
-    if !isempty(candidate_children)
-        current_dot = first(candidate_children)
-#        candidate_parents = filter(λ -> λ != current_dot, vertices(motion_tree))
-        candidate_parents = filter(λ -> λ != current_dot, parent_order)
-        # candidate parents are any dot other than itself, in randomized order so as to not favor particular groupings
-        motion_tree_updated = {*} ~ populate_edges(motion_tree, candidate_parents, current_dot)
-        {*} ~ generate_dotmotion(ts,
-                                 motion_tree_updated,
-                                 candidate_children[2:end],
-                                 parent_order)
-    else
-
-        # order the vertices by number of incoming edges for assignment of velocities. but have to use outgoing edges
-        # so parents can be specified before children. (i.e. 1->3->2, want to specify 3 before 2, so sort by
-        # incoming edges first (low to high) and outgoing second (high to low)
-        dot_list = sort(collect(1:nv(motion_tree)), by=ϕ->(size(inneighbors(motion_tree, ϕ))[1], -1*size(outneighbors(motion_tree, ϕ))[1]))
-        motion_tree_assigned = {*} ~ assign_positions_and_velocities(motion_tree,
-                                                                     dot_list,
-                                                                     ts)
-        return motion_tree_assigned
-    end
-end    
-
-
-# function sort_second_attribute
-
-# by is the function that is mapped onto the array. lt is the less than function. 
-
-
-# see if motion tree is a traced variable. if so, it will have a score.
-
+                                 n_dots::Int)
+    motion_tree = MetaDiGraph(n_dots)
+    order_distribution = return_dot_distribution(n_dots)
+    perceptual_order = { :order_choice } ~ order_distribution()
+    candidate_edges = [p for p in Iterators.product(perceptual_order, perceptual_order) if p[1] != p[2]]
+    motion_tree_updated = {*} ~ populate_edges(motion_tree, candidate_edges)
+    dot_list = sort(collect(1:nv(motion_tree_updated)),
+                    by=ϕ->(size(inneighbors(motion_tree_updated, ϕ))[1],
+                           -1*size(outneighbors(motion_tree_updated, ϕ))[1]))
+    motion_tree_assigned = {*} ~ assign_positions_and_velocities(motion_tree_updated,
+                                                                 dot_list,
+                                                                 ts)
+    return motion_tree_assigned, dot_list
+end
 
 
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
@@ -120,8 +131,7 @@ end
         #        cov_func = {(:cov_tree, dot)} ~ covariance_prior()
         #        cov_func = {(:cov_tree, dot)} ~ covariance_simple()
         cov_func = {*} ~ covariance_simple(dot)
-#        flip_y = { (:flip_y, dot) } ~ bernoulli(.5)
-        noise = 0.001
+        noise = 0.05
         covmat_x = compute_cov_matrix_vectorized(cov_func, noise, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func, noise, ts)
         x_vel = {(:x_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_x) 
@@ -173,12 +183,10 @@ function loopfilter(edges, truthtab)
         end
     end
     return filtered_truthtab
-    
 end
         
 function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    num_dots = nv(get_retval(trace))
-#    enum_constraints = Gen.choicemap()
+    num_dots = nv(get_retval(trace)[1])
     kernel_combos = [kernel_types for i in 1:num_dots]
     kernel_choices = collect(Iterators.product(kernel_combos...))
     possible_edges = [e for e in Iterators.product(1:num_dots, 1:num_dots) if e[1] != e[2]]
@@ -186,26 +194,35 @@ function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{A
     # filters trees with n_dot or more edges
     unfiltered_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
     edge_truthtable = loopfilter(possible_edges, unfiltered_truthtable)
-    enum_constraints = Gen.choicemap(get_choices(trace))
+  #  enum_constraints = Gen.choicemap(get_choices(trace))
     trace_args = get_args(trace)
+    trace_choices = get_choices(trace)
+    trace_retval = get_retval(trace)
     # have to also filter trees with loops
     scores = []
     for eg in edge_truthtable
+        enum_constraints = Gen.choicemap()
+      #  enum_constraints = Gen.choicemap(trace_choices)
         for (eg_id, e) in enumerate(eg)
             if e == 1
-              enum_constraints[(:edge, possible_edges[eg_id][1], possible_edges[eg_id][2])] = true
+                enum_constraints[(:edge, possible_edges[eg_id][1], possible_edges[eg_id][2])] = true
             else
-              enum_constraints[(:edge, possible_edges[eg_id][1], possible_edges[eg_id][2])] = false
+                enum_constraints[(:edge, possible_edges[eg_id][1], possible_edges[eg_id][2])] = false
             end
         end
         for kc in kernel_choices
             for (dot, k) in enumerate(kc)
                 enum_constraints[(:kernel_type, dot)] = k
-             #   enum_constraints[(:x_vel, dot)] = trace_choices[(:x_vel, dot)]
             end
-      #      (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
+          #  (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
+         #   w = get_score(new_trace)
+            # everything is now scored.
+            # here pass the tree through another round of noise generation. will mimic difference between generated and perceived velocities.
+            (ass_trace, w) = Gen.generate(assign_positions_and_velocities, (trace_retval[1], trace_retval[2], trace_args[1]), enum_constraints)
+            for i in 1:num_dots
+                enum_constraints[(:x_vel, i)] = ass_trace[(:x_vel, i)]
+            end
             (tr, w) = Gen.generate(generate_dotmotion, trace_args, enum_constraints)
-          #  w = get_score(new_trace)
             append!(scores, w)
         end
     end
@@ -231,10 +248,8 @@ function dotsample(num_dots::Int)
     time_duration = 10
     num_updates = framerate * time_duration
     ts = range(1, stop=time_duration, length=num_updates)
-    perceptual_order = shuffle(1:num_dots)
-    trace = Gen.simulate(generate_dotmotion, (convert(Array{Float64}, ts),
-                                              MetaDiGraph(num_dots), perceptual_order, perceptual_order))
-    println(collect(edges(get_retval(trace))))
+    trace = Gen.simulate(generate_dotmotion, (convert(Array{Float64}, ts), num_dots))
+    println(collect(edges(get_retval(trace)[1])))
     trace_choices = get_choices(trace)
     println([trace_choices[(:kernel_type, i)] for i in 1:num_dots])
     return trace
@@ -276,10 +291,31 @@ function dotwrap(num_dots::Int)
     trace = dotsample(num_dots)
     render_dotmotion(trace)
     return trace
+end
+
+function test_assignment(observation, obs_value)
+    observations = Gen.choicemap()
+    time_duration = 10
+    num_updates = framerate * time_duration
+    ts = range(1, stop=time_duration, length=num_updates)
+    ts_array = convert(Array{Float64}, ts)
+    num_dots = 3
+    observed_graph = MetaGraph(3)
+    t_args = (ts_array, num_dots)
+    gd_trace = Gen.simulate(generate_dotmotion, t_args)
+    r = get_retval(gd_trace)
+    println(collect(edges(r[1])))
+    if !isempty(observation)
+        observations[observation] = gd_trace[obs_value]
+    end
+    (ass_trace, w) = Gen.generate(assign_positions_and_velocities, (r[1], r[2], ts_array), observations)
+    w
 end    
+    
+
 
 function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    motion_tree = get_retval(trace)
+    motion_tree = get_retval(trace)[1]
     bounds = 10
     res = 850
     outer_padding = 0
@@ -318,10 +354,6 @@ end
 
 
 #- BELOW IS CODE FOR GENERATING TIME SERIES VIA GPs FROM 6.885 PSETS. IT'S ACTUALLY A GREAT STARTING POINT FOR GENERATING SYMBOLIC MOTION PATTERNS. BUT SIMPLIFY FOR NOW. GET RID OF COMPOSITE NODES AND SQUARED EXPONENTIAL MOTION. FOR NOW, JUST KEEP CONSTANT, LINEAR, AND PERIODIC.-#
-
-
-    
-
 
 
 """Node in a tree where the entire tree represents a covariance function"""
@@ -517,6 +549,26 @@ end
 kernel_types = [RandomWalk, Constant, Periodic]
 @dist choose_kernel_type() = kernel_types[categorical([.2, .6, .2])]
 
+function all_dot_permutations(n_dots)
+    all_ranges = [1:n_dots for i in 1:n_dots]
+    all_permutations = [i for i in Iterators.product(all_ranges...) if length(unique(i)) == n_dots]
+    return collect(all_permutations)
+end    
+
+function return_dot_distribution(n_dots)
+    d_permut = all_dot_permutations(n_dots)
+    @dist dot_permutations() = d_permut[categorical([1/length(d_permut) for i in 1:length(d_permut)])]
+end    
+# can't pass a number param here. have to make a generator to generate distributions I think. n is not a parameter.
+# 
+
+
+
+
+
+# I tested this function under Gen.generate and constrained choices of kernel types
+# unconstrained, weight is correctly 0. constrained, weights are identical to categorial probabilities
+# returns a natural log of the prob. 
 
 @gen function covariance_simple(kt)
     kernel_type = {(:kernel_type, kt)} ~ choose_kernel_type()
