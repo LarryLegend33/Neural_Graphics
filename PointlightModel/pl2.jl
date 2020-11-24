@@ -51,7 +51,7 @@ end
 
     else
         if isempty(inneighbors(motion_tree, cand_parent))
-            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.4)
+            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.3)
         else
             add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.1)
         end
@@ -132,7 +132,7 @@ end
 
 #        cov_func_x = {(:cov_tree_x, dot)} ~ covariance_prior()
 #        cov_func_y = {(:cov_tree_y, dot)} ~ covariance_prior(typeof(cov_func_x))
-#        noise = {(:noise, dot)} ~  gamma_bounded_below(1, 1, 0.01)
+     #   noise = {(:noise, dot)} ~  gamma_bounded_below(2, .001, 0)
         #        cov_func = {(:cov_tree, dot)} ~ covariance_prior()
         #        cov_func = {(:cov_tree, dot)} ~ covariance_simple()
         cov_func = {*} ~ covariance_simple(dot)
@@ -163,10 +163,6 @@ end
 # end
 
 
-function force_assign_dotpositions(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    #this function will force a particular set of observed positions to start_x and start_y of
-    # a specific dot. 
-end    
 
 
 # make this able to take various lenghts of ts and update with SMC
@@ -196,7 +192,7 @@ function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{A
     num_dots = nv(get_retval(trace)[1])
     kernel_combos = [kernel_types for i in 1:num_dots]
     kernel_choices = collect(Iterators.product(kernel_combos...))
-    possible_edges = [e for e in Iterators.product(1:num_dots, 1:num_dots) if e[1] != e[2]]
+    possible_edges = [(i, j) for i in 1:num_dots for j in 1:num_dots if i != j]
     truth_entry = [[0,1] for i in 1:size(possible_edges)[1]]
     # filters trees with n_dot or more edges
     unfiltered_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
@@ -248,10 +244,42 @@ function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{A
     return plotvals
 end
 
+function evaluate_accuracy(num_dots::Int64, num_iters::Int64)
+    correct_counter = zeros(4)
+    for ni in 1:num_iters
+        t, e, v = imp_inference(num_dots)
+        motion_tree = get_retval(t)[1]
+        mp_edge = findmax(e)[2]
+        mp_velocity = findmax(v)[2]
+        scoremat, kernels, p_edges, edge_tt = enumerate_possibilities(t)
+        max_score = findmax(scoremat)[2]
+        max_enum_vel = kernels[max_score[1]]
+        max_enum_edge = edge_tt[max_score[2]]
+        edge_truth = [convert(Int64, has_edge(motion_tree, d1, d2)) for d1 in 1:num_dots for d2 in 1:num_dots if d1 != d2]
+        velocity_truth = [t[(:kernel_type, d)] for d in 1:num_dots]
+        if Tuple(edge_truth) == max_enum_edge
+            correct_counter[1] += 1
+        end
+        if Tuple(velocity_truth) == max_enum_vel
+            correct_counter[2] += 1
+        end
+        if edge_truth == mp_edge
+            correct_counter[3] += 1
+        end
+        if velocity_truth == mp_velocity
+            correct_counter[4] += 1
+        end
+    end
+    barplot(correct_counter / num_iters)
+end        
+            
+                      
+                      
     
 function plot_heatmap(score_matrix::Array{Any, 2}, kernels, possible_edges, edge_truth)
     scene, layout = layoutscene(resolution=(1200,900))
     axes = [LAxis(scene, xticklabelrotation = pi/2, xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))]
+    
     heatmap!(axes[1], score_matrix, colormap=:viridis)
     layout[1,1] = axes[1]
     axes[1].xticks = (0:prod(collect(size(kernels)))-1, [string(k) for k in kernels])
@@ -269,6 +297,22 @@ function dotsample(num_dots::Int)
     println([trace_choices[(:kernel_type, i)] for i in 1:num_dots])
     return trace, gdm_args
 end    
+
+
+
+
+
+# function force_assign_dotpositions(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    
+#     observation = Gen.choicemap()
+#     (new_trace, w, a, ad) = Gen.update(gd_trace, t_args, (NoChange(),), observations)
+    
+# end    
+
+
+# one test you want to do is assign invertedly. see if the tree comes back inverted.
+# another thing you want to do is force assign so it doesn't play with choices of start x and y and
+# score values that make no sense. this is probably a thing.
 
 
 function imp_inference(num_dots::Int)
@@ -313,7 +357,6 @@ end
 
 function tree_to_coords(tree::MetaDiGraph{Int64, Float64},
                         framerate::Int64)
-
     num_dots = nv(tree)
     dotmotion = fill(zeros(2), num_dots, size(interpolate_velocities(props(tree, 1)[:Velocity_X], interp_iters))[1])
     println(size(dotmotion))
