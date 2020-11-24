@@ -51,7 +51,7 @@ end
 
     else
         if isempty(inneighbors(motion_tree, cand_parent))
-            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.3)
+            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.4)
         else
             add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.1)
         end
@@ -101,7 +101,9 @@ end
         start_x = 5
         if isempty(parents)
             #            start_x = {(:start_x, dot)} ~ uniform_discrete(3, 7)
-            start_y = {(:start_y, dot)} ~ uniform_discrete(2, 8)            
+            start_y = {(:start_y, dot)} ~ uniform_discrete(2, 8)
+            x_vel_mean = zeros(length(ts))
+            y_vel_mean = zeros(length(ts))
         else
             if size(parents)[1] > 1
                 avg_parent_position = mean([props(motion_tree, p)[:Position] for p in parents])
@@ -118,6 +120,16 @@ end
             parent_velocities_y = [props(motion_tree, p)[:Velocity_Y] for p in parents]
         end
 
+        if !isempty(parents)
+            if size(parents)[1] == 1
+                x_vel_mean = parent_velocities_x[1]
+                y_vel_mean = parent_velocities_y[1]
+            else
+                x_vel_mean = sum(parent_velocities_x)
+                y_vel_mean = sum(parent_velocities_y)
+            end
+        end
+
 #        cov_func_x = {(:cov_tree_x, dot)} ~ covariance_prior()
 #        cov_func_y = {(:cov_tree_y, dot)} ~ covariance_prior(typeof(cov_func_x))
 #        noise = {(:noise, dot)} ~  gamma_bounded_below(1, 1, 0.01)
@@ -127,18 +139,10 @@ end
         noise = 0.001
         covmat_x = compute_cov_matrix_vectorized(cov_func, noise, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func, noise, ts)
-        x_vel = {(:x_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_x) 
+        #        x_vel = {(:x_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
+        x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_mean, covmat_x)
         #   y_vel = {(:y_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
         y_vel = [0 for xv in x_vel]
-        if !isempty(parents)
-            if size(parents)[1] == 1
-                x_vel += parent_velocities_x[1]
-                y_vel += parent_velocities_y[1]
-            else
-                x_vel += sum(parent_velocities_x)
-                y_vel += sum(parent_velocities_y)
-            end
-        end
         # Sample from the GP using a multivariate normal distribution with
         # the kernel-derived covariance matrix.
         set_props!(motion_tree, dot,
@@ -217,8 +221,6 @@ function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{A
             for (dot, k) in enumerate(kc)
                 enum_constraints[(:kernel_type, dot)] = k
             end
-            (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
-            w = get_score(new_trace)
 
             # first test is to constrain on the X value but force tree and motion type structure (without scoring).
             # 
@@ -227,9 +229,12 @@ function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{A
             # bug here is that the same velocity just keeps replenishing. have to clear the velocity before updating it, bc you're constrainig
             # on it here after one sample, which is why first column is YELLOW. 
             # (ass_trace, w) = Gen.generate(assign_positions_and_velocities, (trace_retval[1], trace_retval[2], trace_args[1]), enum_constraints)
-       #     for i in 1:num_dots
-        #         enum_constraints[(:x_vel, i)] = trace[(:x_vel, i)]
-        #    end
+            for i in 1:num_dots
+                 enum_constraints[(:x_vel, i)] = trace[(:x_vel, i)]
+            end
+            (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
+            w = get_score(new_trace)
+
 #            (tr, w) = Gen.generate(generate_dotmotion, trace_args, enum_constraints)
 #            temp_constraints = [map_entry for map_entry in get_values_shallow(enum_constraints) if map_entry[1][1] != :x_vel]
             # this just removes the constraining velocities from the choicemap. 
@@ -276,8 +281,27 @@ function imp_inference(num_dots::Int)
     end
     edge_list = []
     kernel_types = []
-    for i in 1:20
-        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 100)
+    for i in 1:100
+        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 200)
+        push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
+        push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
+    end
+    return trace, countmap(edge_list), countmap(kernel_types)
+end    
+
+function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    trace_choices = get_choices(trace)
+    args = get_args(trace)
+    observation = Gen.choicemap()
+    num_dots = nv(get_retval(trace)[1])
+    for i in num_dots
+        observation[(:x_vel, i)] = trace[(:x_vel, i)]
+        observation[(:start_y, i)] = trace[(:start_y, i)]
+    end
+    edge_list = []
+    kernel_types = []
+    for i in 1:100
+        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 200)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
     end
