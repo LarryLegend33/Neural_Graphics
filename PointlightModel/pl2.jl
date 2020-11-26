@@ -187,6 +187,55 @@ end
 # biggest problem -- you do not have any way of reporting back inheritance. this is critical! currently feeding in the
 # velocities, but not the outcomes. 
 
+function animate_inference(num_dots::Int64)
+    kernel_combos = [kernel_types for i in 1:num_dots]
+    kernel_choices = collect(Iterators.product(kernel_combos...))
+    possible_edges = [(i, j) for i in 1:num_dots for j in 1:num_dots if i != j]
+    truth_entry = [[0,1] for i in 1:size(possible_edges)[1]]
+    # filters trees with n_dot or more edges
+    unfiltered_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
+    edge_truthtable = loopfilter(possible_edges, unfiltered_truthtable)
+    # here you will have a list of traces
+    counts = []
+    truth_trace, edge_samples, vel_samples = imp_inference(num_dots)
+    joint_edge_vel = [(Tuple(e), Tuple(v)) for (e,v) in zip(edge_samples, vel_samples)]
+    for eg in edge_truthtable
+        for kc in kernel_choices
+            ev_count = count(λ -> (λ[1] == eg && λ[2] == kc), joint_edge_vel)
+            push!(counts, ev_count)
+        end
+    end
+    count_matrix = reshape(counts, prod(collect(size(kernel_choices))), size(edge_truthtable)[1])
+    plotvals = [count_matrix, kernel_choices, possible_edges, edge_truthtable]
+    scene, ax = plot_heatmap(plotvals...)
+    return truth_trace, ax
+end
+
+function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    num_dots = nv(get_retval(trace)[1])
+    kernel_combos = [kernel_types for i in 1:num_dots]
+    kernel_choices = collect(Iterators.product(kernel_combos...))
+    possible_edges = [(i, j) for i in 1:num_dots for j in 1:num_dots if i != j]
+    truth_entry = [[0,1] for i in 1:size(possible_edges)[1]]
+    # filters trees with n_dot or more edges
+    unfiltered_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
+    edge_truthtable = loopfilter(possible_edges, unfiltered_truthtable)
+    # here you will have a list of traces
+    counts = []
+    truth_trace, edge_samples, vel_samples = imp_inference(trace)
+    joint_edge_vel = [(Tuple(e), Tuple(v)) for (e,v) in zip(edge_samples, vel_samples)]
+    for eg in edge_truthtable
+        for kc in kernel_choices
+            ev_count = count(λ -> (λ[1] == eg && λ[2] == kc), joint_edge_vel)
+            push!(counts, ev_count)
+        end
+    end
+    count_matrix = reshape(counts, prod(collect(size(kernel_choices))), size(edge_truthtable)[1])
+    plotvals = [count_matrix, kernel_choices, possible_edges, edge_truthtable]
+    return plotvals
+end                
+
+
 
 function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     num_dots = nv(get_retval(trace)[1])
@@ -249,8 +298,8 @@ function evaluate_accuracy(num_dots::Int64, num_iters::Int64)
     for ni in 1:num_iters
         t, e, v = imp_inference(num_dots)
         motion_tree = get_retval(t)[1]
-        mp_edge = findmax(e)[2]
-        mp_velocity = findmax(v)[2]
+        mp_edge = findmax(countmap(e))[2]
+        mp_velocity = findmax(countmap(v))[2]
         scoremat, kernels, p_edges, edge_tt = enumerate_possibilities(t)
         max_score = findmax(scoremat)[2]
         max_enum_vel = kernels[max_score[1]]
@@ -274,16 +323,19 @@ function evaluate_accuracy(num_dots::Int64, num_iters::Int64)
 end        
             
                       
-                      
     
 function plot_heatmap(score_matrix::Array{Any, 2}, kernels, possible_edges, edge_truth)
-    scene, layout = layoutscene(resolution=(1200,900))
-    axes = [LAxis(scene, xticklabelrotation = pi/2, xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))]
-    
+    scene, layout = layoutscene(resolution=(1200,900), backgroundcolor=RGBf0(0, 0, 0))
+    white = RGBf0(255,255,255)
+    axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0), xticklabelcolor=white, yticklabelcolor=white, 
+                  xtickcolor=white, ytickcolor=white, xgridcolor=white, ygridcolor=white, 
+                  xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))]
     heatmap!(axes[1], score_matrix, colormap=:viridis)
     layout[1,1] = axes[1]
     axes[1].xticks = (0:prod(collect(size(kernels)))-1, [string(k) for k in kernels])
-    axes[1].yticks = (1:size(edge_truth)[1], [string([e_entry for (i, e_entry) in enumerate(possible_edges) if et[i] == 1]) for et in edge_truth])
+    yticklabs = [string([e_entry for (i, e_entry) in enumerate(possible_edges) if et[i] == 1]) for et in edge_truth]
+    println(yticklabs)
+    axes[1].yticks = (1:size(edge_truth)[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs]) 
     display(scene)
     return scene, axes
 end
@@ -297,10 +349,6 @@ function dotsample(num_dots::Int)
     println([trace_choices[(:kernel_type, i)] for i in 1:num_dots])
     return trace, gdm_args
 end    
-
-
-
-
 
 # function force_assign_dotpositions(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     
@@ -319,7 +367,7 @@ function imp_inference(num_dots::Int)
     trace, args = dotsample(num_dots)
     trace_choices = get_choices(trace)
     observation = Gen.choicemap()
-    for i in num_dots
+    for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
         observation[(:start_y, i)] = trace[(:start_y, i)]
     end
@@ -330,7 +378,7 @@ function imp_inference(num_dots::Int)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
     end
-    return trace, countmap(edge_list), countmap(kernel_types)
+    return trace, edge_list, kernel_types
 end    
 
 function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
@@ -338,7 +386,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     args = get_args(trace)
     observation = Gen.choicemap()
     num_dots = nv(get_retval(trace)[1])
-    for i in num_dots
+    for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
         observation[(:start_y, i)] = trace[(:start_y, i)]
     end
@@ -349,7 +397,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
     end
-    return trace, countmap(edge_list), countmap(kernel_types)
+    return trace, edge_list, kernel_types
 end    
 
 
@@ -379,10 +427,14 @@ function visualize_graph(motion_tree::MetaDiGraph{Int64, Float64},
                         edge_style="yellow", 
                         node_style="draw, rounded corners, fill=blue!20",
                         options="scale=8, font=\\huge\\sf");
+
+    #make dots a certain color in the graph for a specific motion type. then turn the heatmap axis black.
+    # see if you can switch the xticks to be different colors. 
+    
     TikzPictures.save(PDF("test"), g);
     graphimage = load("test.pdf");
     rot_image = imrotate(graphimage, π/2);
-    scale_ratio = (resolution*.75) / maximum(size(rot_image))
+    scale_ratio = (resolution*.6) / maximum(size(rot_image))
     resized_image = imresize(rot_image, ratio=scale_ratio)
     return resized_image
 end    
@@ -433,21 +485,29 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     graph_image = visualize_graph(motion_tree, res)
     dotmotion = tree_to_coords(motion_tree, framerate)
     f(t, coords) = coords[t]
-    n_rows = 1
-    n_cols = 3
+    n_rows = 2
+    n_cols = 2
+    white = RGBf0(255,255,255)
+    score_matrix = animate_inference(trace)
     scene, layout = layoutscene(outer_padding,
-                                resolution = (3*res, res), 
+                                resolution = (4*res, res), 
                                 backgroundcolor=RGBf0(0, 0, 0))
     axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:n_rows, j in 1:n_cols]
+    axes[3] = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0), xticklabelcolor=white, yticklabelcolor=white, 
+                     xtickcolor=white, ytickcolor=white, xgridcolor=white, ygridcolor=white, 
+                     xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))][1]
+    axes[3].xticks = (0:prod(collect(size(score_matrix[2])))-1, [string(k) for k in score_matrix[2]])
+    yticklabs = [string([e_entry for (i, e_entry) in enumerate(score_matrix[3]) if et[i] == 1]) for et in score_matrix[4]]
+    axes[3].yticks = (1:size(score_matrix[4])[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs]) 
     layout[1:n_rows, 1:n_cols] = axes
     time_node = Node(1);
     f(t, coords) = coords[t]
-    scatter!(axes[1], lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
-    limits!(axes[1], BBox(0, bounds, 0, bounds))
     scatter!(axes[2], lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
     limits!(axes[2], BBox(0, bounds, 0, bounds))
-    image!(axes[3], graph_image)
-    limits!(axes[3], BBox(0, res, 0, res))
+    image!(axes[1], graph_image)
+    limits!(axes[1], BBox(0, res, 0, res))
+    heatmap!(axes[3], score_matrix[1], colormap=:viridis)
+   # limits!(axes[3], BBox(0, res, 0, res))
     for j in 1:nv(motion_tree)
         println(trace[(:kernel_type, j)])
 #        println(trace[(:cov_tree_y, j)])
