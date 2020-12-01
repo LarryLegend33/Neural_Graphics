@@ -22,8 +22,8 @@ using StatsBase
 
 #want a balance between inferability and smoothness
 framerate = 60
-time_duration = 5
-num_velocity_points = 20
+time_duration = 10
+num_velocity_points = time_duration * 4
 # filling in n-1 samples for every interpolation, where n is the
 # length of the velocity vector. your final amount of samples doubles this each time, then adds 1. 
 interp_iters = round(Int64, log(2, (framerate * time_duration) / (num_velocity_points -1)))
@@ -98,9 +98,9 @@ end
     else
         dot = first(dots)
         parents = inneighbors(motion_tree, dot)
-        start_x = 5
+     #   start_x = 10
         if isempty(parents)
-            #            start_x = {(:start_x, dot)} ~ uniform_discrete(3, 7)
+            start_x = {(:start_x, dot)} ~ uniform_discrete(2, 8)
             start_y = {(:start_y, dot)} ~ uniform_discrete(2, 8)
             x_vel_mean = zeros(length(ts))
             y_vel_mean = zeros(length(ts))
@@ -113,7 +113,7 @@ end
             end
           #  start_x = {(:start_x, dot)} ~ normal(parent_position[1], position_var)
           #  start_y = {(:start_y, dot)} ~ normal(parent_position[2], position_var)
-#            start_x = {(:start_x, dot)} ~ uniform_discrete(parent_position[1]-1, parent_position[1]+1)
+            start_x = {(:start_x, dot)} ~ uniform_discrete(parent_position[1]-1, parent_position[1]+1)
             start_y = {(:start_y, dot)} ~ uniform_discrete(parent_position[2]-1, parent_position[2]+1)
         #    start_y = {(:start_y, dot)} ~ uniform_discrete(2, 8)
             parent_velocities_x = [props(motion_tree, p)[:Velocity_X] for p in parents]
@@ -141,8 +141,8 @@ end
         covmat_y = compute_cov_matrix_vectorized(cov_func, noise, ts)
         #        x_vel = {(:x_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
         x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_mean, covmat_x)
-        #   y_vel = {(:y_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
-        y_vel = [0 for xv in x_vel]
+        y_vel = {(:y_vel, dot)} ~ mvnormal(y_vel_mean, covmat_y)
+#        y_vel = [0 for xv in x_vel]
         # Sample from the GP using a multivariate normal distribution with
         # the kernel-derived covariance matrix.
         set_props!(motion_tree, dot,
@@ -370,6 +370,8 @@ function imp_inference(num_dots::Int)
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
         observation[(:start_y, i)] = trace[(:start_y, i)]
+        observation[(:y_vel, i)] = trace[(:y_vel, i)]
+        observation[(:start_x, i)] = trace[(:start_x, i)]        
     end
     edge_list = []
     kernel_types = []
@@ -389,6 +391,8 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
         observation[(:start_y, i)] = trace[(:start_y, i)]
+        observation[(:y_vel, i)] = trace[(:y_vel, i)]
+        observation[(:start_x, i)] = trace[(:start_x, i)]        
     end
     edge_list = []
     kernel_types = []
@@ -422,19 +426,18 @@ function tree_to_coords(tree::MetaDiGraph{Int64, Float64},
 end
 
 function visualize_graph(motion_tree::MetaDiGraph{Int64, Float64},
-                         resolution::Int64)
+                         resolution::Int64,
+                         node_dict::Dict{Any})
     g = TikzGraphs.plot(motion_tree.graph,
                         edge_style="yellow", 
-                        node_style="draw, rounded corners, fill=blue!20",
+                        node_style="draw, rounded corners, fill=blue!20", node_styles=node_dict,
                         options="scale=8, font=\\huge\\sf");
-
     #make dots a certain color in the graph for a specific motion type. then turn the heatmap axis black.
     # see if you can switch the xticks to be different colors. 
-    
     TikzPictures.save(PDF("test"), g);
     graphimage = load("test.pdf");
     rot_image = imrotate(graphimage, π/2);
-    scale_ratio = (resolution*.6) / maximum(size(rot_image))
+    scale_ratio = (resolution*.7) / maximum(size(rot_image))
     resized_image = imresize(rot_image, ratio=scale_ratio)
     return resized_image
 end    
@@ -445,6 +448,20 @@ function dotwrap(num_dots::Int)
     return trace, args
 end
 
+function nodecolors(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    nc_dict = Dict()
+    for n in 1:nv(get_retval(trace)[1])
+        vtype = trace[(:kernel_type, n)]
+        if vtype == RandomWalk
+            nc_dict[n] = "fill=red!70"
+        elseif vtype == Constant
+            nc_dict[n] = "fill=green!50!blue!50"
+        else
+            nc_dict[n] = "fill=blue!80!red!50"
+        end
+    end
+        return nc_dict
+end        
 
 # score for the correct kernel type is always the highest, up to 3 dots. 
 
@@ -480,37 +497,41 @@ end
 function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     motion_tree = get_retval(trace)[1]
     bounds = 10
-    res = 850
+    res = 700
     outer_padding = 0
-    graph_image = visualize_graph(motion_tree, res)
+    node_styles = nodecolors(trace)
+    println(node_styles)
+    graph_image = visualize_graph(motion_tree, res, node_styles)
     dotmotion = tree_to_coords(motion_tree, framerate)
     f(t, coords) = coords[t]
-    n_rows = 2
+    n_rows = 3
     n_cols = 2
     white = RGBf0(255,255,255)
     score_matrix = animate_inference(trace)
     scene, layout = layoutscene(outer_padding,
-                                resolution = (4*res, res), 
+                                resolution = (2*res, 3*res), 
                                 backgroundcolor=RGBf0(0, 0, 0))
     axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:n_rows, j in 1:n_cols]
-    axes[3] = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0), xticklabelcolor=white, yticklabelcolor=white, 
+    axes[3] = [LAxis(scene, backgroundcolor=white, xticklabelcolor=white, yticklabelcolor=white, 
                      xtickcolor=white, ytickcolor=white, xgridcolor=white, ygridcolor=white, 
                      xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))][1]
-    axes[3].xticks = (0:prod(collect(size(score_matrix[2])))-1, [string(k) for k in score_matrix[2]])
+    axes[3].xticks = (0:prod(collect(size(score_matrix[2])))-1, [string([string(ks)[1] for ks in k]...) for k in score_matrix[2]])
     yticklabs = [string([e_entry for (i, e_entry) in enumerate(score_matrix[3]) if et[i] == 1]) for et in score_matrix[4]]
     axes[3].yticks = (1:size(score_matrix[4])[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs]) 
-    layout[1:n_rows, 1:n_cols] = axes
+#    layout[1:n_rows, 1:n_cols] = axes
+    layout[3, 1:n_cols] = axes[[1,3]]
+    layout[1:2, 1:n_cols] = axes[2]
     time_node = Node(1);
     f(t, coords) = coords[t]
     scatter!(axes[2], lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
     limits!(axes[2], BBox(0, bounds, 0, bounds))
     image!(axes[1], graph_image)
     limits!(axes[1], BBox(0, res, 0, res))
-    heatmap!(axes[3], score_matrix[1], colormap=:viridis)
+    hm = heatmap!(axes[3], score_matrix[1], colormap=:viridis)
+    hm.colorrange = (1, sum(score_matrix[1]))
    # limits!(axes[3], BBox(0, res, 0, res))
     for j in 1:nv(motion_tree)
         println(trace[(:kernel_type, j)])
-#        println(trace[(:cov_tree_y, j)])
     end
     display(scene)
     for i in 1:size(dotmotion)[1]
@@ -750,7 +771,7 @@ end
         kernel_args = [.5, 2]
 #        kernel_args = [.5, 5]
     elseif kernel_type == Constant
-        kernel_args = [5]
+        kernel_args = [1]
 #        kernel_args = [3]
     elseif kernel_type == Linear
         kernel_args = [.2]
