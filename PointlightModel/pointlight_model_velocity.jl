@@ -95,48 +95,6 @@ end
 end
 
 
-@gen function assign_positions(motion_tree::MetaDiGraph{Int64, Float64},
-                               dots::Array{Int64}, ts::Array{Float64})
-    if isempty(dots)
-        return motion_tree
-    else
-        dot = first(dots)
-        parents = inneighbors(motion_tree, dot)
-        #   start_x = 10
-        offset_x = {(:offset_x, dot)} ~ uniform_discrete(-5, 5)
-        offset_y = {(:offset_y, dot)} ~ uniform_discrete(-5, 5)
-        if isempty(parents)
-            x_pos_mean = offset_x * ones(length(ts))
-            y_pos_mean = offset_y * ones(length(ts))
-        else
-            parent_positions_x = [props(motion_tree, p)[:Position_X] for p in parents]
-            parent_positions_y = [props(motion_tree, p)[:Position_Y] for p in parents]
-            if size(parents)[1] > 1
-                x_pos_mean = [offset_x + mx for mx in mean(parent_positions_x)]
-                y_pos_mean = [offset_y + my for my in mean(parent_positions_y)]
-            else
-                x_pos_mean = [offset_x + px for px in parent_positions_x[1]]
-                y_pos_mean = [offset_y + py for py in parent_positions_y[1]]
-            end
-        end
-        cov_func = {*} ~ covariance_simple(dot)
-        noise = 0.001
-        covmat_x = compute_cov_matrix_vectorized(cov_func, noise, ts)
-        covmat_y = compute_cov_matrix_vectorized(cov_func, noise, ts)
-#        covmat_y = covmat_x
-        #        x_vel = {(:x_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
-        x_pos = {(:x_pos, dot)} ~ mvnormal(x_pos_mean, covmat_x)
-        y_pos = {(:y_pos, dot)} ~ mvnormal(y_pos_mean, covmat_y)
-#        y_vel = [0 for xv in x_vel]
-        # Sample from the GP using a multivariate normal distribution with
-        # the kernel-derived covariance matrix.
-        set_props!(motion_tree, dot,
-                   Dict(:Position_X=>x_pos, :Position_Y=>y_pos))
-        {*} ~ assign_positions(motion_tree, dots[2:end], ts)
-    end
-end    
-
-
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
                                               dots::Array{Int64}, ts::Array{Float64})
     position_var = 1
@@ -446,43 +404,6 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     return trace, edge_list, kernel_types
 end
 
-# function imp_inference(num_dots::Int)
-#     trace, args = dotsample(num_dots)
-#     trace_choices = get_choices(trace)
-#     observation = Gen.choicemap()
-#     for i in 1:num_dots
-#         observation[(:x_pos, i)] = trace[(:x_pos, i)]
-#         observation[(:y_pos, i)] = trace[(:y_pos, i)]
-#     end
-#     edge_list = []
-#     kernel_types = []
-#     for i in 1:100
-#         (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 200)
-#         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
-#         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
-#     end
-#     return trace, edge_list, kernel_types
-# end    
-
-# function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-#     trace_choices = get_choices(trace)
-#     args = get_args(trace)
-#     observation = Gen.choicemap()
-#     num_dots = nv(get_retval(trace)[1])
-#     for i in 1:num_dots
-#         observation[(:x_pos, i)] = trace[(:x_pos, i)]
-#         observation[(:y_pos, i)] = trace[(:y_pos, i)]
-#     end
-#     edge_list = []
-#     kernel_types = []
-#     for i in 1:100
-#         (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 200)
-#         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
-#         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
-#     end
-#     return trace, edge_list, kernel_types
-# end    
-
 
 """Create Makie Rendering Environment"""
 
@@ -499,23 +420,6 @@ function tree_to_coords(tree::MetaDiGraph{Int64, Float64},
             dot_data[:Position][2] .+ cumsum(interpolate_coords(dot_data[:Velocity_Y], interp_iters)) ./ framerate)]
     end
 
-    dotmotion_tuples = [[Tuple(dotmotion[i, j]) for i in 1:num_dots] for j in 1:size(dotmotion)[2]]
-    println(size(dotmotion_tuples))
-    return dotmotion_tuples
-end
-
-function tree_to_coords(tree::MetaDiGraph{Int64, Float64})
-    num_dots = nv(tree)
-    dotmotion = fill(zeros(2), num_dots, size(interpolate_coords(props(tree, 1)[:Position_X], interp_iters))[1])
-    dotmotion = fill(zeros(2), num_dots, size(props(tree, 1)[:Position_X])[1])
-    println(size(dotmotion))
-    # Assign first dot positions based on its initial XY position and velocities
-    for dot in 1:num_dots
-        dot_data = props(tree, dot)
-        dotmotion[dot, :] = [[x, y] for (x, y) in zip(dot_data[:Position_X], dot_data[:Position_Y])]
-            # interpolate_coords(dot_data[:Position_X], interp_iters),
-            # interpolate_coords(dot_data[:Position_Y], interp_iters))]
-    end
     dotmotion_tuples = [[Tuple(dotmotion[i, j]) for i in 1:num_dots] for j in 1:size(dotmotion)[2]]
     println(size(dotmotion_tuples))
     return dotmotion_tuples
@@ -563,36 +467,6 @@ function nodecolors(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         return nc_dict
 end        
 
-# score for the correct kernel type is always the highest, up to 3 dots. 
-
-function test_assignment(num_dots::Int64)
-    observations = Gen.choicemap()
-    ts = range(1, stop=time_duration, length=num_velocity_points)
-    ts_array = convert(Array{Float64}, ts)
-    observed_graph = MetaGraph(num_dots)
-    t_args = (ts_array, num_dots)
-    gd_trace = Gen.simulate(generate_dotmotion, t_args)
-    r = get_retval(gd_trace)
-    println(collect(edges(r[1])))
-    # if !isempty(observation)
-    #     observations[observation] = gd_trace[(:x_vel, 1)]
-    # end
-    ws = []
-    println([gd_trace[(:kernel_type, i)] for i in 1:num_dots])
-    for kt in kernel_types
-        observations[(:kernel_type, 1)] = kt
-        (new_trace, w, a, ad) = Gen.update(gd_trace, t_args, (NoChange(),), observations)
-        w = get_score(new_trace)
-        push!(ws, w)
-    end        
-    # this is meaningless - a whole new trace gets generated that may not share edges, etc.
-    # all i want is the probability of generating the velocity generated by the trace
-    # given 
-    #    (ass_trace, w) = Gen.generate(assign_positions_and_velocities, (r[1], r[2], ts_array), observations)
-    return [wkt for wkt in zip(ws, kernel_types)]
-end    
-    
-
 
 function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     motion_tree = get_retval(trace)[1]
@@ -619,7 +493,6 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     axes[3].xticks = (0:prod(collect(size(score_matrix[2])))-1, [string([string(ks)[1] for ks in k]...) for k in score_matrix[2]])
     yticklabs = [string([e_entry for (i, e_entry) in enumerate(score_matrix[3]) if et[i] == 1]) for et in score_matrix[4]]
     axes[3].yticks = (1:size(score_matrix[4])[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs])
-#    layout[1:n_rows, 1:n_cols] = axes
     layout[3, 1:n_cols] = axes[[1,3]]
     layout[1:2, 1:n_cols] = axes[2]
     time_node = Node(1);
@@ -628,18 +501,13 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     limits!(axes[2], BBox(-bounds, bounds, -bounds, bounds))
     image!(axes[1], graph_image)
     limits!(axes[1], BBox(0, res, 0, res))
-    hm = heatmap!(axes[3], score_matrix[1], colormap=:viridis)
-#    limits!(axes[3], BBox(0, res, 0, res))
-    hm.colorrange = (1, sum(score_matrix[1]))
-
+    hm = heatmap!(axes[3], exp.(score_matrix[1]) / sum(exp.(score_matrix[1])), colormap=:viridis)
+    hm = heatmap!(axes[3], exp.(score_matrix[1]) / sum(exp.(score_matrix[1])), colormap=:viridis)
+#    hm.colorrange = (1, maximum(exp.(score_matrix[1]) / sum(exp.(score_matrix[1]))
     for j in 1:nv(motion_tree)
         println(trace[(:kernel_type, j)])
     end
     display(scene)
-
-    #     time_node[] = i
-    #     sleep(1/framerate)
-    # end
 #    record(scene, "dotmotion.mp4", 1:size(dotmotion)[1]; framerate=60) do i
     for i in 1:size(dotmotion)[1]
         time_node[] = i
