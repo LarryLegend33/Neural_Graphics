@@ -376,7 +376,7 @@ function imp_inference(num_dots::Int)
     edge_list = []
     kernel_types = []
     for i in 1:100
-        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 75)
+        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 30)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
     end
@@ -397,7 +397,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     edge_list = []
     kernel_types = []
     for i in 1:100
-        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 75)
+        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 30)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
     end
@@ -481,15 +481,17 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     n_rows = 3
     n_cols = 2
     white = RGBf0(255,255,255)
-    #    score_matrix = animate_inference(trace)
-    score_matrix = enumerate_possibilities(trace)
+    black = RGBf0(0,0,0)
+    score_matrix = animate_inference(trace)
+#    score_matrix = enumerate_possibilities(trace)
     scene, layout = layoutscene(outer_padding,
                                 resolution = (2*res, 3*res), 
                                 backgroundcolor=RGBf0(0, 0, 0))
     axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:3]
-    axes[3] = [LAxis(scene, backgroundcolor=white, xticklabelcolor=white, yticklabelcolor=white, 
+#    axes[1] = LAxis(scene, backgroundcolor=RGBf0(0, 0, 0), title="Groundtruth SceneGraph", color=(:white)) 
+    axes[3] = LAxis(scene, backgroundcolor=black, xticklabelcolor=white, yticklabelcolor=white, 
                      xtickcolor=white, ytickcolor=white, xgridcolor=white, ygridcolor=white, 
-                     xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))][1]
+                     xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))
     axes[3].xticks = (0:prod(collect(size(score_matrix[2])))-1, [string([string(ks)[1] for ks in k]...) for k in score_matrix[2]])
     yticklabs = [string([e_entry for (i, e_entry) in enumerate(score_matrix[3]) if et[i] == 1]) for et in score_matrix[4]]
     axes[3].yticks = (1:size(score_matrix[4])[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs])
@@ -501,9 +503,22 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     limits!(axes[2], BBox(-bounds, bounds, -bounds, bounds))
     image!(axes[1], graph_image)
     limits!(axes[1], BBox(0, res, 0, res))
-    hm = heatmap!(axes[3], exp.(score_matrix[1]) / sum(exp.(score_matrix[1])), colormap=:viridis)
-    hm = heatmap!(axes[3], exp.(score_matrix[1]) / sum(exp.(score_matrix[1])), colormap=:viridis)
-#    hm.colorrange = (1, maximum(exp.(score_matrix[1]) / sum(exp.(score_matrix[1]))
+    hm = heatmap!(axes[3], score_matrix[1], colormap=:viridis)
+    hm.colorrange = (1, sum(score_matrix[1]))
+    hm_sublayout = GridLayout()
+    layout[3, 2] = hm_sublayout
+    cbar = hm_sublayout[:, 2] = LColorbar(scene, hm, width=14, height=Relative(.91), label = "Probability", labelcolor=white, tickcolor=black, labelsize=10)
+    title_scengraph = layout[1, 1, TopRight()] = LText(scene,
+                                                  "Stimulus",
+                                                  textsize=25, font="Noto Sans Bold", halign=:left, color=(:white))
+
+    title_scengraph = layout[3, 1, Top()] = LText(scene,
+                                                    "Groundtruth Scene Graph",
+                                                    textsize=25, font="Noto Sans Bold", halign=:left, color=(:white))
+    title_inference = layout[3, 2, Top()] = LText(scene,
+                                                  "Inference Results",
+                                                  textsize=25, font="Noto Sans Bold", halign=:left, color=(:white))
+
     for j in 1:nv(motion_tree)
         println(trace[(:kernel_type, j)])
     end
