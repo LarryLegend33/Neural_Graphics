@@ -88,9 +88,6 @@ end
     motion_tree_assigned = {*} ~ assign_positions_and_velocities(motion_tree_updated,
                                                                  dot_list,
                                                                  ts)
-    # motion_tree_assigned = {*} ~ assign_positions(motion_tree_updated,
-    #                                               dot_list,
-    #                                               ts)
     return motion_tree_assigned, dot_list
 end
 
@@ -103,7 +100,6 @@ end
     else
         dot = first(dots)
         parents = inneighbors(motion_tree, dot)
-     #   start_x = 10
         if isempty(parents)
             start_x = {(:start_x, dot)} ~ uniform_discrete(-5, 5)
             start_y = {(:start_y, dot)} ~ uniform_discrete(-5, 5)
@@ -116,8 +112,6 @@ end
             else
                 parent_position = props(motion_tree, parents[1])[:Position]
             end
-          #  start_x = {(:start_x, dot)} ~ normal(parent_position[1], position_var)
-          #  start_y = {(:start_y, dot)} ~ normal(parent_position[2], position_var)
             start_x = {(:start_x, dot)} ~ uniform_discrete(parent_position[1]-1, parent_position[1]+1)
             start_y = {(:start_y, dot)} ~ uniform_discrete(parent_position[2]-1, parent_position[2]+1)
             parent_velocities_x = [props(motion_tree, p)[:Velocity_X] for p in parents]
@@ -138,7 +132,6 @@ end
         covmat = compute_cov_matrix_vectorized(cov_func, noise, ts)
         x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_mean, covmat)
         y_vel = {(:y_vel, dot)} ~ mvnormal(y_vel_mean, covmat)
-#        y_vel = [0 for xv in x_vel]
         # Sample from the GP using a multivariate normal distribution with
         # the kernel-derived covariance matrix.
         set_props!(motion_tree, dot,
@@ -158,31 +151,6 @@ end
     
 # end
 
-
-# possibly generate an R and theta
-# key frame stimulus, then what you should see, then posterior with labels. 
-# get alex involved in his input about metaPPL reformulation
-
-# label everything with legends, ground truth, enumerated posterior,
-# have stim come first.
-
-# slide explaining generative model, and inference strategy that is plausible.
-# one slide with ~16 samples from the prior. ground truth graph, underneath the dot movie.
-# schematic of the generative process. use ben's probprog talk as a guide.
-# "see inside the mind of the computer" helps people realize what's going on.
-# SMC algorithm -- copy slide 57 which basically shows perfect SMC.
-
-# talk to george about biophysical realism. 
-
-# research design document for object permanence and dot binding experiments.
-
-# nicely labeled TIE animation first
-# gslides
-# amanda + rachel. update them on the structure of the planning.
-# implement tracking of paramecia under strobing. is there latent structure in the brain of the fish?
-
-#compare ideal bayesian observer plus human data. mechanical turk.
-# train a neural net and hsow it doesn't work well. 
 
 
 # make this able to take various lenghts of ts and update with SMC
@@ -263,30 +231,27 @@ function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{A
             for (dot, k) in enumerate(kc)
                 enum_constraints[(:kernel_type, dot)] = k
             end
-
-            # first test is to constrain on the X value but force tree and motion type structure (without scoring).
-            # 
-            
-            # here pass the tree through another round of noise generation. will mimic difference between generated and perceived velocities.
-            # bug here is that the same velocity just keeps replenishing. have to clear the velocity before updating it, bc you're constrainig
-            # on it here after one sample, which is why first column is YELLOW. 
-            # (ass_trace, w) = Gen.generate(assign_positions_and_velocities, (trace_retval[1], trace_retval[2], trace_args[1]), enum_constraints)
             for i in 1:num_dots
                 enum_constraints[(:x_vel, i)] = trace[(:x_vel, i)]
                 enum_constraints[(:y_vel, i)] = trace[(:y_vel, i)]
                 enum_constraints[(:start_x, i)] = trace[(:start_x, i)]
                 enum_constraints[(:start_y, i)] = trace[(:start_y, i)]
             end
-            (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
-            w = get_score(new_trace)
+            postprob = 0
+            for dp in all_dot_permutations(num_dots)
+                enum_constraints[:order_choice] = dp
+                (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
+                postprob += exp(get_score(new_trace))
+            end
 
 #            (tr, w) = Gen.generate(generate_dotmotion, trace_args, enum_constraints)
 #            temp_constraints = [map_entry for map_entry in get_values_shallow(enum_constraints) if map_entry[1][1] != :x_vel]
             # this just removes the constraining velocities from the choicemap. 
- #           enum_constraints = Gen.choicemap(temp_constraints...)
-            append!(scores, w)
+            #           enum_constraints = Gen.choicemap(temp_constraints...)
+            append!(scores, postprob)
         end
     end
+    scores /= sum(scores)
     score_matrix = reshape(scores, prod(collect(size(kernel_choices))), size(edge_truthtable)[1])
     plotvals = [score_matrix, kernel_choices, possible_edges, edge_truthtable]
 #    plot_heatmap(plotvals...)
@@ -376,7 +341,7 @@ function imp_inference(num_dots::Int)
     edge_list = []
     kernel_types = []
     for i in 1:100
-        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 30)
+        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 20)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
     end
@@ -397,7 +362,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     edge_list = []
     kernel_types = []
     for i in 1:100
-        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 30)
+        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 20)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
     end
@@ -471,7 +436,7 @@ end
 function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     motion_tree = get_retval(trace)[1]
     bounds = 10
-    res = 500
+    res = 650
     outer_padding = 0
     node_styles = nodecolors(trace)
     println(node_styles)
@@ -504,19 +469,19 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     image!(axes[1], graph_image)
     limits!(axes[1], BBox(0, res, 0, res))
     hm = heatmap!(axes[3], score_matrix[1], colormap=:viridis)
-    hm.colorrange = (1, sum(score_matrix[1]))
+    hm.colorrange = (0, sum(score_matrix[1]))
     hm_sublayout = GridLayout()
     layout[3, 2] = hm_sublayout
     cbar = hm_sublayout[:, 2] = LColorbar(scene, hm, width=14, height=Relative(.91), label = "Probability", labelcolor=white, tickcolor=black, labelsize=10)
     title_scengraph = layout[1, 1, TopRight()] = LText(scene,
-                                                  "Stimulus",
+                                                  "    Stimulus",
                                                   textsize=25, font="Noto Sans Bold", halign=:left, color=(:white))
 
     title_scengraph = layout[3, 1, Top()] = LText(scene,
                                                     "Groundtruth Scene Graph",
                                                     textsize=25, font="Noto Sans Bold", halign=:left, color=(:white))
     title_inference = layout[3, 2, Top()] = LText(scene,
-                                                  "Inference Results",
+                                                  "Posterior Probability",
                                                   textsize=25, font="Noto Sans Bold", halign=:left, color=(:white))
 
     for j in 1:nv(motion_tree)
