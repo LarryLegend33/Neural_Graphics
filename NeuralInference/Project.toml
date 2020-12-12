@@ -1,0 +1,8 @@
+[deps]
+AbstractPlotting = "537997a7-5e4e-5d89-9595-2241ea00577e"
+GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
+Gen = "ea4f424c-a589-11e8-07c0-fd5c91b9da4a"
+ImageMagick = "6218d12a-5da1-5696-b52f-db25d2ecc6d1"
+Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+MakieLayout = "5a521ce4-ebb9-4793-b5b7-b334dfe8393c"
+PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
