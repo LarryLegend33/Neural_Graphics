@@ -94,7 +94,6 @@ end
 
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
                                               dots::Array{Int64}, ts::Array{Float64})
-    position_var = 1
     if isempty(dots)
         return motion_tree
     else
@@ -410,7 +409,8 @@ end
 
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
-    render_dotmotion(trace)
+    render_stim_only(trace)
+#    render_dotmotion(trace)
     return trace, args
 end
 
@@ -433,6 +433,45 @@ function nodecolors(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
 end        
 
 
+function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    motion_tree = get_retval(trace)[1]
+    bounds = 10
+    res = 650
+    outer_padding = 0
+    dotmotion = tree_to_coords(motion_tree, framerate)
+    f(t, coords) = coords[t]
+    n_rows = 3
+    n_cols = 2
+    white = RGBf0(255,255,255)
+    black = RGBf0(0,0,0)
+    scene, layout = layoutscene(outer_padding,
+                                resolution = (2*res, 3*res), 
+                                backgroundcolor=RGBf0(0, 0, 0))
+    axes = LAxis(scene, backgroundcolor=RGBf0(0, 0, 0))
+    blackaxes = LAxis(scene, backgroundcolor=RGBf0(0, 0, 0))
+    layout[1:n_rows-1, 1:n_cols] = axes
+    layout[n_rows, 1:n_cols] = blackaxes
+    time_node = Node(1);
+    f(t, coords) = coords[t]
+    scatter!(axes, lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
+    limits!(axes, BBox(-bounds, bounds, -bounds, bounds))
+    title_scengraph = layout[1, 1, TopRight()] = LText(scene,
+                                                  "Stimulus",
+                                                  textsize=25, font="Noto Sans Bold", halign=:center, color=(:white))
+    for j in 1:nv(motion_tree)
+        println(trace[(:kernel_type, j)])
+    end
+    display(scene)
+    record(scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
+#    for i in 1:size(dotmotion)[1]
+        time_node[] = i
+        sleep(1/framerate)
+    end
+    t = render_dotmotion(trace)
+    run(`bash concat_movies.sh`)
+    return dotmotion
+end    
+
 function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     motion_tree = get_retval(trace)[1]
     bounds = 10
@@ -448,12 +487,11 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     white = RGBf0(255,255,255)
     black = RGBf0(0,0,0)
     score_matrix = animate_inference(trace)
-#    score_matrix = enumerate_possibilities(trace)
+    #    score_matrix = enumerate_possibilities(trace)
     scene, layout = layoutscene(outer_padding,
                                 resolution = (2*res, 3*res), 
                                 backgroundcolor=RGBf0(0, 0, 0))
     axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:3]
-#    axes[1] = LAxis(scene, backgroundcolor=RGBf0(0, 0, 0), title="Groundtruth SceneGraph", color=(:white)) 
     axes[3] = LAxis(scene, backgroundcolor=black, xticklabelcolor=white, yticklabelcolor=white, 
                      xtickcolor=white, ytickcolor=white, xgridcolor=white, ygridcolor=white, 
                      xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))
@@ -488,8 +526,8 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         println(trace[(:kernel_type, j)])
     end
     display(scene)
-#    record(scene, "dotmotion.mp4", 1:size(dotmotion)[1]; framerate=60) do i
-    for i in 1:size(dotmotion)[1]
+    record(scene, "dotmotion.mp4", 1:size(dotmotion)[1]; framerate=60) do i
+  #  for i in 1:num_repeats*size(dotmotion)[1]
         time_node[] = i
         sleep(1/framerate)
     end
