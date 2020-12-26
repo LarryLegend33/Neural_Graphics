@@ -186,6 +186,7 @@ function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     edge_truthtable = loopfilter(possible_edges, unfiltered_truthtable)
     # here you will have a list of traces
     counts = []
+    # b/c this is animate inference, use imp_inference as a way to store images of the graph. 
     truth_trace, edge_samples, vel_samples = imp_inference(trace)
     joint_edge_vel = [(Tuple(e), Tuple(v)) for (e,v) in zip(edge_samples, vel_samples)]
     for eg in edge_truthtable
@@ -294,7 +295,7 @@ function plot_heatmap(score_matrix::Array{Any, 2}, kernels, possible_edges, edge
     axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0), xticklabelcolor=white, yticklabelcolor=white, 
                   xtickcolor=white, ytickcolor=white, xgridcolor=white, ygridcolor=white, 
                   xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))]
-    heatmap!(axes[1], score_matrix, colormap=:viridis)
+    AbstractPlotting.heatmap!(axes[1], score_matrix, colormap=:viridis)
     layout[1,1] = axes[1]
     axes[1].xticks = (0:prod(collect(size(kernels)))-1, [string(k) for k in kernels])
     yticklabs = [string([e_entry for (i, e_entry) in enumerate(possible_edges) if et[i] == 1]) for et in edge_truth]
@@ -327,10 +328,13 @@ end
 # score values that make no sense. this is probably a thing.
 
 
+# note for JM slides, used 20 particles for 2 dots, 100 for 3. 
+
 function imp_inference(num_dots::Int)
     trace, args = dotsample(num_dots)
     trace_choices = get_choices(trace)
     observation = Gen.choicemap()
+    num_particles = 50
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
         observation[(:start_y, i)] = trace[(:start_y, i)]
@@ -340,7 +344,7 @@ function imp_inference(num_dots::Int)
     edge_list = []
     kernel_types = []
     for i in 1:100
-        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 20)
+        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, num_particles)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
     end
@@ -351,6 +355,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     trace_choices = get_choices(trace)
     args = get_args(trace)
     observation = Gen.choicemap()
+    num_particles = 50
     num_dots = nv(get_retval(trace)[1])
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
@@ -361,7 +366,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     edge_list = []
     kernel_types = []
     for i in 1:100
-        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, 20)
+        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, num_particles)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
     end
@@ -371,8 +376,7 @@ end
 
 """Create Makie Rendering Environment"""
 
-function tree_to_coords(tree::MetaDiGraph{Int64, Float64},
-                        framerate::Int64)
+function tree_to_coords(tree::MetaDiGraph{Int64, Float64})
     num_dots = nv(tree)
     dotmotion = fill(zeros(2), num_dots, size(interpolate_coords(props(tree, 1)[:Velocity_X], interp_iters))[1])
     println(size(dotmotion))
@@ -389,6 +393,70 @@ function tree_to_coords(tree::MetaDiGraph{Int64, Float64},
     return dotmotion_tuples
 end
 
+
+# write your own version of the graph plotter. use arrow and scatter primitives in makie.
+# just have to write a clever algorithm for placement of each dot.
+
+# recursive function here takes an array of xcoords, ycoords, paths, and the graph
+# init with zero arrays of length nv for x and y coords. n_iters too.
+function xy_node_positions(paths::Array{Array, 1},
+                           xc::Array{Int64, 1},
+                           yc::Array{Int64, 1},
+                           n_iters::Int,
+                           motion_tree::MetaDiGraph{Int64, Float64})
+    if isempty(paths)
+        return xc, yc
+    else    
+        path = first(paths)
+        [xc[p] == 0 ? xc[p] = n_iters : xc[p] = xc[p] for p in path]
+        [yc[p] == 0 ? yc[p] = length(reachable_from(motion_tree, p)) : yc[p] = yc[p] for p in path]
+        xy_node_positions(paths[2:end], xc, yc, n_iters+1, motion_tree)
+    end
+end
+
+
+
+
+function visualize_scenegraph(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    motion_tree = get_retval(trace)[1]
+    outer_padding = 0
+    res = 1000
+    scene, layout = layoutscene(outer_padding,
+                                resolution = (res, res), 
+                                backgroundcolor=RGBf0(0, 0, 0))
+
+    paths = all_paths(motion_tree)
+    for v in 1:nv(motion_tree)
+        v_in_path = [v in p ? 1 : 0 for p in paths]
+        if !(1 in v_in_path)
+            push!(paths, [v])
+        end
+    end
+    println(paths)
+    longest_path = maximum(map(length, paths))
+    num_paths = length(paths)
+    xbounds = num_paths + 2
+    ybounds = longest_path + 2
+    node_xs, node_ys = xy_node_positions(paths, zeros(Int, nv(motion_tree)), zeros(Int, nv(motion_tree)), 1, motion_tree)
+    node_ys = node_ys .+ 1
+    axes = LAxis(scene, backgroundcolor=RGBf0(0, 0, 0))
+    layout[1, 1] = axes
+    scatter!(axes, [z for z in zip(node_xs, node_ys)], markersize=50px, color=RGBf0(255, 255, 255))
+    for e in edges(motion_tree)
+        arrows!(axes, [node_xs[e.src]], [node_xs[e.src]],
+                [node_xs[e.dst]-node_xs[e.src]], [node_ys[e.dst]-node_ys[e.src]], arrowcolor=:white, linecolor=:white, arrowsize=.1)
+    end
+    limits!(axes, BBox(0, xbounds, 0, ybounds))
+    display(scene)
+end
+
+    # for each vertex, count number of incoming edges.
+    # use "reachable_to" or "reachable_from" if graph is 1->2->3, reachable_from(g, 1) = [2, 3]
+    
+    # longest_pathlen describes the height. should be this length plus 2 (one slot at top and bottom free).
+    # number of paths total should be x 
+    
+    
 
 function visualize_graph(motion_tree::MetaDiGraph{Int64, Float64},
                          resolution::Int64,
@@ -409,8 +477,8 @@ end
 
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
-    render_stim_only(trace)
-#    render_dotmotion(trace)
+#    render_stim_only(trace)
+    render_dotmotion(trace)
     return trace, args
 end
 
@@ -422,10 +490,10 @@ function nodecolors(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
             nc_dict[n] = "fill=red!70"
         elseif vtype == Constant
             nc_dict[n] = "fill=green!50!blue!50"
-        elseif vtype == Linear
+        elseif vtype == Periodic
             nc_dict[n] = "fill=blue!80!red!50"
           #  nc_dict[n] = "fill=blue!20"
-        elseif vtype == Periodic
+        elseif vtype == Linear
             nc_dict[n] = "fill=red!40!blue!30!"
         end
     end
@@ -436,9 +504,9 @@ end
 function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     motion_tree = get_retval(trace)[1]
     bounds = 10
-    res = 650
+    res = 500
     outer_padding = 0
-    dotmotion = tree_to_coords(motion_tree, framerate)
+    dotmotion = tree_to_coords(motion_tree)
     f(t, coords) = coords[t]
     n_rows = 3
     n_cols = 2
@@ -453,7 +521,7 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     layout[n_rows, 1:n_cols] = blackaxes
     time_node = Node(1);
     f(t, coords) = coords[t]
-    scatter!(axes, lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
+    AbstractPlotting.scatter!(axes, lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
     limits!(axes, BBox(-bounds, bounds, -bounds, bounds))
     title_scengraph = layout[1, 1, TopRight()] = LText(scene,
                                                   "Stimulus",
@@ -470,7 +538,8 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     t = render_dotmotion(trace)
     run(`bash concat_movies.sh`)
     return dotmotion
-end    
+end
+
 
 function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     motion_tree = get_retval(trace)[1]
@@ -480,13 +549,13 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     node_styles = nodecolors(trace)
     println(node_styles)
     graph_image = visualize_graph(motion_tree, res, node_styles)
-    dotmotion = tree_to_coords(motion_tree, framerate)
+    dotmotion = tree_to_coords(motion_tree)
     f(t, coords) = coords[t]
     n_rows = 3
     n_cols = 2
     white = RGBf0(255,255,255)
     black = RGBf0(0,0,0)
-    score_matrix = animate_inference(trace)
+    inf_results = animate_inference(trace)
     #    score_matrix = enumerate_possibilities(trace)
     scene, layout = layoutscene(outer_padding,
                                 resolution = (2*res, 3*res), 
@@ -495,19 +564,19 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     axes[3] = LAxis(scene, backgroundcolor=black, xticklabelcolor=white, yticklabelcolor=white, 
                      xtickcolor=white, ytickcolor=white, xgridcolor=white, ygridcolor=white, 
                      xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))
-    axes[3].xticks = (0:prod(collect(size(score_matrix[2])))-1, [string([string(ks)[1] for ks in k]...) for k in score_matrix[2]])
-    yticklabs = [string([e_entry for (i, e_entry) in enumerate(score_matrix[3]) if et[i] == 1]) for et in score_matrix[4]]
-    axes[3].yticks = (1:size(score_matrix[4])[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs])
+    axes[3].xticks = (0:prod(collect(size(inf_results[2])))-1, [string([string(ks)[1] for ks in k]...) for k in inf_results[2]])
+    yticklabs = [string([e_entry for (i, e_entry) in enumerate(inf_results[3]) if et[i] == 1]) for et in inf_results[4]]
+    axes[3].yticks = (1:size(inf_results[4])[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs])
     layout[3, 1:n_cols] = axes[[1,3]]
     layout[1:2, 1:n_cols] = axes[2]
     time_node = Node(1);
     f(t, coords) = coords[t]
-    scatter!(axes[2], lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
+    AbstractPlotting.scatter!(axes[2], lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
     limits!(axes[2], BBox(-bounds, bounds, -bounds, bounds))
     image!(axes[1], graph_image)
-    limits!(axes[1], BBox(0, res, 0, res))
-    hm = heatmap!(axes[3], score_matrix[1], colormap=:viridis)
-    hm.colorrange = (0, sum(score_matrix[1]))
+#    limits!(axes[1], BBox(0, res, 0, res))
+    hm = AbstractPlotting.heatmap!(axes[3], inf_results[1], colormap=:viridis)
+    hm.colorrange = (0, sum(inf_results[1]))
     hm_sublayout = GridLayout()
     layout[3, 2] = hm_sublayout
     cbar = hm_sublayout[:, 2] = LColorbar(scene, hm, width=14, height=Relative(.91), label = "Probability", labelcolor=white, tickcolor=black, labelsize=10)
@@ -526,8 +595,8 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         println(trace[(:kernel_type, j)])
     end
     display(scene)
-    record(scene, "dotmotion.mp4", 1:size(dotmotion)[1]; framerate=60) do i
-  #  for i in 1:num_repeats*size(dotmotion)[1]
+  #  record(scene, "dotmotion.mp4", 1:size(dotmotion)[1]; framerate=60) do i
+    for i in 1:size(dotmotion)[1]
         time_node[] = i
         sleep(1/framerate)
     end
@@ -584,6 +653,9 @@ function eval_cov_mat(node::Constant, ts::Array{Float64})
     n = length(ts)
     fill(node.param, (n, n))
 end
+
+
+
 
 
 """Linear kernel"""

@@ -1,6 +1,8 @@
 [deps]
 AbstractPlotting = "537997a7-5e4e-5d89-9595-2241ea00577e"
 ColorSchemes = "35d6a980-a343-548e-a6ea-1d62b119f2f4"
+Compose = "a81c6b42-2e10-5240-aca2-a61377ecd94b"
+CurricularAnalytics = "593ffa3d-269e-5d81-88bc-c3b6809c35a6"
 Gen = "ea4f424c-a589-11e8-07c0-fd5c91b9da4a"
 ImageTransformations = "02fcd773-0e25-5acc-982a-7f6622650795"
 Images = "916415d5-f1e6-5110-898d-aaa5f9f070e0"
