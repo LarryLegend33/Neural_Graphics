@@ -134,7 +134,7 @@ end
         # Sample from the GP using a multivariate normal distribution with
         # the kernel-derived covariance matrix.
         set_props!(motion_tree, dot,
-                   Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel))
+                   Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel, :MType=>cov_func))
         {*} ~ assign_positions_and_velocities(motion_tree, dots[2:end], ts)
     end
 end    
@@ -409,7 +409,7 @@ function xy_node_positions(paths::Array{Array, 1},
     else    
         path = first(paths)
         [xc[p] == 0 ? xc[p] = n_iters : xc[p] = xc[p] for p in path]
-        [yc[p] == 0 ? yc[p] = length(reachable_from(motion_tree, p)) : yc[p] = yc[p] for p in path]
+        [yc[p] == 0 ? yc[p] = length(reachable_to(motion_tree.graph, p)) : yc[p] = yc[p] for p in path]
         xy_node_positions(paths[2:end], xc, yc, n_iters+1, motion_tree)
     end
 end
@@ -421,10 +421,6 @@ function visualize_scenegraph(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}
     motion_tree = get_retval(trace)[1]
     outer_padding = 0
     res = 1000
-    scene, layout = layoutscene(outer_padding,
-                                resolution = (res, res), 
-                                backgroundcolor=RGBf0(0, 0, 0))
-
     paths = all_paths(motion_tree)
     for v in 1:nv(motion_tree)
         v_in_path = [v in p ? 1 : 0 for p in paths]
@@ -435,20 +431,43 @@ function visualize_scenegraph(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}
     println(paths)
     longest_path = maximum(map(length, paths))
     num_paths = length(paths)
-    xbounds = num_paths + 2
-    ybounds = longest_path + 2
+    xbounds = num_paths + 1
+    ybounds = longest_path + 1
     node_xs, node_ys = xy_node_positions(paths, zeros(Int, nv(motion_tree)), zeros(Int, nv(motion_tree)), 1, motion_tree)
-    node_ys = node_ys .+ 1
-    axes = LAxis(scene, backgroundcolor=RGBf0(0, 0, 0))
-    layout[1, 1] = axes
-    scatter!(axes, [z for z in zip(node_xs, node_ys)], markersize=50px, color=RGBf0(255, 255, 255))
+    node_ys = ybounds .- node_ys .- 1
+    # create scene without layout b/c text only works in scenes -- can't add it to LAxis.
+    scene = Scene(backgroundcolor=RGBf0(0, 0, 0), resolution=(800,800))
     for e in edges(motion_tree)
-        arrows!(axes, [node_xs[e.src]], [node_xs[e.src]],
-                [node_xs[e.dst]-node_xs[e.src]], [node_ys[e.dst]-node_ys[e.src]], arrowcolor=:white, linecolor=:white, arrowsize=.1)
+        arrows!(scene, [node_xs[e.src]], [node_ys[e.src]],
+                [node_xs[e.dst]-node_xs[e.src]], .8 .* [node_ys[e.dst]-node_ys[e.src]], arrowcolor=:lightgray, linecolor=:lightgray, arrowsize=.1)
     end
-    limits!(axes, BBox(0, xbounds, 0, ybounds))
+    
+    for v in 1:nv(motion_tree)
+        mtype = typeof(props(motion_tree, v)[:MType])
+        if mtype == Constant
+            nodecolor = :cyan
+        elseif mtype == RandomWalk
+            nodecolor = :red
+        elseif mtype == Periodic
+            nodecolor = :purple
+        else
+            nodecolor = :white
+        end
+        scatter!(scene, [(node_xs[v], node_ys[v])], markersize=50px, color=nodecolor)
+        text!(scene, string(v), position=(node_xs[v], node_ys[v]), align= (:center, :center),
+              textsize=.2, color=:black, overdraw=true)
+    end
+    #    limits!(scene, BBox(0, xbounds, 0, ybounds))
+    xlims!(scene, 0, xbounds)
+    ylims!(scene, 0, ybounds)
     display(scene)
+#    return scene
 end
+
+# may be a good idea to use vbox and hbox instead of layout. I like it.
+# if you want to show 3 side by side graphs, use vbox of each scene.
+
+
 
     # for each vertex, count number of incoming edges.
     # use "reachable_to" or "reachable_from" if graph is 1->2->3, reachable_from(g, 1) = [2, 3]
