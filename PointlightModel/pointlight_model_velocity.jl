@@ -369,6 +369,8 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, num_particles)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
+#        s = visualize_scenegraph(tr)
+ #       display(s)
     end
     return trace, edge_list, kernel_types
 end
@@ -405,7 +407,20 @@ function xy_node_positions(paths::Array{Array, 1},
                            n_iters::Int,
                            motion_tree::MetaDiGraph{Int64, Float64})
     if isempty(paths)
-        return xc, yc
+        xcoords = convert(Array{Float64, 1}, xc)
+        ycoords = convert(Array{Float64, 1}, yc)
+        for v in 1:nv(motion_tree)
+            inn = inneighbors(motion_tree, v)
+            outn = outneighbors(motion_tree, v)
+            if length(inn) > 1
+                xcoords[v] = mean([xcoords[n] for n in inn])
+                ycoords[v] -= 1
+            end
+            if length(outn) > 1
+                xcoords[v] = mean([xcoords[n] for n in outn])
+            end
+         end
+         return xcoords, ycoords
     else    
         path = first(paths)
         [xc[p] == 0 ? xc[p] = n_iters : xc[p] = xc[p] for p in path]
@@ -414,7 +429,7 @@ function xy_node_positions(paths::Array{Array, 1},
     end
 end
 
-
+      
 
 
 function visualize_scenegraph(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
@@ -460,8 +475,8 @@ function visualize_scenegraph(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}
     #    limits!(scene, BBox(0, xbounds, 0, ybounds))
     xlims!(scene, 0, xbounds)
     ylims!(scene, 0, ybounds)
-    display(scene)
-#    return scene
+#    display(scene)
+    return scene
 end
 
 # may be a good idea to use vbox and hbox instead of layout. I like it.
@@ -496,8 +511,8 @@ end
 
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
-#    render_stim_only(trace)
-    render_dotmotion(trace)
+    render_stim_only(trace)
+#    render_dotmotion(trace)
     return trace, args
 end
 
@@ -523,7 +538,7 @@ end
 function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     motion_tree = get_retval(trace)[1]
     bounds = 10
-    res = 500
+    res = 300
     outer_padding = 0
     dotmotion = tree_to_coords(motion_tree)
     f(t, coords) = coords[t]
@@ -531,31 +546,38 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     n_cols = 2
     white = RGBf0(255,255,255)
     black = RGBf0(0,0,0)
-    scene, layout = layoutscene(outer_padding,
-                                resolution = (2*res, 3*res), 
-                                backgroundcolor=RGBf0(0, 0, 0))
-    axes = LAxis(scene, backgroundcolor=RGBf0(0, 0, 0))
-    blackaxes = LAxis(scene, backgroundcolor=RGBf0(0, 0, 0))
-    layout[1:n_rows-1, 1:n_cols] = axes
-    layout[n_rows, 1:n_cols] = blackaxes
+    scene = Scene(backgroundcolor=black, resolution=(res, res))
+    # scene, layout = layoutscene(outer_padding,
+    #                             resolution = (2*res, 3*res), 
+    #                             backgroundcolor=RGBf0(0, 0, 0))
+    # axes = LAxis(scene, backgroundcolor=RGBf0(0, 0, 0))
+    # blackaxes = LAxis(scene, backgroundcolor=RGBf0(0, 0, 0))
+    # # layout[1:n_rows-1, 1:n_cols] = axes
+    # # layout[n_rows, 1:n_cols] = blackaxes
+    # limits!(axes, BBox(-bounds, bounds, -bounds, bounds))
+    # title_scengraph = layout[1, 1, TopRight()] = LText(scene,
+    #                                               "Stimulus",
+    #                                               textsize=25, font="Noto Sans Bold", halign=:center, color=(:white))
+
     time_node = Node(1);
     f(t, coords) = coords[t]
-    AbstractPlotting.scatter!(axes, lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
-    limits!(axes, BBox(-bounds, bounds, -bounds, bounds))
-    title_scengraph = layout[1, 1, TopRight()] = LText(scene,
-                                                  "Stimulus",
-                                                  textsize=25, font="Noto Sans Bold", halign=:center, color=(:white))
+    scatter!(scene, lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
+    xlims!(scene, (-bounds, bounds))
+    ylims!(scene, (-bounds, bounds))
     for j in 1:nv(motion_tree)
         println(trace[(:kernel_type, j)])
     end
-    display(scene)
-    record(scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
-#    for i in 1:size(dotmotion)[1]
+
+    gscene = visualize_scenegraph(trace)
+    gt_scene = vbox(scene, gscene)
+    display(gt_scene)
+#    record(scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
+    for i in 1:size(dotmotion)[1]
         time_node[] = i
         sleep(1/framerate)
     end
-    t = render_dotmotion(trace)
-    run(`bash concat_movies.sh`)
+ #   t = render_dotmotion(trace)
+#    run(`bash concat_movies.sh`)
     return dotmotion
 end
 
