@@ -134,7 +134,7 @@ end
         # Sample from the GP using a multivariate normal distribution with
         # the kernel-derived covariance matrix.
         set_props!(motion_tree, dot,
-                   Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel, :MType=>cov_func))
+                   Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel, :MType=>typeof(cov_func)))
         {*} ~ assign_positions_and_velocities(motion_tree, dots[2:end], ts)
     end
 end    
@@ -177,8 +177,8 @@ end
 
 function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     num_dots = nv(get_retval(trace)[1])
-    kernel_combos = [kernel_types for i in 1:num_dots]
-    kernel_choices = collect(Iterators.product(kernel_combos...))
+    kernel_choices = [kernel_types for i in 1:num_dots]
+    kernel_combos = collect(Iterators.product(kernel_choices...))
     possible_edges = [(i, j) for i in 1:num_dots for j in 1:num_dots if i != j]
     truth_entry = [[0,1] for i in 1:size(possible_edges)[1]]
     unfiltered_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
@@ -190,14 +190,15 @@ function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     truth_trace, edge_samples, vel_samples = imp_inference(trace)
     joint_edge_vel = [(Tuple(e), Tuple(v)) for (e,v) in zip(edge_samples, vel_samples)]
     for eg in edge_truthtable
-        for kc in kernel_choices
+        for kc in kernel_combos
             ev_count = count(λ -> (λ[1] == eg && λ[2] == kc), joint_edge_vel)
             push!(counts, ev_count)
         end
     end
-    count_matrix = reshape(counts, prod(collect(size(kernel_choices))), size(edge_truthtable)[1])
-    plotvals = [count_matrix, kernel_choices, possible_edges, edge_truthtable]
-    return plotvals
+    count_matrix = reshape(counts, prod(collect(size(kernel_combos))), size(edge_truthtable)[1])
+    inf_results = [count_matrix, kernel_combos, possible_edges, edge_truthtable]
+    plot_inference_results(inf_results...)
+    return inf_results
 end                
 
 
@@ -254,7 +255,6 @@ function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{A
     scores /= sum(scores)
     score_matrix = reshape(scores, prod(collect(size(kernel_choices))), size(edge_truthtable)[1])
     plotvals = [score_matrix, kernel_choices, possible_edges, edge_truthtable]
-#    plot_heatmap(plotvals...)
     return plotvals
 end
 
@@ -289,20 +289,67 @@ end
             
                       
     
-function plot_heatmap(score_matrix::Array{Any, 2}, kernels, possible_edges, edge_truth)
-    scene, layout = layoutscene(resolution=(1200,900), backgroundcolor=RGBf0(0, 0, 0))
+function plot_inference_results(score_matrix::Array{Any, 2}, kernels, possible_edges, edge_truth)
+    scene, layout = layoutscene(backgroundcolor=RGBf0(0, 0, 0))
     white = RGBf0(255,255,255)
-    axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0), xticklabelcolor=white, yticklabelcolor=white, 
-                  xtickcolor=white, ytickcolor=white, xgridcolor=white, ygridcolor=white, 
-                  xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))]
-    AbstractPlotting.heatmap!(axes[1], score_matrix, colormap=:viridis)
-    layout[1,1] = axes[1]
-    axes[1].xticks = (0:prod(collect(size(kernels)))-1, [string(k) for k in kernels])
-    yticklabs = [string([e_entry for (i, e_entry) in enumerate(possible_edges) if et[i] == 1]) for et in edge_truth]
-    println(yticklabs)
-    axes[1].yticks = (1:size(edge_truth)[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs]) 
-    display(scene)
-    return scene, axes
+    black = RGBf0(0,0,0)
+    axes = LAxis(scene, backgroundcolor=black, xticklabelcolor=white, yticklabelcolor=white, 
+                 xtickcolor=white, ytickcolor=white, xgridcolor=white, ygridcolor=white, 
+                 xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))
+    layout[1, 1] = axes
+    edge_combinations = [[e_entry for (i, e_entry) in enumerate(possible_edges) if et[i] == 1] for et in edge_truth]
+    yticklabs = [string(ec) for ec in edge_combinations]
+    xticks = (0:prod(collect(size(kernels)))-1, [string([string(ks)[1] for ks in k]...) for k in kernels])
+    yticks = (1:size(edge_truth)[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs])
+    # TOP 3 GRAPHS
+    top3graphs = find_top_n_props(3, score_matrix, [])
+    rendered_graphs = []
+    probabilities = []
+    for tg in top3graphs
+        score_index = tg[2].I
+        push!(probabilities, score_matrix[score_index[1], score_index[2]])
+        vel_types = kernels[score_index[1]]
+        edges = edge_combinations[score_index[2]]
+        top_g = MetaDiGraph(length(vel_types))
+        for edge in edges
+            add_edge!(top_g, edge[1], edge[2])
+        end
+        for (node, vel) in enumerate(vel_types)
+            set_props!(top_g, node, Dict(:MType=>vel))
+        end
+        viz_graph = visualize_scenegraph(top_g)
+        push!(rendered_graphs, viz_graph)
+    end
+    
+    scene_graph_scene = vbox(rendered_graphs...)
+#    display(scene_graph_scene)
+    # barplot!(axes, convert(Array{Float64, 1}, probabilities), color=:white)
+    # bp = barplot(convert(Array{Float64, 1}, probabilities),
+    #              color=:white,
+    #              backgroundcolor=:black
+    #              axis=()
+    bp = barplot!(axes, convert(Array{Float64, 1}, probabilities),
+                  color=:white,
+                  backgroundcolor=:black)
+                  
+
+#    bp_ax[:ytickcolor] = :white
+    
+    final_scene = hbox(scene, 
+                       scene_graph_scene)
+    display(final_scene)
+
+    
+    # HEATMAP
+    # hm = heatmap!(axes, score_matrix, colormap=:viridis)
+    # layout[1,1] = axes
+    # axes.xticks = xticks
+    # axes.yticks = yticks
+    # hm_sublayout = GridLayout()
+    # layout[1, 1] = hm_sublayout
+    # cbar = hm_sublayout[:, 2] = LColorbar(scene, hm, width=14, height=Relative(.91), label = "Probability", labelcolor=white, tickcolor=black, labelsize=10)
+
+
 end
 
 function dotsample(num_dots::Int)
@@ -355,7 +402,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     trace_choices = get_choices(trace)
     args = get_args(trace)
     observation = Gen.choicemap()
-    num_particles = 50
+    num_particles = 100
     num_dots = nv(get_retval(trace)[1])
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
@@ -365,11 +412,11 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     end
     edge_list = []
     kernel_types = []
-    for i in 1:100
+    for i in 1:30
         (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, num_particles)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
-#        s = visualize_scenegraph(tr)
+#        s = visualize_scenegraph(get_retval(tr)[1])
  #       display(s)
     end
     return trace, edge_list, kernel_types
@@ -432,8 +479,7 @@ end
       
 
 
-function visualize_scenegraph(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    motion_tree = get_retval(trace)[1]
+function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64})
     outer_padding = 0
     res = 1000
     paths = all_paths(motion_tree)
@@ -443,7 +489,6 @@ function visualize_scenegraph(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}
             push!(paths, [v])
         end
     end
-    println(paths)
     longest_path = maximum(map(length, paths))
     num_paths = length(paths)
     xbounds = num_paths + 1
@@ -458,7 +503,7 @@ function visualize_scenegraph(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}
     end
     
     for v in 1:nv(motion_tree)
-        mtype = typeof(props(motion_tree, v)[:MType])
+        mtype = props(motion_tree, v)[:MType]
         if mtype == Constant
             nodecolor = :cyan
         elseif mtype == RandomWalk
@@ -489,50 +534,42 @@ end
     
     # longest_pathlen describes the height. should be this length plus 2 (one slot at top and bottom free).
     # number of paths total should be x 
-    
-    
 
-function visualize_graph(motion_tree::MetaDiGraph{Int64, Float64},
-                         resolution::Int64,
-                         node_dict::Dict{Any})
-    g = TikzGraphs.plot(motion_tree.graph,
-                        edge_style="yellow, line width=2",
-                        node_style="draw, rounded corners, fill=blue!20", node_styles=node_dict,
-                        options="scale=8, font=\\huge\\sf");
-    #make dots a certain color in the graph for a specific motion type. then turn the heatmap axis black.
-    # see if you can switch the xticks to be different colors. 
-    TikzPictures.save(PDF("test"), g);
-    graphimage = load("test.pdf");
-    rot_image = imrotate(graphimage, π/2);
-    scale_ratio = (resolution*.7) / maximum(size(rot_image))
-    resized_image = imresize(rot_image, ratio=scale_ratio)
-    return resized_image
-end    
+
+function scene_and_bar()
+    #need the top 3 choices.
+    # make a graph with these choices. 
+
+    # take each of these 3 scenegraphs and vbox them into one scene
+    # then call barplot! on a new scene,
+    # to find max 3 values of score matrix, use partialsortperm(scoremat, 1:3, rev=true)
+    
+end
+
 
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
     render_stim_only(trace)
-#    render_dotmotion(trace)
-    return trace, args
+    return trace
+#    inf_results = animate_inference(trace)
+ #   return trace, args
 end
 
-function nodecolors(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    nc_dict = Dict()
-    for n in 1:nv(get_retval(trace)[1])
-        vtype = trace[(:kernel_type, n)]
-        if vtype == RandomWalk
-            nc_dict[n] = "fill=red!70"
-        elseif vtype == Constant
-            nc_dict[n] = "fill=green!50!blue!50"
-        elseif vtype == Periodic
-            nc_dict[n] = "fill=blue!80!red!50"
-          #  nc_dict[n] = "fill=blue!20"
-        elseif vtype == Linear
-            nc_dict[n] = "fill=red!40!blue!30!"
-        end
+function find_top_n_props(n::Int,
+                          score_matrix::Array{Any, 2},
+                          max_inds)
+    if n == 0
+        return max_inds
+    else
+        mi = findmax(score_matrix)
+        mi_coord = mi[2].I
+        push!(max_inds, mi)
+        sm_copy = copy(score_matrix)
+        sm_copy[mi_coord[1], mi_coord[2]] = 0
+        find_top_n_props(n-1, sm_copy, max_inds)
     end
-        return nc_dict
-end        
+end    
+
 
 
 function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
@@ -547,18 +584,6 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     white = RGBf0(255,255,255)
     black = RGBf0(0,0,0)
     scene = Scene(backgroundcolor=black, resolution=(res, res))
-    # scene, layout = layoutscene(outer_padding,
-    #                             resolution = (2*res, 3*res), 
-    #                             backgroundcolor=RGBf0(0, 0, 0))
-    # axes = LAxis(scene, backgroundcolor=RGBf0(0, 0, 0))
-    # blackaxes = LAxis(scene, backgroundcolor=RGBf0(0, 0, 0))
-    # # layout[1:n_rows-1, 1:n_cols] = axes
-    # # layout[n_rows, 1:n_cols] = blackaxes
-    # limits!(axes, BBox(-bounds, bounds, -bounds, bounds))
-    # title_scengraph = layout[1, 1, TopRight()] = LText(scene,
-    #                                               "Stimulus",
-    #                                               textsize=25, font="Noto Sans Bold", halign=:center, color=(:white))
-
     time_node = Node(1);
     f(t, coords) = coords[t]
     scatter!(scene, lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
@@ -568,17 +593,20 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         println(trace[(:kernel_type, j)])
     end
 
-    gscene = visualize_scenegraph(trace)
+    gscene = visualize_scenegraph(motion_tree)
     gt_scene = vbox(scene, gscene)
     display(gt_scene)
-#    record(scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
+#    record(gt_scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
     for i in 1:size(dotmotion)[1]
         time_node[] = i
         sleep(1/framerate)
     end
+
+    inf_results = animate_inference(trace)
+    display(inf_results[2])
  #   t = render_dotmotion(trace)
 #    run(`bash concat_movies.sh`)
-    return dotmotion
+ #   return dotmotion
 end
 
 
