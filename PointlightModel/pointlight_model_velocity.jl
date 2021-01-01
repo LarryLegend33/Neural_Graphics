@@ -290,11 +290,12 @@ end
                       
     
 function plot_inference_results(score_matrix::Array{Any, 2}, kernels, possible_edges, edge_truth)
-    scene, layout = layoutscene(backgroundcolor=RGBf0(0, 0, 0))
+    scene, layout = layoutscene(resolution=(300, 300), backgroundcolor=RGBf0(0, 0, 0))
     white = RGBf0(255,255,255)
     black = RGBf0(0,0,0)
-    axes = LAxis(scene, backgroundcolor=black, xticklabelcolor=white, yticklabelcolor=white, 
-                 xtickcolor=white, ytickcolor=white, xgridcolor=white, ygridcolor=white, 
+    gray = RGBf0(100, 100, 100)
+    axes = LAxis(scene, backgroundcolor=black, ylabelcolor=white, xticklabelcolor=black, yticklabelcolor=white, 
+                 xtickcolor=white, ytickcolor=white, xgridcolor=black, ygridcolor=gray,
                  xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))
     layout[1, 1] = axes
     edge_combinations = [[e_entry for (i, e_entry) in enumerate(possible_edges) if et[i] == 1] for et in edge_truth]
@@ -307,7 +308,11 @@ function plot_inference_results(score_matrix::Array{Any, 2}, kernels, possible_e
     probabilities = []
     for tg in top3graphs
         score_index = tg[2].I
-        push!(probabilities, score_matrix[score_index[1], score_index[2]])
+        score = score_matrix[score_index[1], score_index[2]]
+        if score == 0
+            continue
+        end
+        push!(probabilities, score)
         vel_types = kernels[score_index[1]]
         edges = edge_combinations[score_index[2]]
         top_g = MetaDiGraph(length(vel_types))
@@ -320,21 +325,16 @@ function plot_inference_results(score_matrix::Array{Any, 2}, kernels, possible_e
         viz_graph = visualize_scenegraph(top_g)
         push!(rendered_graphs, viz_graph)
     end
-    
+    barwidth = (.2 / 3) * length(probabilities)
+    println(barwidth)
     scene_graph_scene = vbox(rendered_graphs...)
-#    display(scene_graph_scene)
-    # barplot!(axes, convert(Array{Float64, 1}, probabilities), color=:white)
-    # bp = barplot(convert(Array{Float64, 1}, probabilities),
-    #              color=:white,
-    #              backgroundcolor=:black
-    #              axis=()
-    bp = barplot!(axes, convert(Array{Float64, 1}, probabilities),
+    bp = barplot!(axes, convert(Array{Float64, 1}, probabilities ./ sum(score_matrix)),
                   color=:white,
-                  backgroundcolor=:black)
-                  
-
-#    bp_ax[:ytickcolor] = :white
-    
+                  backgroundcolor=:black, width=barwidth)
+    axes.ylabel = "Posterior Probability"
+    if length(probabilities) == 1
+        limits!(axes, BBox(.75, 1.25, 0, 1))
+    end    
     final_scene = hbox(scene, 
                        scene_graph_scene)
     display(final_scene)
@@ -404,6 +404,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     observation = Gen.choicemap()
     num_particles = 100
     num_dots = nv(get_retval(trace)[1])
+    num_resamples = num_dots * 10
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
         observation[(:start_y, i)] = trace[(:start_y, i)]
@@ -412,12 +413,12 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     end
     edge_list = []
     kernel_types = []
-    for i in 1:30
+    for i in 1:num_resamples
         (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, num_particles)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
-#        s = visualize_scenegraph(get_retval(tr)[1])
- #       display(s)
+        s = visualize_scenegraph(get_retval(tr)[1])
+        display(s)
     end
     return trace, edge_list, kernel_types
 end
