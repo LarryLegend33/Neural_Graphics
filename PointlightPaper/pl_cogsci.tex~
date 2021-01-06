@@ -1,0 +1,53 @@
+
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: t
+%%% End:
+
+\documentclass[12pt, letterpaper]{article}
+
+
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+
+\title{A Gaussian Process Model of Pointlight Perception}
+\author{Andrew D Bolton, Vikash K Mansinghka}
+\date{January 2021}
+
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Changes in the intensity, qualities, or position of a stimulus over time can significantly affect how humans interpret its meaning. One example of this comes from the pioneering work of Gunnar Johansson, who showed that ambiguous stationary dot patterns induce striking perceptions of humans when set in bio-realistic motion. Here, we address how this sort of deep perceptual meaning arises from the most fundamental hints of its structure. Specifically, we compose dynamic dot scenes by hierarchical combination of four standard motion types studied in physics and observed in every day life. Using the probabilistic programming system Gen, we implement a GP-based generative model that first assigns a motion type to each dot (Brownian, Periodic, Uniform Linear, or Accelerating Linear), then generates a directed scene graph that describes inheritance of motion from one dot to another. We use importance resampling inference constrained on only the observation of position and motion of the dots, and reveal that our inference program can uncover the correct scene graph and motion type assignment almost 100\% of the time. Moreover, the uncertainty revealed during inference reflects the uncertainty experienced by human observers characterizing the motion types and inheritance patterns in the stimuli. 
+
+
+\section*{Contributions}
+
+\begin{enumerate}
+\item A Gaussian Process based cognitive model that constructs dyanamic dot motion stimuli using a prior over common motion types and scene graphs that define motion inheritance between dots.
+    
+
+    
+  
+  
+
+\section*{Claims}
+
+\begin{itemize}
+\item GP-generated motion can be translated to neural network architectures and are thus a biophysically realistic model for human visual perception
+        \item Explicit symbolic descriptions of motion patterns in our model reflect humans' ability to express knowledge of different motion types and combinations
+  \item Combining simple well-known motion types yields interesting percepts of motion that resemble biological stimuli
+  \item Studying the fundamental elements of motion perception should lead to testable hypothesis in real neural circuits known to encode moving dots
+\end{itemize}
+
+
+  \section{Phenomena}
+  
+
+
+  
+\end{abstract}
+
+\end{document}

@@ -7,12 +7,11 @@ using LightGraphs
 using MetaGraphs
 using Random
 using Images
-using TikzGraphs
-using TikzPictures
 using ShiftedArrays
 using ColorSchemes
 using Statistics
 using StatsBase
+using CurricularAnalytics
 
 #- One main question is whether we are going to try to reconstruct the identity after the fact. I.e. Are the xs and ys completely known in time and space We can do simultaneous inference on x and y values wrt t. Can also do sequential monte carlo. 
 
@@ -24,7 +23,6 @@ using StatsBase
 framerate = 60
 time_duration = 10
 num_velocity_points = time_duration * 4
-#num_velocity_points = time_duration*framerate
 
 # filling in n-1 samples for every interpolation, where n is the
 # length of the velocity vector. your final amount of samples doubles this each time, then adds 1. 
@@ -164,15 +162,6 @@ function loopfilter(edges, truthtab)
     end
     return filtered_truthtab
 end
-
-
-#current thought is the difference bewteen update here and in test_assignment is that the
-# tree is already established. inferring the kernel function works. this does not, because
-# the total score (update) depends on the prior on trees. if you use generate, while constraining on the trees and kernels,
-# you get back the prior b/c they aren't dependent.
-
-# biggest problem -- you do not have any way of reporting back inheritance. this is critical! currently feeding in the
-# velocities, but not the outcomes. 
 
 
 function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
@@ -362,26 +351,13 @@ function dotsample(num_dots::Int)
     return trace, gdm_args
 end    
 
-# function force_assign_dotpositions(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    
-#     observation = Gen.choicemap()
-#     (new_trace, w, a, ad) = Gen.update(gd_trace, t_args, (NoChange(),), observations)
-    
-# end    
-
-
-# one test you want to do is assign invertedly. see if the tree comes back inverted.
-# another thing you want to do is force assign so it doesn't play with choices of start x and y and
-# score values that make no sense. this is probably a thing.
-
-
 # note for JM slides, used 20 particles for 2 dots, 100 for 3. 
 
 function imp_inference(num_dots::Int)
     trace, args = dotsample(num_dots)
     trace_choices = get_choices(trace)
     observation = Gen.choicemap()
-    num_particles = 50
+    num_particles = 200
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
         observation[(:start_y, i)] = trace[(:start_y, i)]
@@ -402,7 +378,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     trace_choices = get_choices(trace)
     args = get_args(trace)
     observation = Gen.choicemap()
-    num_particles = 100
+    num_particles = 200
     num_dots = nv(get_retval(trace)[1])
     num_resamples = num_dots * 10
     for i in 1:num_dots
@@ -536,16 +512,6 @@ end
     # longest_pathlen describes the height. should be this length plus 2 (one slot at top and bottom free).
     # number of paths total should be x 
 
-
-function scene_and_bar()
-    #need the top 3 choices.
-    # make a graph with these choices. 
-
-    # take each of these 3 scenegraphs and vbox them into one scene
-    # then call barplot! on a new scene,
-    # to find max 3 values of score matrix, use partialsortperm(scoremat, 1:3, rev=true)
-    
-end
 
 
 function dotwrap(num_dots::Int)
@@ -890,10 +856,12 @@ end
 #kernel_types = [RandomWalk, Constant, Linear, Periodic]
 #@dist choose_kernel_type() = kernel_types[categorical([.25, .25, .25, .25])]
 
-kernel_types = [RandomWalk, Constant, Periodic]
-#kernel_types = [RandomWalk, Linear, Constant, Periodic]
+#kernel_types = [RandomWalk, Constant, Periodic]
+#@dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
+kernel_types = [RandomWalk, Linear, Constant, Periodic]
+@dist choose_kernel_type() = kernel_types[categorical([1/4, 1/4, 1/4, 1/4])]
 
-@dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
+
 
 function all_dot_permutations(n_dots)
     all_ranges = [1:n_dots for i in 1:n_dots]
