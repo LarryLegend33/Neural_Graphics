@@ -4,22 +4,44 @@
 %%% TeX-master: t
 %%% End:
 
+
+% koma look
+
+%\documentclass{scrartcl}
+% \usepackage[utf8]{inputenc}
+% \usepackage[T1]{fontenc}
+% \usepackage{graphicx}
+% \usepackage{grffile}
+% \usepackage{longtable}
+% \usepackage{wrapfig}
+% \usepackage{rotating}
+% \usepackage[normalem]{ulem}
+% \usepackage{amsmath}
+% \usepackage{textcomp}
+% \usepackage{amssymb}
+% \usepackage{capt-of}
+% \usepackage{hyperref}
+% \usepackage[main=british, polutonikogreek, english]{babel}
+
+
 \documentclass[12pt, letterpaper]{article}
-
-
 \usepackage[utf8]{inputenc}
 \usepackage{graphicx}
+
+
 \title{A Gaussian Process Model of Pointlight Perception}
 \author{Andrew D Bolton, Vikash K Mansinghka}
 \date{January 2021}
-
 
 \begin{document}
 
 \maketitle
 
 \begin{abstract}
-Changes in the intensity, qualities, or position of a stimulus over time can significantly affect how humans interpret its meaning. One example of this comes from the pioneering work of Gunnar Johansson on ``Point Light Stimuli''. This work showed that ambiguous stationary dot patterns induce striking perceptions of humans when set in bio-realistic motion. Here, we address how this sort of deep perceptual meaning arises from the most fundamental hints of its structure. Specifically, we compose dynamic dot scenes by hierarchical combination of four standard motion types studied in physics and observed in every day life. Using the probabilistic programming system Gen, we implement a GP-based generative model that first assigns a motion type to each dot (Brownian, Periodic, Uniform Linear, or Accelerating Linear), then generates a directed scene graph that describes inheritance of motion from one dot to another. In this way, ``groups'' of dots are specified that share motion features, and an inference task becomes inferring which dots belong to which groups. We use importance resampling inference constrained on only the observation of position and motion of the dots, and reveal that our inference program can uncover the correct scene graph and motion type assignment almost 100\% of the time. Moreover, the uncertainty revealed during inference reflects the uncertainty experienced by human observers characterizing the motion types and inheritance patterns in the stimuli. 
+  Changes in the intensity, qualities, or position of a stimulus over time can significantly affect how humans interpret its meaning. One example of this comes from Gunnar Johansson's work on ``Point Light Stimuli'', which revealed that ambiguous arrangements of stationary dots can induce striking perceptions of humans when set in biologically realistic motion. Here, we address how this type of deep perceptual meaning could arise from the integration of fundamental motion cues. Specifically, we compose dynamic dot scenes by hierarchical combination of four standard motion types observed in physics and everyday life. Using the probabilistic programming system Gen, we implement a GP-based generative model that first assigns a motion type to each dot (Brownian, Periodic, Uniform Linear, or Accelerating Linear), then generates a directed scene graph that describes inheritance of motion from one dot to another. In this way, ``groups'' of dots are specified that share common motion features and suggest unified objects. The goal of the task we devise is to infer the motion type of each dot and decide which dots belong to which groups; we posit that this constructive approach mirrors the cognitive processes that humans use to identify objects and meaning in sparse motion patterns. Lastly, we use importance resampling inference constrained on only the observation of position and motion of the dots, and show that our inference program uncovers the correct scene graph and motion type assignment almost 100\% of the time. Moreover, uncertainty in the inference program's identification of our stimuli reflects the uncertainty experienced by human observers characterizing the motion types and inheritance patterns in the stimuli.
+
+  Overall, the Gaussian Process abstraction enables explicit reasoning about dot motion scenes: our model is useful because when unexpected percepts arise from random dot patterns (e.g. ``a jumping frog'', ``a swimming fish''), the explicit nature of the model's generative process leads to clear answers about how these percepts may be represented in the brain. This idea, and future directions incorporating more motion types and scene graph arrangements, will be addressed. 
+
 
 
 \section*{Contributions}
@@ -33,7 +55,7 @@ Changes in the intensity, qualities, or position of a stimulus over time can sig
 \section*{Claims}
 
 \begin{enumerate}
-  \item Our model is the first to posit the latent structure that generates motion timeseries and captures human abilities in motion type and grouping inference tasks
+  \item Our model posits the latent structure that generates motion timeseries and captures human abilities in motion type and grouping inference tasks
   \item Using GP-generated motion should allow translation to neural network architectures that are closer to biophysically realistic models for human visual perception
   \item Explicit symbolic descriptions of motion patterns in our model reflect humans' ability to express knowledge of different motion types and combinations
   \item Combining simple well-known motion types yields interesting percepts of motion that resemble biological stimuli
@@ -51,6 +73,8 @@ Changes in the intensity, qualities, or position of a stimulus over time can sig
 \end{enumerate}
 
 \section*{Experiments}
+
+Humans will be presented a ten second movie of 2 or 3 white dots moving on a black background. These dot patterns will be generated directly from our model. The subject will be allowed to replay the stimulus at will; the goal of the subject is to identify the motion type of each dot and which dots belong to groups. The joint distribution of scene graphs and motion types will be compared to inference results obtained from running importance resampling constrained on velocity and position of the dots. KL divergence between the two distributions will be used to gauge how well our inference programs match human choices. 
 
 
 
