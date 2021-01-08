@@ -170,21 +170,27 @@ function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     kernel_combos = collect(Iterators.product(kernel_choices...))
     possible_edges = [(i, j) for i in 1:num_dots for j in 1:num_dots if i != j]
     truth_entry = [[0,1] for i in 1:size(possible_edges)[1]]
-    unfiltered_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
-    # filters trees with n_dot or more edges
-    edge_truthtable = loopfilter(possible_edges, unfiltered_truthtable)
-    # here you will have a list of traces
-    counts = []
-    # b/c this is animate inference, use imp_inference as a way to store images of the graph. 
+
     truth_trace, edge_samples, vel_samples = imp_inference(trace)
     joint_edge_vel = [(Tuple(e), Tuple(v)) for (e,v) in zip(edge_samples, vel_samples)]
+    
+    # filters trees with n_dot or more edges
+    if !isempty(truth_entry)
+        unfiltered_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
+        edge_truthtable = loopfilter(possible_edges, unfiltered_truthtable)
+    else
+        unfiltered_truthtable = edge_truthtable = [()]
+    end
+    importance_counts = []
+    # creates a list with entries that look like this ((1, 0), (Constant, RandomWalk)), where
+    # each entry is an importance sample
     for eg in edge_truthtable
         for kc in kernel_combos
             ev_count = count(λ -> (λ[1] == eg && λ[2] == kc), joint_edge_vel)
-            push!(counts, ev_count)
+            push!(importance_counts, ev_count)
         end
     end
-    count_matrix = reshape(counts, prod(collect(size(kernel_combos))), size(edge_truthtable)[1])
+    count_matrix = reshape(importance_counts, prod(collect(size(kernel_combos))), size(edge_truthtable)[1])
     inf_results = [count_matrix, kernel_combos, possible_edges, edge_truthtable]
     plot_inference_results(inf_results...)
     return inf_results
@@ -292,15 +298,14 @@ function plot_inference_results(score_matrix::Array{Any, 2}, kernels, possible_e
     xticks = (0:prod(collect(size(kernels)))-1, [string([string(ks)[1] for ks in k]...) for k in kernels])
     yticks = (1:size(edge_truth)[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs])
     # TOP 3 GRAPHS
-    top3graphs = find_top_n_props(3, score_matrix, [])
+    top_graphs = find_top_n_props(3, score_matrix, [])
     rendered_graphs = []
     probabilities = []
-    for tg in top3graphs
+
+    # if you print out the score matrix, doesn't equal number of samples requested
+    for tg in top_graphs
         score_index = tg[2].I
-        score = score_matrix[score_index[1], score_index[2]]
-        if score == 0
-            continue
-        end
+        score = tg[1]
         push!(probabilities, score)
         vel_types = kernels[score_index[1]]
         edges = edge_combinations[score_index[2]]
@@ -315,15 +320,22 @@ function plot_inference_results(score_matrix::Array{Any, 2}, kernels, possible_e
         push!(rendered_graphs, viz_graph)
     end
     barwidth = (.2 / 3) * length(probabilities)
-    println(barwidth)
     scene_graph_scene = vbox(rendered_graphs...)
-    bp = barplot!(axes, convert(Array{Float64, 1}, probabilities ./ sum(score_matrix)),
+    if length(probabilities) == 1
+        bar_x = [.45]
+        xaxlims = BBox(0, 1, 0, 1)
+    elseif length(probabilities) == 2
+        bar_x = [.4, 1.55]
+        xaxlims = BBox(0, 2, 0, 1)
+    elseif length(probabilities) == 3
+        bar_x = [.35, 1.45, 2.55]
+        xaxlims = BBox(0, 3, 0, 1)
+    end
+    bp = barplot!(axes, bar_x, convert(Array{Float64, 1}, probabilities ./ sum(score_matrix)),
                   color=:white,
                   backgroundcolor=:black, width=barwidth)
     axes.ylabel = "Posterior Probability"
-    if length(probabilities) == 1
-        limits!(axes, BBox(.75, 1.25, 0, 1))
-    end    
+    limits!(axes, xaxlims)
     final_scene = hbox(scene, 
                        scene_graph_scene)
     display(final_scene)
@@ -345,9 +357,7 @@ function dotsample(num_dots::Int)
     ts = range(1, stop=time_duration, length=num_velocity_points)
     gdm_args = (convert(Array{Float64}, ts), num_dots)
     trace = Gen.simulate(generate_dotmotion, gdm_args)
-    println(collect(edges(get_retval(trace)[1])))
     trace_choices = get_choices(trace)
-    println([trace_choices[(:kernel_type, i)] for i in 1:num_dots])
     return trace, gdm_args
 end    
 
@@ -378,9 +388,10 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     trace_choices = get_choices(trace)
     args = get_args(trace)
     observation = Gen.choicemap()
-    num_particles = 200
+
     num_dots = nv(get_retval(trace)[1])
-    num_resamples = num_dots * 10
+    num_particles = (num_dots ^ 2) * 20
+    num_resamples = 30
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
         observation[(:start_y, i)] = trace[(:start_y, i)]
@@ -393,8 +404,8 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, num_particles)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
-        s = visualize_scenegraph(get_retval(tr)[1])
-        display(s)
+#        s = visualize_scenegraph(get_retval(tr)[1])
+#        display(s)
     end
     return trace, edge_list, kernel_types
 end
@@ -405,7 +416,6 @@ end
 function tree_to_coords(tree::MetaDiGraph{Int64, Float64})
     num_dots = nv(tree)
     dotmotion = fill(zeros(2), num_dots, size(interpolate_coords(props(tree, 1)[:Velocity_X], interp_iters))[1])
-    println(size(dotmotion))
     # Assign first dot positions based on its initial XY position and velocities
     for dot in 1:num_dots
         dot_data = props(tree, dot)
@@ -413,9 +423,7 @@ function tree_to_coords(tree::MetaDiGraph{Int64, Float64})
             dot_data[:Position][1] .+ cumsum(interpolate_coords(dot_data[:Velocity_X], interp_iters)) ./ framerate,
             dot_data[:Position][2] .+ cumsum(interpolate_coords(dot_data[:Velocity_Y], interp_iters)) ./ framerate)]
     end
-
     dotmotion_tuples = [[Tuple(dotmotion[i, j]) for i in 1:num_dots] for j in 1:size(dotmotion)[2]]
-    println(size(dotmotion_tuples))
     return dotmotion_tuples
 end
 
@@ -525,10 +533,11 @@ end
 function find_top_n_props(n::Int,
                           score_matrix::Array{Any, 2},
                           max_inds)
-    if n == 0
+
+    mi = findmax(score_matrix)
+    if n == 0 || mi[1] == 0
         return max_inds
     else
-        mi = findmax(score_matrix)
         mi_coord = mi[2].I
         push!(max_inds, mi)
         sm_copy = copy(score_matrix)
@@ -537,11 +546,11 @@ function find_top_n_props(n::Int,
     end
 end    
 
-
+# problem is if you eliminate it and its still the max (i.e. once you eliminate it, everything else is 0
 
 function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     motion_tree = get_retval(trace)[1]
-    bounds = 10
+    bounds = 20
     res = 300
     outer_padding = 0
     dotmotion = tree_to_coords(motion_tree)
@@ -559,7 +568,6 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     for j in 1:nv(motion_tree)
         println(trace[(:kernel_type, j)])
     end
-
     gscene = visualize_scenegraph(motion_tree)
     gt_scene = vbox(scene, gscene)
     display(gt_scene)
@@ -568,12 +576,12 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         time_node[] = i
         sleep(1/framerate)
     end
-
     inf_results = animate_inference(trace)
     display(inf_results[2])
  #   t = render_dotmotion(trace)
 #    run(`bash concat_movies.sh`)
- #   return dotmotion
+    #   return dotmotion
+    return inf_results
 end
 
 
@@ -583,7 +591,6 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     res = 650
     outer_padding = 0
     node_styles = nodecolors(trace)
-    println(node_styles)
     graph_image = visualize_graph(motion_tree, res, node_styles)
     dotmotion = tree_to_coords(motion_tree)
     f(t, coords) = coords[t]
@@ -626,10 +633,6 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     title_inference = layout[3, 2, Top()] = LText(scene,
                                                   "Posterior Probability",
                                                   textsize=25, font="Noto Sans Bold", halign=:left, color=(:white))
-
-    for j in 1:nv(motion_tree)
-        println(trace[(:kernel_type, j)])
-    end
     display(scene)
   #  record(scene, "dotmotion.mp4", 1:size(dotmotion)[1]; framerate=60) do i
     for i in 1:size(dotmotion)[1]
@@ -894,7 +897,8 @@ end
 
 #        kernel_args = [20, 20]
     elseif kernel_type == Constant
-        kernel_args = [1]
+        # use 1 if bounds are 10, 2 if 20
+        kernel_args = [2]
 #        kernel_args = [3]
     elseif kernel_type == Linear
         kernel_args = [.1]
