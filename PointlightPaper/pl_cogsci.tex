@@ -5,7 +5,7 @@
 %%% reftex-default-bibliography: ("./pl_cogsci.bib")
 %%% End:
 
-% koma look
+% koma / GEB appearance
 
 \documentclass{scrartcl}
 \usepackage[utf8]{inputenc}
@@ -23,13 +23,8 @@
 \usepackage{hyperref}
 \usepackage[main=british, polutonikogreek, english]{babel}
 
-
-% \documentclass[12pt, letterpaper]{article}
-% \usepackage[utf8]{inputenc}
-% \usepackage{graphicx}
-
 \title{A Gaussian Process Model of Pointlight Perception}
-\author{Andrew D Bolton, Feras A Saad, Marco F Cusumano-Towner, Vikash K Mansinghka}
+\author{AD Bolton, FA Saad, MF Cusumano-Towner, VK Mansinghka}
 \date{January 2021}
 
 \begin{document}
@@ -37,12 +32,41 @@
 \maketitle
 
 \begin{abstract}
-  Changes in the intensity, qualities, or position of a stimulus over time can significantly affect how humans interpret its meaning. One example of this comes from Gunnar Johansson's work on ``Point Light Stimuli'', which revealed that ambiguous arrangements of stationary dots can induce striking perceptions of humans when set in biologically realistic motion. Here, we address how this type of deep perceptual meaning could arise from the integration of fundamental motion cues. Specifically, we compose dynamic dot scenes by hierarchical combination of four standard motion types observed in physics and everyday life. Using the probabilistic programming system Gen, we implement a GP-based generative model that first assigns a motion type to each dot (Brownian, Periodic, Uniform Linear, or Accelerating Linear), then generates a directed scene graph that describes inheritance of motion from one dot to another. In this way, ``groups'' of dots are specified that share common motion features and suggest unified objects. The goal of the task we devise is to infer the motion type of each dot and decide which dots belong to which groups; we posit that this constructive approach mirrors the cognitive processes that humans use to identify objects and meaning in sparse motion patterns. Lastly, we use importance resampling inference constrained on only the observation of position and motion of the dots, and show that our inference program uncovers the correct scene graph and motion type assignment almost 100\% of the time. Moreover, uncertainty in the inference program's identification of our stimuli reflects the uncertainty experienced by human observers characterizing the motion types and inheritance patterns in the stimuli.
+  Changes in the intensity, qualities, or position of a stimulus over time can significantly affect how humans interpret its meaning. One example of this comes from Gunnar Johansson's work on ``Point Light Stimuli'', which revealed that ambiguous arrangements of stationary dots can induce striking perceptions of humans when set in biologically realistic motion. Here, we address how this type of deep perceptual meaning could arise from the integration of fundamental motion cues. Specifically, we compose dynamic dot scenes by hierarchical combination of four standard motion types observed in physics and everyday life. Using the probabilistic programming system Gen, we implement a Gaussian Process based generative model that first assigns a motion type to each dot (Brownian, Periodic, Uniform Linear, or Accelerating Linear), then generates a directed scene graph that describes inheritance of motion from one dot to another. In this way, ``groups'' of dots are specified that share common motion features and suggest unified objects. The goal of the task we devise is to infer the motion type of each dot and decide which dots belong to which groups; we posit that this constructive approach mirrors the cognitive processes that humans use to identify objects and meaning in sparse motion patterns. Lastly, we use importance resampling inference constrained on only the observation of position and motion of the dots. We show that our inference program uncovers the correct scene graph and motion type assignment almost 100\% of the time. Uncertainty in the inference program's identification of our stimuli typically reflects the perceptual ambiguity experienced by human observers characterizing the motion types and inheritance patterns in the stimuli. There are common exceptions to this idea that will be explained herein. 
 
   Overall, the Gaussian Process abstraction enables explicit reasoning about dot motion scenes: our model is useful because when unexpected percepts pop out of random dot patterns (e.g. ``a jumping frog'', ``a swimming fish''), the explicit nature of the model's generative process leads to clear answers about how these percepts are composed. This idea, and future directions incorporating more motion types and scene graph arrangements, will be addressed below. 
 
 \end{abstract}
 
+A set of phenomena observed in past literature and in our own experiences with our model are shown below. Experiments to address questions raised by each phenomenon follow. 
+
+\section{Phenomena}
+
+\begin{enumerate}
+  \item Physicists studying motion (e.g. Brown, Hooke) and humans in their colloquial language (``rhythmic'', ``bobbing'', ``meandering'', ``speeding up'', ``slowing down'') appear to be able to distinguish distinct types of motion in the physical world. However, no studies have posited the generative process that mediates this cognitive ability, nor whether humans can consistently reason about complex motion trajectories in terms of simpler fundamental types. E.g. A sailor's complex trajectory while walking across a moving sailboat is composed of the boat's uniform forward translation, his / her own walking path, the random fluctuations of the wind, and the periodic rhythm of waves. 
+  \item A sparse set of white dots moving on a black background can create percepts of \emph{biological motion} (e.g. humans walking or dancing, fish swimming) \cite{Johansson_1973}. No studies have addressed how explicit forms of motion described above are composed to create biological motion. 
+  \item Dots that share common vectors of motion lead to perceptual grouping (i.e. ``Theory of Vector Analysis'') \cite{Johansson_1973}. In this way, common motion of a set of dots relative to its background forms a basis for the human ability to recognize unified objects from motion. However, it is unknown whether this grouping applies to all motion types and whether there are special cases where objects share motion vectors but are not perceived as groups.
+  \item Ambiguity arises in the groupings of dots during stimulus presentation. We will address whether this ambiguity can be explained by uncertainty in inference using our model. 
+\end{enumerate}
+
+
+\section*{Experiments}
+
+
+Humans will be presented a ten second movie of 1, 2, or 3 white dots moving on a black background. These dot patterns will be generated directly from our model. The subject will be allowed to replay the stimulus at will until selecting an answer. The goal of the subject is to identify the motion type of each dot and decide which dots are grouped. The 1-dot case queries the subject's ability to identify the common patterns of motion that we suggest are fundamental building blocks of complex motion. Human results will be compared to inference results obtained from running importance resampling constrained on velocity and position of the dots using KL divergence. 5-10 subjects in the first pass should be sufficient for identifying whether the task is viable. By Neurips, may be beneficial to have more human data and zebrafish data showing differential responses to groups vs. non-groups. 
+
+with a constant. On the other hand, the inference program is ``correct'' in that it obtains the scene graph that actually generated the stimulus. I wrote a distance parameter into the program, where pairwise distances of all dots over time are recorded. A heuristic on top of the model could be: if the distance between these two dots is constantly growing, and there is no complex motion sharing (periodic or random) => degroup. 
+
+The inference program sometimes uncovers the inverse of periodic->uniform relationships (e.g. dot 1 / dot 2 assignments reversed). This is likely because periodic timeseries often have a translating component. If it is in the opposite direction of a uniform component, the uniform will appear to be still while the periodic is moving with what looks like uniform motion. It may be useful in later iterations to compose periodic motion using uniform and oscillating components; this would create a less ambiguous scene graph where the oscillating dot is relatively stationary while the uniform dot translates. 
+
+
+\section*{Metrics and Figures}
+\begin{itemize}
+  \item Figure 1: 
+  \item 
+
+
+  
 \section*{Contributions}
 
 \begin{enumerate}
@@ -56,25 +80,23 @@
 \section*{Claims}
 
 \begin{enumerate}
-  \item Our model posits the latent structure that generates motion timeseries and captures human abilities in motion type and grouping inference tasks.
+
+    \item Non-parametric Bayesian Models (i.e. CRP) defining flow fields can recapitulate (1). These careful studies explained the phenomenological effects in Johansson's studies, but fail to posit the actual latent structure that exists in humans' perceptual machinery \cite{Gershman_2016}. Our model posits the latent structure that generates motion timeseries and captures human abilities in motion type identification and grouping inference tasks.
   \item Explicit symbolic descriptions of motion patterns in our model reflect humans' ability to express knowledge and reason about different motion types and motion combinations.
   \item Studying the fundamental elements of motion perception using dot stimuli should lead to testable hypothesis in real neural circuits known to encode the position and velocity of moving dots. \cite{Bolton_2019}
   \item Our use of GP-generated motion should allow translation to neural network architectures that have been found to be equivalent to GPs, which may provide inroads to visual neuroscience. \cite{Neal_1996}
 \end{enumerate}
 
 
-\section*{Phenomena}
-  
-\begin{enumerate}
-  \item Shared motion vectors of dots in previous studies have contributed to grouping (i.e. ``Theory of Vector Analysis'') \cite{Johansson_1973}
-  \item Non-parametric Bayesian Models (i.e. CRP) defining flow fields can recapitulate (1) but fail to posit latent structure \cite{Gershman_2016}
-  \item Physicists studying motion (e.g. Brown, Hooke) and humans in their colloquial language (``bouncing'', ``bobbing'', ``meandering'', ``speeding up'', ``slowing down'') are clearly able to distinguish distinct types of motion in the physical world. 
-  \item Uncertainty arises in the groupings of dots that could be explained if multiple scene graphs showed relatively high posterior probability in our model. 
-\end{enumerate}
 
-\section*{Experiments}
 
-Humans will be presented a ten second movie of 2 or 3 white dots moving on a black background. These dot patterns will be generated directly from our model. The subject will be allowed to replay the stimulus at will until selecting an answer. The goal of the subject is to identify the motion type of each dot and decide which dots are grouped. Human results will be compared to inference results obtained from running importance resampling constrained on velocity and position of the dots using KL divergence. 5-10 subjects in the first pass should be sufficient for identifying whether the task is viable. By Neurips, may be beneficial to have more human data and zebrafish data showing differential responses to groups vs. non-groups. 
+
+
+
+
+
+
+
 
 \section*{Future Directions}
 
