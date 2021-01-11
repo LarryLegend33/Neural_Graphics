@@ -90,6 +90,22 @@ end
 end
 
 
+function calculate_pairwise_distance(dotmotion_tuples)
+    # each value in dotmotion_tuples is of form ((x1, y1), (x2, y2)) for each dot i to N.
+    pairwise_distances = []
+    for dt in dotmotion_tuples
+        push!(pairwise_distances,
+              [norm(coord2 .- coord1) for (i, coord1) in enumerate(dt) for (j, coord2) in enumerate(dt) if i < j])
+    end
+    return pairwise_distances
+end
+
+function answer_portal()
+    a = 1
+    # biomotion rank
+    # scene graph without numbers? have a dot that you can click the color. have a button that you can pick an arrow, or no arrow. 
+end
+    
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
                                               dots::Array{Int64}, ts::Array{Float64})
     if isempty(dots)
@@ -97,9 +113,17 @@ end
     else
         dot = first(dots)
         parents = inneighbors(motion_tree, dot)
+
+        # uncomment here for flat prior on position
+        start_x = {(:start_x, dot)} ~ uniform_discrete(-5, 5)
+        start_y = {(:start_y, dot)} ~ uniform_discrete(-5, 5)
+        x_vel_mean = zeros(length(ts))
+        y_vel_mean = zeros(length(ts))
+
         if isempty(parents)
-            start_x = {(:start_x, dot)} ~ uniform_discrete(-5, 5)
-            start_y = {(:start_y, dot)} ~ uniform_discrete(-5, 5)
+            #uncomment to use biased prior on initial position
+#            start_x = {(:start_x, dot)} ~ uniform_discrete(-5, 5)
+#            start_y = {(:start_y, dot)} ~ uniform_discrete(-5, 5)
             x_vel_mean = zeros(length(ts))
             y_vel_mean = zeros(length(ts))
         else
@@ -109,8 +133,8 @@ end
             else
                 parent_position = props(motion_tree, parents[1])[:Position]
             end
-            start_x = {(:start_x, dot)} ~ uniform_discrete(parent_position[1]-1, parent_position[1]+1)
-            start_y = {(:start_y, dot)} ~ uniform_discrete(parent_position[2]-1, parent_position[2]+1)
+ #           start_x = {(:start_x, dot)} ~ uniform_discrete(parent_position[1]-1, parent_position[1]+1)
+#            start_y = {(:start_y, dot)} ~ uniform_discrete(parent_position[2]-1, parent_position[2]+1)
             parent_velocities_x = [props(motion_tree, p)[:Velocity_X] for p in parents]
             parent_velocities_y = [props(motion_tree, p)[:Velocity_Y] for p in parents]
         end
@@ -524,7 +548,7 @@ end
 
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
-    render_stim_only(trace)
+    inf_results = render_stim_only(trace)
     return trace
 #    inf_results = animate_inference(trace)
  #   return trace, args
@@ -578,10 +602,11 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     end
     inf_results = animate_inference(trace)
     display(inf_results[2])
+    pairwise_distances = calculate_pairwise_distance(dotmotion)
  #   t = render_dotmotion(trace)
 #    run(`bash concat_movies.sh`)
     #   return dotmotion
-    return inf_results
+    return inf_results, pairwise_distances
 end
 
 
@@ -893,18 +918,18 @@ end
         #        kernel_args = [.5, .5]
         # note the velocity profile is updating at 4Hz (40 samples over 10 sec),
         # so have to have period be factor of 4 to look periodic. 
-        kernel_args = [3, .5, 1]
+        kernel_args = [6, .5, 1]
 
 #        kernel_args = [20, 20]
     elseif kernel_type == Constant
         # use 1 if bounds are 10, 2 if 20
-        kernel_args = [2]
+        kernel_args = [4]
 #        kernel_args = [3]
     elseif kernel_type == Linear
-        kernel_args = [.1]
+        kernel_args = [.15]
     elseif kernel_type == RandomWalk
 #        kernel_args = [.2]
-        kernel_args = [3]
+        kernel_args = [20]
     else
         kernel_args = [1]
     end
