@@ -148,11 +148,16 @@ end
                 y_vel_mean = sum(parent_velocities_y)
             end
         end
-        cov_func = {*} ~ covariance_simple(dot)
+        #        cov_func = {*} ~ covariance_simple(dot)
+        # sample a kernel type for the dot here. then assign with cov prior conditioned on type
+        kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
+        cov_func = {*} ~ covariance_prior(kernel_type, dot)
         noise = 0.001
-        covmat = compute_cov_matrix_vectorized(cov_func, noise, ts)
-        x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_mean, covmat)
-        y_vel = {(:y_vel, dot)} ~ mvnormal(y_vel_mean, covmat)
+        covmat_x = compute_cov_matrix_vectorized(cov_func, noise, ts)
+        covmat_y = compute_cov_matrix_vectorized(cov_func, noise, ts)
+        
+        x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_mean, covmat_x)
+        y_vel = {(:y_vel, dot)} ~ mvnormal(y_vel_mean, covmat_y)
         # Sample from the GP using a multivariate normal distribution with
         # the kernel-derived covariance matrix.
         set_props!(motion_tree, dot,
@@ -957,24 +962,23 @@ end
 
 
 
-@gen function covariance_prior()
+@gen function covariance_prior(kernel_type, kt)
     # Choose a type of kernel
-    kernel_type = { :kernel_type } ~ choose_kernel_type()
     # If this is a composite node, recursively generate subtrees. For now, too complex. 
     if in(kernel_type, [Plus, Times])
         return kernel_type({ :left } ~ covariance_prior(), { :right } ~ covariance_prior())
     end
     # Otherwise, generate parameters for the primitive kernel.
     if kernel_type == Periodic
-        kernel_args = [{ :scale } ~ uniform(0, 1), { :period } ~ uniform(0, 10)]
+        kernel_args = [{(:scale, kt)} ~ uniform_discrete(1, 10), {(:length, kt)} ~ uniform(.5, .5), {(:period, kt)} ~ uniform_discrete(1, 2)]
     elseif kernel_type == Constant
-        kernel_args = [{ :param } ~ uniform(0, 3)]
+        kernel_args = [{(:param, kt)} ~ uniform(1, 20)]
     elseif kernel_type == Linear
-        kernel_args = [{ :param } ~ uniform(0, 1)]
+        kernel_args = [{(:param, kt)} ~ uniform(.2, .3)]
     elseif kernel_type == RandomWalk
-        kernel_args = [{ :param } ~ uniform(0, 10)]
+        kernel_args = [{(:param, kt)} ~ uniform_discrete(1, 30)]
     else
-        kernel_args = [{ :param } ~ uniform(0, 1)]
+        kernel_args = [{(:param, kt)} ~ uniform(0, 1)]
     end
     return kernel_type(kernel_args...)
 end
