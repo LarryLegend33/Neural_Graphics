@@ -100,37 +100,81 @@ function calculate_pairwise_distance(dotmotion_tuples)
     return pairwise_distances
 end
 
-function answer_portal(trial_ID::Int)
-    answer_graph = MetaDiGraph(2)
-    answer_scene, as_layout = layoutscene(resolution=(500, 500))
-#    dot1_vmenu = menu!(answer_scene, 
-#    dot2_vmenu = menu!(answer_scene, options = ["Brownian", "Periodic", "Uniform Linear", "Accelerating Linear"])
-    dot1v = LMenu(answer_scene, options = ["Brownian", "Periodic", "Uniform Linear", "Accelerating Linear"])
-    dot2v = LMenu(answer_scene, options = ["Brownian", "Periodic", "Uniform Linear", "Accelerating Linear"])
-# incorporate for 3 dots    
-    #    group_toggles = [LToggle(answer_scene, active = ac) for ac in [true, false]]
-    as_layout[1, 1] = vbox!(LText(answer_scene, "Dot 1 Motion Type"), dot1v)
-    as_layout[2, 1] = vbox!(LText(answer_scene, "Dot 2 Motion Type"), dot2v)
-    group_toggle = LToggle(answer_scene, active = false)
-    labels = LText(answer_scene, lift(x -> x ? "Grouped" : "Independent", group_toggle.active)) 
-    as_layout[3, 1] = hbox!(group_toggle, labels)
-    confidence = as_layout[4, 1] = vbox!(LText(answer_scene, "Confidence Level"), LSlider(answer_scene, range=0:1:100, startvalue=50))
-    biomotion = as_layout[5, 1] = vbox!(LText(answer_scene, "Biomotion Scale"), LSlider(answer_scene, range=0:1:100, startvalue=50))
+function answer_portal(trial_ID::Int, num_dots::Int)
+    answer_graph = MetaDiGraph(num_dots)
+    answer_scene, as_layout = layoutscene(resolution=(500, 500), backgroundcolor=:black)
+    dot_menus = [LMenu(answer_scene, options = ["Brownian", "Periodic", "Uniform Linear", "Accelerating Linear"]) for i in 1:num_dots]
+    # incorporate for 3 dots    
+    # group_toggles = [LToggle(answer_scene, active = ac) for ac in [true, false]]
+    for (dot_id, menu) in enumerate(dot_menus)
+        as_layout[dot_id, 1] = vbox!(LText(answer_scene, string("Dot ", dot_id, " Motion Type"), color=:white), menu)
+    end
+     # [dot1 for dot1 in 1:num_dots for dot2 in 1:num_dots if dot1 < dot 2]
+    tog_indices = [(dot1, dot2) for dot1 in 1:num_dots for dot2 in 1:num_dots if dot1 < dot2]
+    toggles = [LToggle(answer_scene, buttoncolor=:black, active=false) for ti in tog_indices]
+    toglabels = [LText(answer_scene, lift(x -> x ? string(dot1, " grouped with ", dot2) : string(dot1, " independent from ", dot2),
+                                                          toggles[i].active), color=:white) for (i, (dot1, dot2)) in enumerate(tog_indices)]
+    for tog_index in 1:length(tog_indices)
+        as_layout[num_dots+tog_index, 1] = hbox!(toggles[tog_index], toglabels[tog_index])
+    end
+        
+    confidence = as_layout[num_dots+length(tog_indices) + 1, 1] = vbox!(LText(answer_scene, "Confidence Level", color=:white),
+                                         LSlider(answer_scene, range=0:1:100, startvalue=50))
+    biomotion = as_layout[num_dots+length(tog_indices) + 2, 1] = vbox!(LText(answer_scene, "Biomotion Scale", color=:white),
+                                        LSlider(answer_scene, range=0:1:100, startvalue=50))
     screen = display(answer_scene)
-    on(dot1v.selection) do s1
+    on(dot_menus[1].selection) do s1
         set_props!(answer_graph, 1, Dict(:MType=> s1))
     end
-    on(dot2v.selection) do s2
-        set_props!(answer_graph, 2, Dict(:MType=> s2))
+    try
+        on(dot_menus[2].selection) do s2
+            set_props!(answer_graph, 2, Dict(:MType=> s2))
+        end
+    catch 
+    end
+    try
+        on(dot_menus[3].selection) do s3
+            set_props!(answer_graph, 3, Dict(:MType=> s3))
+        end
+    catch
     end
 
-    on(group_toggle.active) do gt
-        if gt == true
-            add_edge!(answer_graph, 1, 2)
-        else
-            rem_edge!(answer_graph, 1, 2)
+    try
+        on(toggles[1].active) do gt
+            if gt == true
+                add_edge!(answer_graph, 1, 2)
+            else
+                rem_edge!(answer_graph, 1, 2)
+            end
         end
+    catch
     end
+
+    try
+        on(toggles[2].active) do gt2
+            if gt2 == true
+                add_edge!(answer_graph, 1, 3)
+            else
+                rem_edge!(answer_graph, 1, 3)
+            end
+        end
+    catch
+    end
+
+    try
+        on(toggles[3].active) do gt3
+            if gt3 == true
+                add_edge!(answer_graph, 2, 3)
+            else
+                rem_edge!(answer_graph, 2, 3)
+            end
+        end
+    catch
+    end
+
+        
+
+    
     wait(screen)
     savegraph(string("answers",trial_ID, ".mg"), answer_graph)
 end    
@@ -492,7 +536,7 @@ function tree_to_coords(tree::MetaDiGraph{Int64, Float64})
             dot_data[:Position][2] .+ cumsum(interpolate_coords(dot_data[:Velocity_Y], interp_iters)) ./ framerate)]
     end
     dotmotion_tuples = [[Tuple(dotmotion[i, j]) for i in 1:num_dots] for j in 1:size(dotmotion)[2]]
-    return dotmotion_tuples
+    return dotmotion_tuples, dotmotion
 end
 
 
@@ -589,13 +633,22 @@ end
     # number of paths total should be x 
 
 
+function run_human_experiment()
+    num_trials = 3
+    for trial_n in 1:num_trials
+        num_dots = uniform_discrete(1, 3)
+        trace, inf_results = dotwrap(num_dots)
+        answer_portal(trial_n, num_dots)
+    end
+end    
+        
 
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
-    inf_results = render_stim_only(trace)
-    return trace
-#    inf_results = animate_inference(trace)
- #   return trace, args
+    pw_distances = render_stim_only(trace)
+    inf_results = animate_inference(trace)
+    #    display(inf_results[2])
+    return trace, inf_results
 end
 
 function find_top_n_props(n::Int,
@@ -619,9 +672,10 @@ end
 function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     motion_tree = get_retval(trace)[1]
     bounds = 20
-    res = 300
+    res = 800
     outer_padding = 0
-    dotmotion = tree_to_coords(motion_tree)
+    dotmotion, raw_dotmotion = tree_to_coords(motion_tree)
+    pairwise_distances = calculate_pairwise_distance(raw_dotmotion)    
     f(t, coords) = coords[t]
     n_rows = 3
     n_cols = 2
@@ -636,21 +690,16 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     for j in 1:nv(motion_tree)
         println(trace[(:kernel_type, j)])
     end
-    gscene = visualize_scenegraph(motion_tree)
-    gt_scene = vbox(scene, gscene)
-    display(gt_scene)
+# Uncomment if you want to visualize scenegraph side by side with stimulus    
+#    gscene = visualize_scenegraph(motion_tree)
+#    gt_scene = vbox(scene, gscene)
+    display(scene)
 #    record(gt_scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
     for i in 1:size(dotmotion)[1]
         time_node[] = i
         sleep(1/framerate)
     end
-    inf_results = animate_inference(trace)
-    display(inf_results[2])
-    pairwise_distances = calculate_pairwise_distance(dotmotion)
- #   t = render_dotmotion(trace)
-#    run(`bash concat_movies.sh`)
-    #   return dotmotion
-    return inf_results, pairwise_distances
+    return pairwise_distances
 end
 
 
