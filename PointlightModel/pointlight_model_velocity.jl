@@ -100,11 +100,50 @@ function calculate_pairwise_distance(dotmotion_tuples)
     return pairwise_distances
 end
 
-function answer_portal()
-    a = 1
+function answer_portal(trial_ID::Int)
+    answer_graph = MetaDiGraph(2)
+    answer_scene, as_layout = layoutscene(resolution=(500, 500))
+#    dot1_vmenu = menu!(answer_scene, 
+#    dot2_vmenu = menu!(answer_scene, options = ["Brownian", "Periodic", "Uniform Linear", "Accelerating Linear"])
+    dot1v = LMenu(answer_scene, options = ["Brownian", "Periodic", "Uniform Linear", "Accelerating Linear"])
+    dot2v = LMenu(answer_scene, options = ["Brownian", "Periodic", "Uniform Linear", "Accelerating Linear"])
+# incorporate for 3 dots    
+    #    group_toggles = [LToggle(answer_scene, active = ac) for ac in [true, false]]
+    as_layout[1, 1] = vbox!(LText(answer_scene, "Dot 1 Motion Type"), dot1v)
+    as_layout[2, 1] = vbox!(LText(answer_scene, "Dot 2 Motion Type"), dot2v)
+    group_toggle = LToggle(answer_scene, active = false)
+    labels = LText(answer_scene, lift(x -> x ? "Grouped" : "Independent", group_toggle.active)) 
+    as_layout[3, 1] = hbox!(group_toggle, labels)
+    confidence = as_layout[4, 1] = vbox!(LText(answer_scene, "Confidence Level"), LSlider(answer_scene, range=0:1:100, startvalue=50))
+    biomotion = as_layout[5, 1] = vbox!(LText(answer_scene, "Biomotion Scale"), LSlider(answer_scene, range=0:1:100, startvalue=50))
+    screen = display(answer_scene)
+    on(dot1v.selection) do s1
+        set_props!(answer_graph, 1, Dict(:MType=> s1))
+    end
+    on(dot2v.selection) do s2
+        set_props!(answer_graph, 2, Dict(:MType=> s2))
+    end
+
+    on(group_toggle.active) do gt
+        if gt == true
+            add_edge!(answer_graph, 1, 2)
+        else
+            rem_edge!(answer_graph, 1, 2)
+        end
+    end
+    wait(screen)
+    savegraph(string("answers",trial_ID, ".mg"), answer_graph)
+end    
+                      
     # biomotion rank
-    # scene graph without numbers? have a dot that you can click the color. have a button that you can pick an arrow, or no arrow. 
-end
+    # scene graph without numbers? have a dot that you can click the color. have a button that you can pick an arrow, or no arrow.
+
+    # make a menu with dot 1 type, dot 2 type, connection (none, 1-2, 2-1). initialize a metagraph. 
+    # when selections are made, updaate the graph and render the scene graph to the screen. then click "save". save the current metagraph.  
+    #savegraph("foo.mg", mg)
+    #mg2 = loadgraph("foo.mg", MGFormat())
+    
+
     
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
                                               dots::Array{Int64}, ts::Array{Float64})
