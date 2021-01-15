@@ -102,7 +102,7 @@ end
 
 function answer_portal(trial_ID::Int, num_dots::Int)
     answer_graph = MetaDiGraph(num_dots)
-    answer_scene, as_layout = layoutscene(resolution=(500, 500), backgroundcolor=:black)
+    answer_scene, as_layout = layoutscene(resolution=(800, 800), backgroundcolor=:black)
     dot_menus = [LMenu(answer_scene, options = ["Brownian", "Periodic", "Uniform Linear", "Accelerating Linear"]) for i in 1:num_dots]
     # incorporate for 3 dots    
     # group_toggles = [LToggle(answer_scene, active = ac) for ac in [true, false]]
@@ -117,11 +117,12 @@ function answer_portal(trial_ID::Int, num_dots::Int)
     for tog_index in 1:length(tog_indices)
         as_layout[num_dots+tog_index, 1] = hbox!(toggles[tog_index], toglabels[tog_index])
     end
-        
+
+    sliders = [LSlider(answer_scene, range=0:1:100, startvalue=50) for i in 1:2]
     confidence = as_layout[num_dots+length(tog_indices) + 1, 1] = vbox!(LText(answer_scene, "Confidence Level", color=:white),
-                                         LSlider(answer_scene, range=0:1:100, startvalue=50))
+                                                                        sliders[1])
     biomotion = as_layout[num_dots+length(tog_indices) + 2, 1] = vbox!(LText(answer_scene, "Biomotion Scale", color=:white),
-                                        LSlider(answer_scene, range=0:1:100, startvalue=50))
+                                                                       sliders[2])
     screen = display(answer_scene)
     on(dot_menus[1].selection) do s1
         set_props!(answer_graph, 1, Dict(:MType=> s1))
@@ -171,12 +172,9 @@ function answer_portal(trial_ID::Int, num_dots::Int)
         end
     catch
     end
-
-        
-
-    
     wait(screen)
     savegraph(string("answers",trial_ID, ".mg"), answer_graph)
+    return answer_scene, sliders[1].value, sliders[2].value
 end    
                       
     # biomotion rank
@@ -413,7 +411,6 @@ function plot_inference_results(score_matrix::Array{Any, 2}, kernels, possible_e
     top_graphs = find_top_n_props(3, score_matrix, [])
     rendered_graphs = []
     probabilities = []
-
     # if you print out the score matrix, doesn't equal number of samples requested
     for tg in top_graphs
         score_index = tg[2].I
@@ -473,7 +470,8 @@ function dotsample(num_dots::Int)
     return trace, gdm_args
 end    
 
-# note for JM slides, used 20 particles for 2 dots, 100 for 3. 
+# note for JM slides, used 20 particles for 2 dots, 100 for 3.
+# make imp_inference take a number of particles. 
 
 function imp_inference(num_dots::Int)
     trace, args = dotsample(num_dots)
@@ -502,7 +500,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     observation = Gen.choicemap()
 
     num_dots = nv(get_retval(trace)[1])
-    num_particles = (num_dots ^ 2) * 20
+    num_particles = (num_dots ^ 3) * 20
     num_resamples = 30
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
@@ -517,7 +515,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
 #        s = visualize_scenegraph(get_retval(tr)[1])
-#        display(s)
+ #       display(s)
     end
     return trace, edge_list, kernel_types
 end
@@ -633,19 +631,28 @@ end
     # number of paths total should be x 
 
 
-function run_human_experiment()
-    num_trials = 3
+function run_human_experiment(num_trials::Int)
+    biomotion_results = []
+    confidence_results = []
     for trial_n in 1:num_trials
         num_dots = uniform_discrete(1, 3)
         trace, inf_results = dotwrap(num_dots)
-        answer_portal(trial_n, num_dots)
+        #prob have the answer panel attached to the stimulus
+        @save string("trace", trial_n, ".bson") trace
+        @save string("inf_results", trial_n, ".bson") inf_results
+        a_scene, confidence, biomotion = answer_portal(trial_n, num_dots)
+        push!(biomotion_results, biomotion)
+        push!(confidence_results, confidence)
     end
+    @save "biomotion.bson" biomotion_results
+    @save "confidence.bson" confidence_results
 end    
         
 
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
-    pw_distances = render_stim_only(trace)
+    pw_distances, number_repeats = render_stim_only(trace)
+    println("finished stim render")
     inf_results = animate_inference(trace)
     #    display(inf_results[2])
     return trace, inf_results
@@ -691,15 +698,24 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         println(trace[(:kernel_type, j)])
     end
 # Uncomment if you want to visualize scenegraph side by side with stimulus    
-#    gscene = visualize_scenegraph(motion_tree)
-#    gt_scene = vbox(scene, gscene)
-    display(scene)
+    #    gscene = visualize_scenegraph(motion_tree)
+#    gt_scene = vbox(scene, a_scene)
+    screen = display(scene)
+    
 #    record(gt_scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
-    for i in 1:size(dotmotion)[1]
+    #    for i in 1:size(dotmotion)[1]
+    i = 0
+    num_repeats = 0
+    while(isopen(scene))
+        i += 1
+        if i == size(dotmotion)[1]
+            i = 1
+            num_repeats += 1
+        end
         time_node[] = i
         sleep(1/framerate)
     end
-    return pairwise_distances
+    return pairwise_distances, num_repeats
 end
 
 
