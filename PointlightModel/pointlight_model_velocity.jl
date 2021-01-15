@@ -12,6 +12,7 @@ using ColorSchemes
 using Statistics
 using StatsBase
 using CurricularAnalytics
+using BSON: @save, @load
 
 #- One main question is whether we are going to try to reconstruct the identity after the fact. I.e. Are the xs and ys completely known in time and space We can do simultaneous inference on x and y values wrt t. Can also do sequential monte carlo. 
 
@@ -110,82 +111,38 @@ function answer_portal(trial_ID::Int, num_dots::Int)
         as_layout[dot_id, 1] = vbox!(LText(answer_scene, string("Dot ", dot_id, " Motion Type"), color=:white), menu)
     end
      # [dot1 for dot1 in 1:num_dots for dot2 in 1:num_dots if dot1 < dot 2]
-    tog_indices = [(dot1, dot2) for dot1 in 1:num_dots for dot2 in 1:num_dots if dot1 < dot2]
+    tog_indices = [(dot1, dot2) for dot1 in 1:num_dots for dot2 in 1:num_dots if dot1 != dot2]
     toggles = [LToggle(answer_scene, buttoncolor=:black, active=false) for ti in tog_indices]
-    toglabels = [LText(answer_scene, lift(x -> x ? string(dot1, " grouped with ", dot2) : string(dot1, " independent from ", dot2),
+    toglabels = [LText(answer_scene, lift(x -> x ? string(dot1, " inherits motion of ", dot2) : string(dot1, " does not inherit motion of ", dot2),
                                                           toggles[i].active), color=:white) for (i, (dot1, dot2)) in enumerate(tog_indices)]
     for tog_index in 1:length(tog_indices)
         as_layout[num_dots+tog_index, 1] = hbox!(toggles[tog_index], toglabels[tog_index])
     end
-
     sliders = [LSlider(answer_scene, range=0:1:100, startvalue=50) for i in 1:2]
     confidence = as_layout[num_dots+length(tog_indices) + 1, 1] = vbox!(LText(answer_scene, "Confidence Level", color=:white),
                                                                         sliders[1])
     biomotion = as_layout[num_dots+length(tog_indices) + 2, 1] = vbox!(LText(answer_scene, "Biomotion Scale", color=:white),
                                                                        sliders[2])
     screen = display(answer_scene)
-    on(dot_menus[1].selection) do s1
-        set_props!(answer_graph, 1, Dict(:MType=> s1))
-    end
-    try
-        on(dot_menus[2].selection) do s2
-            set_props!(answer_graph, 2, Dict(:MType=> s2))
+    for dot in 1:num_dots
+        on(dot_menus[dot].selection) do s
+            set_props!(answer_graph, dot, Dict(:MType=> s))
         end
-    catch 
     end
-    try
-        on(dot_menus[3].selection) do s3
-            set_props!(answer_graph, 3, Dict(:MType=> s3))
-        end
-    catch
-    end
-
-    try
-        on(toggles[1].active) do gt
+    for (tswitch, tog_inds) in enumerate(tog_indices)
+        on(toggles[tswitch].active) do gt
             if gt == true
-                add_edge!(answer_graph, 1, 2)
+                add_edge!(answer_graph, tog_inds[2], tog_inds[1])
             else
-                rem_edge!(answer_graph, 1, 2)
+                rem_edge!(answer_graph, tog_inds[2], tog_inds[1])
             end
         end
-    catch
-    end
-
-    try
-        on(toggles[2].active) do gt2
-            if gt2 == true
-                add_edge!(answer_graph, 1, 3)
-            else
-                rem_edge!(answer_graph, 1, 3)
-            end
-        end
-    catch
-    end
-
-    try
-        on(toggles[3].active) do gt3
-            if gt3 == true
-                add_edge!(answer_graph, 2, 3)
-            else
-                rem_edge!(answer_graph, 2, 3)
-            end
-        end
-    catch
     end
     wait(screen)
     savegraph(string("answers",trial_ID, ".mg"), answer_graph)
     return answer_scene, sliders[1].value, sliders[2].value
 end    
                       
-    # biomotion rank
-    # scene graph without numbers? have a dot that you can click the color. have a button that you can pick an arrow, or no arrow.
-
-    # make a menu with dot 1 type, dot 2 type, connection (none, 1-2, 2-1). initialize a metagraph. 
-    # when selections are made, updaate the graph and render the scene graph to the screen. then click "save". save the current metagraph.  
-    #savegraph("foo.mg", mg)
-    #mg2 = loadgraph("foo.mg", MGFormat())
-    
-
     
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
                                               dots::Array{Int64}, ts::Array{Float64})
@@ -302,7 +259,7 @@ function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     end
     count_matrix = reshape(importance_counts, prod(collect(size(kernel_combos))), size(edge_truthtable)[1])
     inf_results = [count_matrix, kernel_combos, possible_edges, edge_truthtable]
-    plot_inference_results(inf_results...)
+#    plot_inference_results(inf_results...)
     return inf_results
 end                
 
@@ -447,8 +404,8 @@ function plot_inference_results(score_matrix::Array{Any, 2}, kernels, possible_e
     limits!(axes, xaxlims)
     final_scene = hbox(scene, 
                        scene_graph_scene)
-    display(final_scene)
-
+    screen = display(final_scene)
+    wait(screen)
     
     # HEATMAP
     # hm = heatmap!(axes, score_matrix, colormap=:viridis)
@@ -571,8 +528,6 @@ function xy_node_positions(paths::Array{Array, 1},
     end
 end
 
-      
-
 
 function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64})
     outer_padding = 0
@@ -631,23 +586,48 @@ end
     # number of paths total should be x 
 
 
-function run_human_experiment(num_trials::Int)
+function run_human_experiment(num_trials::Int, directory::String)
     biomotion_results = []
     confidence_results = []
+    pw_dist_results = []
+    repeats_results = []
     for trial_n in 1:num_trials
         num_dots = uniform_discrete(1, 3)
-        trace, inf_results = dotwrap(num_dots)
+        trace, inf_results, pw_dist, num_repeats = dotwrap(num_dots)
         #prob have the answer panel attached to the stimulus
-        @save string("trace", trial_n, ".bson") trace
-        @save string("inf_results", trial_n, ".bson") inf_results
+        plot_inference_results(inf_results...)
+        @save string(directory, "/trace", trial_n, ".bson") trace
+        @save string(directory, "/inf_results", trial_n, ".bson") inf_results
         a_scene, confidence, biomotion = answer_portal(trial_n, num_dots)
         push!(biomotion_results, biomotion)
         push!(confidence_results, confidence)
+        push!(pw_dist_results, pw_dist)
+        push!(repeats_results, num_repeats)
     end
-    @save "biomotion.bson" biomotion_results
-    @save "confidence.bson" confidence_results
+    @save string(directory, "/biomotion.bson") biomotion_results
+    @save string(directory, "/confidence.bson") confidence_results
+    @save string(directory, "/repeats.bson") repeats_results
+    @save string(directory, "/pw_dist.bson") pw_dist_results
 end    
-        
+
+# only problem left is that the relationship has to be specified now. there are 2 possibilities for 2 dots, 6 for 3 (1-2, 2-1, 1-3, 3-1, 2-3, 3-2)
+# experience 
+
+function score_performance(directories::Array{String, 1})
+    for directory in directories
+        biomotion_results = @load string(directory + "/biomotion.bson") biomotion_results
+        confidence_results = @load string(directory + "/confidence.bson") confidence_results
+        repeats_results = @load string(directory, "/repeats.bson") repeats_results
+        pw_dist_results = @load string(directory, "/pw_dist.bson") pw_dist_results
+        number_of_trials = length(biomotion_results)
+        for tr in 1:number_of_trials
+        end
+    end
+end    
+            
+# TONIGHT THINK ABOUT METRICS! ADD TO RDD        
+    
+
 
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
@@ -655,7 +635,7 @@ function dotwrap(num_dots::Int)
     println("finished stim render")
     inf_results = animate_inference(trace)
     #    display(inf_results[2])
-    return trace, inf_results
+    return trace, inf_results, pw_distances, number_repeats
 end
 
 function find_top_n_props(n::Int,
@@ -677,13 +657,17 @@ end
 # problem is if you eliminate it and its still the max (i.e. once you eliminate it, everything else is 0
 
 function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    
     motion_tree = get_retval(trace)[1]
     bounds = 20
     res = 800
     outer_padding = 0
     dotmotion, raw_dotmotion = tree_to_coords(motion_tree)
-    pairwise_distances = calculate_pairwise_distance(raw_dotmotion)    
+    pairwise_distances = calculate_pairwise_distance(raw_dotmotion)
+    stationary_duration = 100
+    stationary_coords = [dotmotion[1] for i in 1:stationary_duration]
     f(t, coords) = coords[t]
+    f_color(t) = t < stationary_duration ? :white : :black
     n_rows = 3
     n_cols = 2
     white = RGBf0(255,255,255)
@@ -691,18 +675,21 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     scene = Scene(backgroundcolor=black, resolution=(res, res))
     time_node = Node(1);
     f(t, coords) = coords[t]
-    scatter!(scene, lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
+    for n in 1:nv(motion_tree)
+        textloc = Tuple(props(motion_tree, n)[:Position])
+        text!(scene, string(n), position = textloc, color=lift(t -> f_color(t), time_node), textsize=2)
+    end
+    scatter!(scene, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=10px, color=RGBf0(255, 255, 255))
     xlims!(scene, (-bounds, bounds))
     ylims!(scene, (-bounds, bounds))
     for j in 1:nv(motion_tree)
         println(trace[(:kernel_type, j)])
     end
-# Uncomment if you want to visualize scenegraph side by side with stimulus    
-    #    gscene = visualize_scenegraph(motion_tree)
-#    gt_scene = vbox(scene, a_scene)
+    # Uncomment if you want to visualize scenegraph side by side with stimulus    
+    # gscene = visualize_scenegraph(motion_tree)
+    # gt_scene = vbox(scene, a_scene)
     screen = display(scene)
-    
-#    record(gt_scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
+    #    record(gt_scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
     #    for i in 1:size(dotmotion)[1]
     i = 0
     num_repeats = 0
@@ -717,67 +704,6 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     end
     return pairwise_distances, num_repeats
 end
-
-
-function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    motion_tree = get_retval(trace)[1]
-    bounds = 10
-    res = 650
-    outer_padding = 0
-    node_styles = nodecolors(trace)
-    graph_image = visualize_graph(motion_tree, res, node_styles)
-    dotmotion = tree_to_coords(motion_tree)
-    f(t, coords) = coords[t]
-    n_rows = 3
-    n_cols = 2
-    white = RGBf0(255,255,255)
-    black = RGBf0(0,0,0)
-    inf_results = animate_inference(trace)
-    #    score_matrix = enumerate_possibilities(trace)
-    scene, layout = layoutscene(outer_padding,
-                                resolution = (2*res, 3*res), 
-                                backgroundcolor=RGBf0(0, 0, 0))
-    axes = [LAxis(scene, backgroundcolor=RGBf0(0, 0, 0)) for i in 1:3]
-    axes[3] = LAxis(scene, backgroundcolor=black, xticklabelcolor=white, yticklabelcolor=white, 
-                     xtickcolor=white, ytickcolor=white, xgridcolor=white, ygridcolor=white, 
-                     xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))
-    axes[3].xticks = (0:prod(collect(size(inf_results[2])))-1, [string([string(ks)[1] for ks in k]...) for k in inf_results[2]])
-    yticklabs = [string([e_entry for (i, e_entry) in enumerate(inf_results[3]) if et[i] == 1]) for et in inf_results[4]]
-    axes[3].yticks = (1:size(inf_results[4])[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs])
-    layout[3, 1:n_cols] = axes[[1,3]]
-    layout[1:2, 1:n_cols] = axes[2]
-    time_node = Node(1);
-    f(t, coords) = coords[t]
-    AbstractPlotting.scatter!(axes[2], lift(t -> f(t, dotmotion), time_node), markersize=10px, color=RGBf0(255, 255, 255))
-    limits!(axes[2], BBox(-bounds, bounds, -bounds, bounds))
-    image!(axes[1], graph_image)
-#    limits!(axes[1], BBox(0, res, 0, res))
-    hm = AbstractPlotting.heatmap!(axes[3], inf_results[1], colormap=:viridis)
-    hm.colorrange = (0, sum(inf_results[1]))
-    hm_sublayout = GridLayout()
-    layout[3, 2] = hm_sublayout
-    cbar = hm_sublayout[:, 2] = LColorbar(scene, hm, width=14, height=Relative(.91), label = "Probability", labelcolor=white, tickcolor=black, labelsize=10)
-    title_scengraph = layout[1, 1, TopRight()] = LText(scene,
-                                                  "    Stimulus",
-                                                  textsize=25, font="Noto Sans Bold", halign=:left, color=(:white))
-
-    title_scengraph = layout[3, 1, Top()] = LText(scene,
-                                                    "Groundtruth Scene Graph",
-                                                    textsize=25, font="Noto Sans Bold", halign=:left, color=(:white))
-    title_inference = layout[3, 2, Top()] = LText(scene,
-                                                  "Posterior Probability",
-                                                  textsize=25, font="Noto Sans Bold", halign=:left, color=(:white))
-    display(scene)
-  #  record(scene, "dotmotion.mp4", 1:size(dotmotion)[1]; framerate=60) do i
-    for i in 1:size(dotmotion)[1]
-        time_node[] = i
-        sleep(1/framerate)
-    end
-    return dotmotion
-end    
-
-
-# Currently in makie_test. Takes a tree and renders the tree and the stimulus.
 
 
 #- BELOW IS CODE FOR GENERATING TIME SERIES VIA GPs FROM 6.885 PSETS. IT'S ACTUALLY A GREAT STARTING POINT FOR GENERATING SYMBOLIC MOTION PATTERNS. BUT SIMPLIFY FOR NOW. GET RID OF COMPOSITE NODES AND SQUARED EXPONENTIAL MOTION. FOR NOW, JUST KEEP CONSTANT, LINEAR, AND PERIODIC.-#
@@ -1078,7 +1004,7 @@ end
     elseif kernel_type == Constant
         kernel_args = [{(:param, kt)} ~ uniform(1, 20)]
     elseif kernel_type == Linear
-        kernel_args = [{(:param, kt)} ~ uniform(.2, .3)]
+        kernel_args = [{(:param, kt)} ~ uniform(.3, .4)]
     elseif kernel_type == RandomWalk
         kernel_args = [{(:param, kt)} ~ uniform_discrete(1, 30)]
     else
