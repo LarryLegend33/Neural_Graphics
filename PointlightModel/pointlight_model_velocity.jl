@@ -7,6 +7,7 @@ using LightGraphs
 using MetaGraphs
 using Random
 using Images
+using GLFW
 using ShiftedArrays
 using ColorSchemes
 using Statistics
@@ -103,7 +104,8 @@ end
 
 function answer_portal(trial_ID::Int, num_dots::Int)
     answer_graph = MetaDiGraph(num_dots)
-    answer_scene, as_layout = layoutscene(resolution=(800, 800), backgroundcolor=:black)
+    res = 1400
+    answer_scene, as_layout = layoutscene(resolution=(res, res), backgroundcolor=:black)
     dot_menus = [LMenu(answer_scene, options = ["Brownian", "Periodic", "Uniform Linear", "Accelerating Linear"]) for i in 1:num_dots]
     # incorporate for 3 dots    
     # group_toggles = [LToggle(answer_scene, active = ac) for ac in [true, false]]
@@ -124,6 +126,13 @@ function answer_portal(trial_ID::Int, num_dots::Int)
     biomotion = as_layout[num_dots+length(tog_indices) + 2, 1] = vbox!(LText(answer_scene, "Biomotion Scale", color=:white),
                                                                        sliders[2])
     screen = display(answer_scene)
+
+    stop_anim = false
+    on(events(answer_scene).keyboardbuttons) do button
+        if ispressed(button, Keyboard.enter)
+            stop_anim = true
+        end
+    end
     for dot in 1:num_dots
         on(dot_menus[dot].selection) do s
             set_props!(answer_graph, dot, Dict(:MType=> s))
@@ -138,7 +147,8 @@ function answer_portal(trial_ID::Int, num_dots::Int)
             end
         end
     end
-    wait(screen)
+    callback(timer) = (println("times up"))
+    wait(Timer(callback, 20, interval=0))
     savegraph(string("answers",trial_ID, ".mg"), answer_graph)
     return answer_scene, sliders[1].value, sliders[2].value
 end    
@@ -586,7 +596,12 @@ end
     # number of paths total should be x 
 
 
-function run_human_experiment(num_trials::Int, directory::String)
+function run_human_experiment()
+    println("Subject ID: ")
+    subject_id = readline()
+    num_trials = 1
+    directory = string("/Users/nightcrawler2/humantest/", subject_id)
+    mkdir(directory)
     biomotion_results = []
     confidence_results = []
     pw_dist_results = []
@@ -596,7 +611,7 @@ function run_human_experiment(num_trials::Int, directory::String)
         num_dots = uniform_discrete(1, 3)
         trace, inf_results, pw_dist, num_repeats, visible_parent = dotwrap(num_dots)
         #prob have the answer panel attached to the stimulus
-        plot_inference_results(inf_results...)
+#        plot_inference_results(inf_results...)
         @save string(directory, "/trace", trial_n, ".bson") trace
         @save string(directory, "/inf_results", trial_n, ".bson") inf_results
         a_scene, confidence, biomotion = answer_portal(trial_n, num_dots)
@@ -629,14 +644,10 @@ function score_performance(directories::Array{String, 1})
     end
 end    
             
-# TONIGHT THINK ABOUT METRICS! ADD TO RDD        
-    
-
 
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
     pw_distances, number_repeats, visible_parent = render_stim_only(trace)
-    println("finished stim render")
     inf_results = animate_inference(trace)
     #    display(inf_results[2])
     return trace, inf_results, pw_distances, number_repeats, visible_parent
@@ -662,15 +673,11 @@ end
 
 function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     motion_tree = get_retval(trace)[1]
-
     # ask which has the max of incoming edges
-
-
     bounds = 20
-    res = 800
+    res = 1400
     outer_padding = 0
     dotmotion, raw_dotmotion = tree_to_coords(motion_tree)
-
     dot_w_most_incoming_edges = findmax(map(x -> length(reachable_to(motion_tree.graph, x)), 1:nv(motion_tree)))[2]    
     if bernoulli(.3) && ne(motion_tree) > 0 
         parent_visible = false
@@ -679,7 +686,6 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     else
         parent_visible = true
     end
-
     pairwise_distances = calculate_pairwise_distance(raw_dotmotion)
     stationary_duration = 100
     stationary_coords = [dotmotion[1] for i in 1:stationary_duration]
@@ -699,9 +705,9 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     scatter!(scene, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=10px, color=RGBf0(255, 255, 255))
     xlims!(scene, (-bounds, bounds))
     ylims!(scene, (-bounds, bounds))
-    for j in 1:nv(motion_tree)
-        println(trace[(:kernel_type, j)])
-    end
+    # for j in 1:nv(motion_tree)
+    #     println(trace[(:kernel_type, j)])
+    # end
     # Uncomment if you want to visualize scenegraph side by side with stimulus    
     # gscene = visualize_scenegraph(motion_tree)
     # gt_scene = vbox(scene, a_scene)
@@ -710,7 +716,14 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     #    for i in 1:size(dotmotion)[1]
     i = 0
     num_repeats = 0
-    while(isopen(scene))
+    #    isopen(scene))
+    stop_anim = false
+    on(events(scene).keyboardbuttons) do button
+        if ispressed(button, Keyboard.enter)
+            stop_anim = true
+        end
+    end
+    while(!stop_anim)
         i += 1
         if i == size([stationary_coords; dotmotion])[1]
             i = 1
