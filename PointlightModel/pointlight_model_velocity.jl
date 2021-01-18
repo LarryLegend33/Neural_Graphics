@@ -113,7 +113,7 @@ function answer_portal(trial_ID::Int, num_dots::Int)
      # [dot1 for dot1 in 1:num_dots for dot2 in 1:num_dots if dot1 < dot 2]
     tog_indices = [(dot1, dot2) for dot1 in 1:num_dots for dot2 in 1:num_dots if dot1 != dot2]
     toggles = [LToggle(answer_scene, buttoncolor=:black, active=false) for ti in tog_indices]
-    toglabels = [LText(answer_scene, lift(x -> x ? string(dot1, " inherits motion of ", dot2) : string(dot1, " does not inherit motion of ", dot2),
+    toglabels = [LText(answer_scene, lift(x -> x ? string(dot1, " inherits motion of ", dot2) : string(dot1, " inherits motion of ", dot2),
                                                           toggles[i].active), color=:white) for (i, (dot1, dot2)) in enumerate(tog_indices)]
     for tog_index in 1:length(tog_indices)
         as_layout[num_dots+tog_index, 1] = hbox!(toggles[tog_index], toglabels[tog_index])
@@ -591,9 +591,10 @@ function run_human_experiment(num_trials::Int, directory::String)
     confidence_results = []
     pw_dist_results = []
     repeats_results = []
+    visible_parent_results = []
     for trial_n in 1:num_trials
         num_dots = uniform_discrete(1, 3)
-        trace, inf_results, pw_dist, num_repeats = dotwrap(num_dots)
+        trace, inf_results, pw_dist, num_repeats, visible_parent = dotwrap(num_dots)
         #prob have the answer panel attached to the stimulus
         plot_inference_results(inf_results...)
         @save string(directory, "/trace", trial_n, ".bson") trace
@@ -603,11 +604,13 @@ function run_human_experiment(num_trials::Int, directory::String)
         push!(confidence_results, confidence)
         push!(pw_dist_results, pw_dist)
         push!(repeats_results, num_repeats)
+        push!(visible_parent_results, visible_parent)
     end
     @save string(directory, "/biomotion.bson") biomotion_results
     @save string(directory, "/confidence.bson") confidence_results
     @save string(directory, "/repeats.bson") repeats_results
     @save string(directory, "/pw_dist.bson") pw_dist_results
+    @save string(directory, "/visible_parent.bson") visible_parent_results
 end    
 
 # only problem left is that the relationship has to be specified now. there are 2 possibilities for 2 dots, 6 for 3 (1-2, 2-1, 1-3, 3-1, 2-3, 3-2)
@@ -619,6 +622,7 @@ function score_performance(directories::Array{String, 1})
         confidence_results = @load string(directory + "/confidence.bson") confidence_results
         repeats_results = @load string(directory, "/repeats.bson") repeats_results
         pw_dist_results = @load string(directory, "/pw_dist.bson") pw_dist_results
+        visible_parent_results = @load string(directory, "/visible_parent.bson") visible_parent_results
         number_of_trials = length(biomotion_results)
         for tr in 1:number_of_trials
         end
@@ -631,11 +635,11 @@ end
 
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
-    pw_distances, number_repeats = render_stim_only(trace)
+    pw_distances, number_repeats, visible_parent = render_stim_only(trace)
     println("finished stim render")
     inf_results = animate_inference(trace)
     #    display(inf_results[2])
-    return trace, inf_results, pw_distances, number_repeats
+    return trace, inf_results, pw_distances, number_repeats, visible_parent
 end
 
 function find_top_n_props(n::Int,
@@ -657,12 +661,25 @@ end
 # problem is if you eliminate it and its still the max (i.e. once you eliminate it, everything else is 0
 
 function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    
     motion_tree = get_retval(trace)[1]
+
+    # ask which has the max of incoming edges
+
+
     bounds = 20
     res = 800
     outer_padding = 0
     dotmotion, raw_dotmotion = tree_to_coords(motion_tree)
+
+    dot_w_most_incoming_edges = findmax(map(x -> length(reachable_to(motion_tree.graph, x)), 1:nv(motion_tree)))[2]    
+    if bernoulli(.3) && ne(motion_tree) > 0 
+        parent_visible = false
+        dotmotion = [[d[dot_w_most_incoming_edges]] for d in dotmotion]
+        println("invisible parent")
+    else
+        parent_visible = true
+    end
+
     pairwise_distances = calculate_pairwise_distance(raw_dotmotion)
     stationary_duration = 100
     stationary_coords = [dotmotion[1] for i in 1:stationary_duration]
@@ -695,14 +712,14 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     num_repeats = 0
     while(isopen(scene))
         i += 1
-        if i == size(dotmotion)[1]
+        if i == size([stationary_coords; dotmotion])[1]
             i = 1
             num_repeats += 1
         end
         time_node[] = i
         sleep(1/framerate)
     end
-    return pairwise_distances, num_repeats
+    return pairwise_distances, num_repeats, parent_visible
 end
 
 
