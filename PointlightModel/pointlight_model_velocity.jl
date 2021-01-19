@@ -48,7 +48,13 @@ end
         return motion_tree
     end
     (current_dot, cand_parent) = first(candidate_pairs)
-    if has_edge(motion_tree, current_dot, cand_parent) || ne(motion_tree) == nv(motion_tree) - 1
+
+    # here add path requirement
+
+    current_paths = all_paths(motion_tree)
+
+    #  if has_edge(motion_tree, current_dot, cand_parent) || ne(motion_tree) == nv(motion_tree) - 1
+    if has_edge(motion_tree, current_dot, cand_parent) || any([current_dot in path && cand_parent in path for path in current_paths])
         add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(0)
 
     else
@@ -183,7 +189,7 @@ end
         # to nodes ABOVE the parent. 
         if count(iszero, [props(motion_tree, p).count for p in parents]) != 0
             # there are parents when this stack overflows
-            println([e for e in edges(motion_tree)])
+#            println([e for e in edges(motion_tree)])
             {*} ~ assign_positions_and_velocities(motion_tree, [dots[2:end];dot], ts)
         else
             # uncomment here for flat prior on position
@@ -539,27 +545,36 @@ function xy_node_positions(paths::Array{Array, 1},
                            xc::Array{Int64, 1},
                            yc::Array{Int64, 1},
                            n_iters::Int,
-                           motion_tree::MetaDiGraph{Int64, Float64})
+                           motion_tree::MetaDiGraph{Int64, Float64},
+                           longest_path::Int)
     if isempty(paths)
         xcoords = convert(Array{Float64, 1}, xc)
         ycoords = convert(Array{Float64, 1}, yc)
+
+        # this is a fix for the location of multi input or output nodes 
         for v in 1:nv(motion_tree)
             inn = inneighbors(motion_tree, v)
             outn = outneighbors(motion_tree, v)
             if length(inn) > 1
-                xcoords[v] = mean([xcoords[n] for n in inn])
-                ycoords[v] -= 1
+                #     xcoords[v] = mean([xcoords[n] for n in inn])
+                ycoords[v] -= (1 - length(inn))
             end
             if length(outn) > 1
-                xcoords[v] = mean([xcoords[n] for n in outn])
+         #       xcoords[v] = mean([xcoords[n] for n in outn])
+
             end
          end
          return xcoords, ycoords
     else    
         path = first(paths)
-        [xc[p] == 0 ? xc[p] = n_iters : xc[p] = xc[p] for p in path]
-        [yc[p] == 0 ? yc[p] = length(reachable_to(motion_tree.graph, p)) : yc[p] = yc[p] for p in path]
-        xy_node_positions(paths[2:end], xc, yc, n_iters+1, motion_tree)
+        # each path has its own x coord. first path goes to x = 1, and unassigned will have xcoord = 0 
+        [xc[dot] == 0 ? xc[dot] = n_iters : xc[dot] = xc[dot] for dot in path]
+        # reachable_to counts how many dots are connected in the path stemming from the current dot.
+
+        # inverted this at the end! wtf just make it right here. 
+        
+        [yc[dot] = longest_path - length(reachable_to(motion_tree.graph, dot)) for dot in path]
+        xy_node_positions(paths[2:end], xc, yc, n_iters+1, motion_tree, longest_path)
     end
 end
 
@@ -568,9 +583,10 @@ function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64})
     outer_padding = 0
     res = 1000
     paths = all_paths(motion_tree)
+    # by the end of this loop have all connected and all unconnected paths
     for v in 1:nv(motion_tree)
-        v_in_path = [v in p ? 1 : 0 for p in paths]
-        if !(1 in v_in_path)
+        v_in_path = [v in p ? true : false for p in paths]
+        if !any(v_in_path)
             push!(paths, [v])
         end
     end
@@ -578,13 +594,13 @@ function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64})
     num_paths = length(paths)
     xbounds = num_paths + 1
     ybounds = longest_path + 1
-    node_xs, node_ys = xy_node_positions(paths, zeros(Int, nv(motion_tree)), zeros(Int, nv(motion_tree)), 1, motion_tree)
-    node_ys = ybounds .- node_ys .- 1
+    node_xs, node_ys = xy_node_positions(paths, zeros(Int, nv(motion_tree)), zeros(Int, nv(motion_tree)), 1, motion_tree, longest_path)
+    
     # create scene without layout b/c text only works in scenes -- can't add it to LAxis.
     scene = Scene(backgroundcolor=RGBf0(0, 0, 0), resolution=(800,800))
     for e in edges(motion_tree)
         arrows!(scene, [node_xs[e.src]], [node_ys[e.src]],
-                [node_xs[e.dst]-node_xs[e.src]], .8 .* [node_ys[e.dst]-node_ys[e.src]], arrowcolor=:lightgray, linecolor=:lightgray, arrowsize=.1)
+                .8 .* [node_xs[e.dst]-node_xs[e.src]], .8 .* [node_ys[e.dst]-node_ys[e.src]], arrowcolor=:lightgray, linecolor=:lightgray, arrowsize=.1)
     end
     
     for v in 1:nv(motion_tree)
@@ -673,9 +689,9 @@ end
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
     pw_distances, number_repeats, visible_parent = render_stim_only(trace)
-    inf_results = animate_inference(trace)
-    #    display(inf_results[2])
-    return trace, inf_results, pw_distances, number_repeats, visible_parent
+#    inf_results = animate_inference(trace)
+ #   plot_inference_results(inf_results...)
+  #  return trace, inf_results, pw_distances, number_repeats, visible_parent
 end
 
 function find_top_n_props(n::Int,
@@ -734,9 +750,9 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     #     println(trace[(:kernel_type, j)])
     # end
     # Uncomment if you want to visualize scenegraph side by side with stimulus    
-    # gscene = visualize_scenegraph(motion_tree)
-    # gt_scene = vbox(scene, a_scene)
-    screen = display(scene)
+    gscene = visualize_scenegraph(motion_tree)
+    gt_scene = vbox(scene, gscene)
+    screen = display(gt_scene)
     #    record(gt_scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
     #    for i in 1:size(dotmotion)[1]
     i = 0
