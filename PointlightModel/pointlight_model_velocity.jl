@@ -92,6 +92,23 @@ end
 end
 
 
+# this doesn't work yet -- there's much more complexity in connectivity patterns for 4 dots.
+# have to think about whether 2nd order connections are relevant. 
+function sort_dotlist_for_assignment(motion_tree::MetaDiGraph{Int64, Float64},
+                                     dots::Array{Int64})
+    if length(dots) == 0
+        sort_dotlist_for_assignment(motion_tree,
+                                    [dot for dot in 1:nv(motion_tree) if isempty(inneighbors(motion_tree, dot))])
+    elseif length(dots) == nv(motion_tree)
+        return dots
+    else
+        cand_dots = [dot for dot in 1:nv(motion_tree) if !(dot in dots)]
+        sort_dotlist_for_assignment(motion_tree,
+                                    [dot for dot in cand_dots if inneighbors(motion_tree, dot) in dots])
+    end
+end                                    
+
+
 function calculate_pairwise_distance(dotmotion_tuples)
     # each value in dotmotion_tuples is of form ((x1, y1), (x2, y2)) for each dot i to N.
     pairwise_distances = []
@@ -161,56 +178,64 @@ end
     else
         dot = first(dots)
         parents = inneighbors(motion_tree, dot)
-
-        # uncomment here for flat prior on position
-        start_x = {(:start_x, dot)} ~ uniform_discrete(-5, 5)
-        start_y = {(:start_y, dot)} ~ uniform_discrete(-5, 5)
-        x_vel_mean = zeros(length(ts))
-        y_vel_mean = zeros(length(ts))
-
-        if isempty(parents)
-            #uncomment to use biased prior on initial position
-#            start_x = {(:start_x, dot)} ~ uniform_discrete(-5, 5)
-#            start_y = {(:start_y, dot)} ~ uniform_discrete(-5, 5)
+        # if parent values haven't been assigned yet, put the dot at the end and recurse.
+        # issue with graph building in the 4 case is you aren't preventing connections
+        # to nodes ABOVE the parent. 
+        if count(iszero, [props(motion_tree, p).count for p in parents]) != 0
+            # there are parents when this stack overflows
+            println([e for e in edges(motion_tree)])
+            {*} ~ assign_positions_and_velocities(motion_tree, [dots[2:end];dot], ts)
+        else
+            # uncomment here for flat prior on position
+            start_x = {(:start_x, dot)} ~ uniform_discrete(-5, 5)
+            start_y = {(:start_y, dot)} ~ uniform_discrete(-5, 5)
             x_vel_mean = zeros(length(ts))
             y_vel_mean = zeros(length(ts))
-        else
-            if size(parents)[1] > 1
-                avg_parent_position = mean([props(motion_tree, p)[:Position] for p in parents])
-                parent_position = [round(Int, pp) for pp in avg_parent_position]
-            else
-                parent_position = props(motion_tree, parents[1])[:Position]
-            end
- #           start_x = {(:start_x, dot)} ~ uniform_discrete(parent_position[1]-1, parent_position[1]+1)
-#            start_y = {(:start_y, dot)} ~ uniform_discrete(parent_position[2]-1, parent_position[2]+1)
-            parent_velocities_x = [props(motion_tree, p)[:Velocity_X] for p in parents]
-            parent_velocities_y = [props(motion_tree, p)[:Velocity_Y] for p in parents]
-        end
 
-        if !isempty(parents)
-            if size(parents)[1] == 1
-                x_vel_mean = parent_velocities_x[1]
-                y_vel_mean = parent_velocities_y[1]
+            if isempty(parents)
+                #uncomment to use biased prior on initial position
+    #            start_x = {(:start_x, dot)} ~ uniform_discrete(-5, 5)
+    #            start_y = {(:start_y, dot)} ~ uniform_discrete(-5, 5)
+                x_vel_mean = zeros(length(ts))
+                y_vel_mean = zeros(length(ts))
             else
-                x_vel_mean = sum(parent_velocities_x)
-                y_vel_mean = sum(parent_velocities_y)
+                if size(parents)[1] > 1
+                    avg_parent_position = mean([props(motion_tree, p)[:Position] for p in parents])
+                    parent_position = [round(Int, pp) for pp in avg_parent_position]
+                else
+                    parent_position = props(motion_tree, parents[1])[:Position]
+                end
+     #           start_x = {(:start_x, dot)} ~ uniform_discrete(parent_position[1]-1, parent_position[1]+1)
+    #            start_y = {(:start_y, dot)} ~ uniform_discrete(parent_position[2]-1, parent_position[2]+1)
+                parent_velocities_x = [props(motion_tree, p)[:Velocity_X] for p in parents]
+                parent_velocities_y = [props(motion_tree, p)[:Velocity_Y] for p in parents]
             end
+
+            if !isempty(parents)
+                if size(parents)[1] == 1
+                    x_vel_mean = parent_velocities_x[1]
+                    y_vel_mean = parent_velocities_y[1]
+                else
+                    x_vel_mean = sum(parent_velocities_x)
+                    y_vel_mean = sum(parent_velocities_y)
+                end
+            end
+            #        cov_func = {*} ~ covariance_simple(dot)
+            # sample a kernel type for the dot here. then assign with cov prior conditioned on type
+            kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
+            cov_func = {*} ~ covariance_prior(kernel_type, dot)
+            noise = 0.001
+            covmat_x = compute_cov_matrix_vectorized(cov_func, noise, ts)
+            covmat_y = compute_cov_matrix_vectorized(cov_func, noise, ts)
+
+            x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_mean, covmat_x)
+            y_vel = {(:y_vel, dot)} ~ mvnormal(y_vel_mean, covmat_y)
+            # Sample from the GP using a multivariate normal distribution with
+            # the kernel-derived covariance matrix.
+            set_props!(motion_tree, dot,
+                       Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel, :MType=>typeof(cov_func)))
+            {*} ~ assign_positions_and_velocities(motion_tree, dots[2:end], ts)
         end
-        #        cov_func = {*} ~ covariance_simple(dot)
-        # sample a kernel type for the dot here. then assign with cov prior conditioned on type
-        kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
-        cov_func = {*} ~ covariance_prior(kernel_type, dot)
-        noise = 0.001
-        covmat_x = compute_cov_matrix_vectorized(cov_func, noise, ts)
-        covmat_y = compute_cov_matrix_vectorized(cov_func, noise, ts)
-        
-        x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_mean, covmat_x)
-        y_vel = {(:y_vel, dot)} ~ mvnormal(y_vel_mean, covmat_y)
-        # Sample from the GP using a multivariate normal distribution with
-        # the kernel-derived covariance matrix.
-        set_props!(motion_tree, dot,
-                   Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel, :MType=>typeof(cov_func)))
-        {*} ~ assign_positions_and_velocities(motion_tree, dots[2:end], ts)
     end
 end    
 
