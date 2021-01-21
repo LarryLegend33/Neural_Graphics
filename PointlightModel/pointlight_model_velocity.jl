@@ -14,6 +14,7 @@ using Statistics
 using StatsBase
 using CurricularAnalytics
 using BSON: @save, @load
+using MappedArrays
 
 #- One main question is whether we are going to try to reconstruct the identity after the fact. I.e. Are the xs and ys completely known in time and space We can do simultaneous inference on x and y values wrt t. Can also do sequential monte carlo. 
 
@@ -89,8 +90,8 @@ end
     candidate_edges = [p for p in Iterators.product(perceptual_order, perceptual_order) if p[1] != p[2]]
     motion_tree_updated = {*} ~ populate_edges(motion_tree, candidate_edges)
     dot_list = sort(collect(1:nv(motion_tree_updated)),
-                    by=ϕ->(size(inneighbors(motion_tree_updated, ϕ))[1],
-                           -1*size(outneighbors(motion_tree_updated, ϕ))[1]))
+                    by=ϕ->(size(inneighbors(motion_tree_updated, ϕ))[1]))
+                         
     motion_tree_assigned = {*} ~ assign_positions_and_velocities(motion_tree_updated,
                                                                  dot_list,
                                                                  ts)
@@ -125,11 +126,11 @@ function calculate_pairwise_distance(dotmotion_tuples)
     return pairwise_distances
 end
 
-function answer_portal(trial_ID::Int, num_dots::Int)
+function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
     answer_graph = MetaDiGraph(num_dots)
     res = 1400
     answer_scene, as_layout = layoutscene(resolution=(res, res), backgroundcolor=:black)
-    dot_menus = [LMenu(answer_scene, options = ["Brownian", "Periodic", "Uniform Linear", "Accelerating Linear"]) for i in 1:num_dots]
+    dot_menus = [LMenu(answer_scene, options = ["RandomWalk", "Periodic", "UniformLinear", "AccelLinear"]) for i in 1:num_dots]
     # incorporate for 3 dots    
     # group_toggles = [LToggle(answer_scene, active = ac) for ac in [true, false]]
     for (dot_id, menu) in enumerate(dot_menus)
@@ -172,8 +173,10 @@ function answer_portal(trial_ID::Int, num_dots::Int)
     end
     callback(timer) = (println("times up"))
     wait(Timer(callback, 20, interval=0))
-    savegraph(string("answers",trial_ID, ".mg"), answer_graph)
-    return answer_scene, sliders[1].value, sliders[2].value
+    vs = visualize_scenegraph(answer_graph)
+    display(vs)
+    wait(Timer(callback, 5, interval=0))
+    return answer_graph, sliders[1].value, sliders[2].value
 end    
                       
     
@@ -193,8 +196,8 @@ end
             {*} ~ assign_positions_and_velocities(motion_tree, [dots[2:end];dot], ts)
         else
             # uncomment here for flat prior on position
-            start_x = {(:start_x, dot)} ~ uniform_discrete(-5, 5)
-            start_y = {(:start_y, dot)} ~ uniform_discrete(-5, 5)
+            start_x = {(:start_x, dot)} ~ uniform(-5, 5)
+            start_y = {(:start_y, dot)} ~ uniform(-5, 5)
             x_vel_mean = zeros(length(ts))
             y_vel_mean = zeros(length(ts))
 
@@ -278,7 +281,6 @@ function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     kernel_combos = collect(Iterators.product(kernel_choices...))
     possible_edges = [(i, j) for i in 1:num_dots for j in 1:num_dots if i != j]
     truth_entry = [[0,1] for i in 1:size(possible_edges)[1]]
-
     truth_trace, edge_samples, vel_samples = imp_inference(trace)
     joint_edge_vel = [(Tuple(e), Tuple(v)) for (e,v) in zip(edge_samples, vel_samples)]
     
@@ -290,7 +292,7 @@ function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         unfiltered_truthtable = edge_truthtable = [()]
     end
     importance_counts = []
-    # creates a list with entries that look like this ((1, 0), (Constant, RandomWalk)), where
+    # creates a list with entries that look like this ((1, 0), (UniformLinear, RandomWalk)), where
     # each entry is an importance sample
     for eg in edge_truthtable
         for kc in kernel_combos
@@ -304,26 +306,46 @@ function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     return inf_results
 end                
 
+function find_interesting_samples(num_desired_samples::Int, num_dots::Int)
+    traces = []
+    difficulty = []
+    while(length(traces) < num_desired_samples)
+        trace = dotwrap(num_dots)
+        println("keep trace?")
+        ans = readline()
+        if ans == "y"
+            push!(traces, trace)
+            println("Enter Difficulty Level")
+            diff = readline()
+            push!(difficulty, diff)
+        else
+            continue
+        end
+    end
+    @save "example_traces.bson" traces
+    @save "difficulties.bson" difficulty
+end
 
+    
 
-function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     num_dots = nv(get_retval(trace)[1])
-    kernel_combos = [kernel_types for i in 1:num_dots]
-    kernel_choices = collect(Iterators.product(kernel_combos...))
+    kernel_choices = [kernel_types for i in 1:num_dots]
+    kernel_combos = collect(Iterators.product(kernel_choices...))
     possible_edges = [(i, j) for i in 1:num_dots for j in 1:num_dots if i != j]
     truth_entry = [[0,1] for i in 1:size(possible_edges)[1]]
-    # filters trees with n_dot or more edges
-    unfiltered_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
-    edge_truthtable = loopfilter(possible_edges, unfiltered_truthtable)
-  #  enum_constraints = Gen.choicemap(get_choices(trace))
+    if !isempty(truth_entry)
+        unfiltered_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
+        edge_truthtable = loopfilter(possible_edges, unfiltered_truthtable)
+    else
+        unfiltered_truthtable = edge_truthtable = [()]
+    end
     trace_args = get_args(trace)
     trace_choices = get_choices(trace)
     trace_retval = get_retval(trace)
-    # have to also filter trees with loops
     scores = []
     for eg in edge_truthtable
         enum_constraints = Gen.choicemap()
-      #  enum_constraints = Gen.choicemap(trace_choices)
         for (eg_id, e) in enumerate(eg)
             if e == 1
                 enum_constraints[(:edge, possible_edges[eg_id][1], possible_edges[eg_id][2])] = true
@@ -331,7 +353,7 @@ function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{A
                 enum_constraints[(:edge, possible_edges[eg_id][1], possible_edges[eg_id][2])] = false
             end
         end
-        for kc in kernel_choices
+        for kc in kernel_combos
             for (dot, k) in enumerate(kc)
                 enum_constraints[(:kernel_type, dot)] = k
             end
@@ -345,19 +367,16 @@ function enumerate_possibilities(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{A
             for dp in all_dot_permutations(num_dots)
                 enum_constraints[:order_choice] = dp
                 (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
+#                (tr, w) = Gen.generate(generate_dotmotion, trace_args, enum_constraints)
+            #     # HERE YOU HAVE TO REALLY MAKE SURE THIS IS THE RIGHT CHOICE
                 postprob += exp(get_score(new_trace))
             end
-
-#            (tr, w) = Gen.generate(generate_dotmotion, trace_args, enum_constraints)
-#            temp_constraints = [map_entry for map_entry in get_values_shallow(enum_constraints) if map_entry[1][1] != :x_vel]
-            # this just removes the constraining velocities from the choicemap. 
-            #           enum_constraints = Gen.choicemap(temp_constraints...)
             append!(scores, postprob)
         end
     end
-    scores /= sum(scores)
-    score_matrix = reshape(scores, prod(collect(size(kernel_choices))), size(edge_truthtable)[1])
-    plotvals = [score_matrix, kernel_choices, possible_edges, edge_truthtable]
+  #  scores /= sum(scores)
+    score_matrix = reshape(scores, prod(collect(size(kernel_combos))), size(edge_truthtable)[1])
+    plotvals = [score_matrix, kernel_combos, possible_edges, edge_truthtable]
     return plotvals
 end
 
@@ -368,7 +387,7 @@ function evaluate_accuracy(num_dots::Int64, num_iters::Int64)
         motion_tree = get_retval(t)[1]
         mp_edge = findmax(countmap(e))[2]
         mp_velocity = findmax(countmap(v))[2]
-        scoremat, kernels, p_edges, edge_tt = enumerate_possibilities(t)
+        scoremat, kernels, p_edges, edge_tt = bayesian_observer(t)
         max_score = findmax(scoremat)[2]
         max_enum_vel = kernels[max_score[1]]
         max_enum_edge = edge_tt[max_score[2]]
@@ -389,26 +408,22 @@ function evaluate_accuracy(num_dots::Int64, num_iters::Int64)
     end
     barplot(correct_counter / num_iters)
 end        
-            
-                      
-    
-function plot_inference_results(score_matrix::Array{Any, 2}, kernels, possible_edges, edge_truth)
-    scene, layout = layoutscene(resolution=(300, 300), backgroundcolor=RGBf0(0, 0, 0))
-    white = RGBf0(255,255,255)
-    black = RGBf0(0,0,0)
-    gray = RGBf0(100, 100, 100)
-    axes = LAxis(scene, backgroundcolor=black, ylabelcolor=white, xticklabelcolor=black, yticklabelcolor=white, 
-                 xtickcolor=white, ytickcolor=white, xgridcolor=black, ygridcolor=gray,
-                 xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))
-    layout[1, 1] = axes
-    edge_combinations = [[e_entry for (i, e_entry) in enumerate(possible_edges) if et[i] == 1] for et in edge_truth]
-    yticklabs = [string(ec) for ec in edge_combinations]
-    xticks = (0:prod(collect(size(kernels)))-1, [string([string(ks)[1] for ks in k]...) for k in kernels])
-    yticks = (1:size(edge_truth)[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs])
+
+
+function analyze_and_plot_inference(score_matrix::Array{Any, 2}, kernels,
+                                    possible_edges, edge_truth)
+    graphs_and_probs = analyze_inference_results(score_matrix, kernels, possible_edges, edge_truth)
+    plot_inference_results(graphs_and_probs[2:end]...)
+end    
+
+# SPLIT THIS
+function analyze_inference_results(score_matrix::Array{Any, 2}, kernels, possible_edges, edge_truth)
     # TOP 3 GRAPHS
     top_graphs = find_top_n_props(3, score_matrix, [])
     rendered_graphs = []
     probabilities = []
+    top_metagraph_scenes = []
+    edge_combinations = [[e_entry for (i, e_entry) in enumerate(possible_edges) if et[i] == 1] for et in edge_truth]
     # if you print out the score matrix, doesn't equal number of samples requested
     for tg in top_graphs
         score_index = tg[2].I
@@ -424,8 +439,22 @@ function plot_inference_results(score_matrix::Array{Any, 2}, kernels, possible_e
             set_props!(top_g, node, Dict(:MType=>vel))
         end
         viz_graph = visualize_scenegraph(top_g)
+        push!(top_metagraph_scenes, top_g)
         push!(rendered_graphs, viz_graph)
     end
+    sum_probs = sum(mappedarray(x-> isfinite(x) ? x : 0, score_matrix))
+    return top_metagraph_scenes, rendered_graphs, probabilities ./ sum_probs
+end
+
+function plot_inference_results(rendered_graphs, probabilities)
+    scene, layout = layoutscene(resolution=(300, 300), backgroundcolor=RGBf0(0, 0, 0))
+    white = RGBf0(255,255,255)
+    black = RGBf0(0,0,0)
+    gray = RGBf0(100, 100, 100)
+    axes = LAxis(scene, backgroundcolor=black, ylabelcolor=white, xticklabelcolor=black, yticklabelcolor=white, 
+                 xtickcolor=white, ytickcolor=white, xgridcolor=black, ygridcolor=gray,
+                 xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))
+    layout[1, 1] = axes
     barwidth = (.2 / 3) * length(probabilities)
     scene_graph_scene = vbox(rendered_graphs...)
     if length(probabilities) == 1
@@ -438,17 +467,22 @@ function plot_inference_results(score_matrix::Array{Any, 2}, kernels, possible_e
         bar_x = [.35, 1.45, 2.55]
         xaxlims = BBox(0, 3, 0, 1)
     end
-    bp = barplot!(axes, bar_x, convert(Array{Float64, 1}, probabilities ./ sum(score_matrix)),
+    bp = barplot!(axes, bar_x, convert(Array{Float64, 1}, probabilities),
                   color=:white,
                   backgroundcolor=:black, width=barwidth)
+
     axes.ylabel = "Posterior Probability"
     limits!(axes, xaxlims)
     final_scene = hbox(scene, 
                        scene_graph_scene)
     screen = display(final_scene)
-    wait(screen)
+    # uncomment if you want to block until the window is closed
+    #  wait(screen)
     
-    # HEATMAP
+    # OLD LOUSLY LOOKING HEATMAP
+    # yticklabs = [string(ec) for ec in edge_combinations]
+    # xticks = (0:prod(collect(size(kernels)))-1, [string([string(ks)[1] for ks in k]...) for k in kernels])
+    # yticks = (1:size(edge_truth)[1], [yt[1] != 'T' ? yt : "[]" for yt in yticklabs])
     # hm = heatmap!(axes, score_matrix, colormap=:viridis)
     # layout[1,1] = axes
     # axes.xticks = xticks
@@ -456,7 +490,6 @@ function plot_inference_results(score_matrix::Array{Any, 2}, kernels, possible_e
     # hm_sublayout = GridLayout()
     # layout[1, 1] = hm_sublayout
     # cbar = hm_sublayout[:, 2] = LColorbar(scene, hm, width=14, height=Relative(.91), label = "Probability", labelcolor=white, tickcolor=black, labelsize=10)
-
 
 end
 
@@ -498,7 +531,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     observation = Gen.choicemap()
 
     num_dots = nv(get_retval(trace)[1])
-    num_particles = (num_dots ^ 3) * 20
+    num_particles = (num_dots ^ 3) * 1000
     num_resamples = 30
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
@@ -605,14 +638,16 @@ function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64})
     
     for v in 1:nv(motion_tree)
         mtype = props(motion_tree, v)[:MType]
-        if mtype == Constant
+        if mtype == UniformLinear
             nodecolor = :cyan
         elseif mtype == RandomWalk
             nodecolor = :red
         elseif mtype == Periodic
             nodecolor = :purple
-        else
-            nodecolor = :white
+        elseif mtype == AccelLinear
+            nodecolor = :pink
+        elseif mtype == Stationary
+            nodecolor = :yellow
         end
         scatter!(scene, [(node_xs[v], node_ys[v])], markersize=50px, color=nodecolor)
         text!(scene, string(v), position=(node_xs[v], node_ys[v]), align= (:center, :center),
@@ -640,22 +675,35 @@ end
 function run_human_experiment()
     println("Subject ID: ")
     subject_id = readline()
-    num_trials = 1
+    num_training_trials = 21
+    partition = convert(Int, num_training_trials/3)
+    training_dot_numbers = [ones(partition); 2*ones(partition);
+                            3*ones(partition)]
+    num_trials = 30
     directory = string("/Users/nightcrawler2/humantest/", subject_id)
-    mkdir(directory)
+    try
+        mkdir(directory)
+    catch
+    end
     biomotion_results = []
     confidence_results = []
     pw_dist_results = []
     repeats_results = []
     visible_parent_results = []
+    for training_trial in 1:num_training_trials
+        num_dots = convert(Int, training_dot_numbers[training_trial])
+        trace, args = dotsample(num_dots)
+        pw_dist, num_repeats, visible_parent = render_stim_only(trace, true)
+        a_scene, confidence, biomotion = answer_portal(training_trial, directory, num_dots)
+    end
     for trial_n in 1:num_trials
         num_dots = uniform_discrete(1, 3)
-        trace, inf_results, pw_dist, num_repeats, visible_parent = dotwrap(num_dots)
-        #prob have the answer panel attached to the stimulus
-#        plot_inference_results(inf_results...)
+        trace, args = dotsample(num_dots)
+        pw_dist, num_repeats, visible_parent = render_stim_only(trace, false)
         @save string(directory, "/trace", trial_n, ".bson") trace
-        @save string(directory, "/inf_results", trial_n, ".bson") inf_results
-        a_scene, confidence, biomotion = answer_portal(trial_n, num_dots)
+#        @save string(directory, "/inf_results", trial_n, ".bson") inf_results
+        answer_graph, confidence, biomotion = answer_portal(trial_n, directory, num_dots)
+        savegraph(string(directory, "/answers", trial_n, ".mg"), answer_graph)
         push!(biomotion_results, biomotion)
         push!(confidence_results, confidence)
         push!(pw_dist_results, pw_dist)
@@ -673,6 +721,7 @@ end
 # experience 
 
 function score_performance(directories::Array{String, 1})
+    
     for directory in directories
         biomotion_results = @load string(directory + "/biomotion.bson") biomotion_results
         confidence_results = @load string(directory + "/confidence.bson") confidence_results
@@ -680,39 +729,71 @@ function score_performance(directories::Array{String, 1})
         pw_dist_results = @load string(directory, "/pw_dist.bson") pw_dist_results
         visible_parent_results = @load string(directory, "/visible_parent.bson") visible_parent_results
         number_of_trials = length(biomotion_results)
+        human_truth_match = []
+        truth_importance_match = []
+        truth_enum_match = []
+        human_importance_match = []
+        human_enum_match = []
         for tr in 1:number_of_trials
+            trace = @load string(directory, "/trace", tr, ".bson") trace
+            inf_results_importance = animate_inference(trace)
+            inf_results_enumeration = bayesian_observer(trace)
+            answer_graph = loadgraph(string(directory, "/answers", tr, ".mg"), MGFormat())
+            # run inference here on the saved traces
+            top_importance_hits = analyze_inference_results(inf_results_importance...)
+            top_enumeration_hits = analyze_inference_results(inf_results_enumeration...)
+            push!(human_truth_match, compare_scenegraphs(answer_graph, get_retval(trace)[1]))
+            push!(human_importance_match, compare_scenegraphs(answer_graph, top_importance_hits[1]))
+            push!(human_enum_match, compare_scenegraphs(answer_graph, top_enumeration_hits[1]))
+            push!(truth_enum_match, compare_scenegraphs(get_retval(trace)[1], top_enumeration_hits[1]))
+            push!(truth_importance_match, compare_scenegraphs(get_retval(trace)[1], top_importance_hits[1]))            
         end
     end
+end
+
+function compare_scenegraphs(mg1::MetaDiGraph{Int64, Float64},
+                             mg2::MetaDiGraph{Int64, Float64})
+    # for a systemic analysis, want
+    # 1) correct vs incorrect graph
+    # 2) correct vs incorrect motion types
+    # 3) graph inversions (i.e. correct grouping, wrong direction)
+    # 4) motion inversions (
+    # 5) half correct / one third correct motion patterns
+    
+    motion_types_correct = [props(mg1, dot)[:MType] == props(mg2, dot)[:Mtype] for dot in 1:nv(mg1)]
+    scenegraph_correct = mg1.graph == mg2.graph
+    scenegraph_inverted = mg1.graph == reverse(mg2.graph)
+    return all(motion_types_correct), scenegraph_correct
 end    
-            
 
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
-    pw_distances, number_repeats, visible_parent = render_stim_only(trace)
+    pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
+    inf_results = bayesian_observer(trace)
 #    inf_results = animate_inference(trace)
- #   plot_inference_results(inf_results...)
-  #  return trace, inf_results, pw_distances, number_repeats, visible_parent
+    analyze_and_plot_inference(inf_results...)
+    #   return trace, inf_results, pw_distances, number_repeats, visible_parent
+    return trace
 end
 
 function find_top_n_props(n::Int,
                           score_matrix::Array{Any, 2},
                           max_inds)
-
-    mi = findmax(score_matrix)
+    mi = findmax(mappedarray(x-> isfinite(x) ? x : 0.0, score_matrix))
     if n == 0 || mi[1] == 0
         return max_inds
     else
         mi_coord = mi[2].I
         push!(max_inds, mi)
         sm_copy = copy(score_matrix)
-        sm_copy[mi_coord[1], mi_coord[2]] = 0
+        sm_copy[mi_coord[1], mi_coord[2]] = 0.0
         find_top_n_props(n-1, sm_copy, max_inds)
     end
 end    
 
 # problem is if you eliminate it and its still the max (i.e. once you eliminate it, everything else is 0
 
-function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, show_scenegraph::Bool)
     motion_tree = get_retval(trace)[1]
     # ask which has the max of incoming edges
     bounds = 20
@@ -749,10 +830,14 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     # for j in 1:nv(motion_tree)
     #     println(trace[(:kernel_type, j)])
     # end
-    # Uncomment if you want to visualize scenegraph side by side with stimulus    
-    gscene = visualize_scenegraph(motion_tree)
-    gt_scene = vbox(scene, gscene)
-    screen = display(gt_scene)
+    # Uncomment if you want to visualize scenegraph side by side with stimulus
+    if show_scenegraph
+        gscene = visualize_scenegraph(motion_tree)
+        gt_scene = vbox(scene, gscene)
+        screen = display(gt_scene)
+    else
+        screen = display(scene)
+    end
     #    record(gt_scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
     #    for i in 1:size(dotmotion)[1]
     i = 0
@@ -792,6 +877,22 @@ Base.size(node::CompositeKernel) = node.size
 
 #- HERE EACH KERNEL TYPE FOR GENERATING TIME SERIES IS DEFINED USING MULTIPLE DISPATCH ON eval_cov AND eval_cov_mat. 
 
+struct Stationary <: PrimitiveKernel
+    param::Float64
+end
+
+function eval_cov(node::Stationary, t1, t2)
+    0
+end        
+
+function eval_cov_mat(node::Stationary, ts::Array{Float64})
+    # keep this structure if you want to keep the param for noise
+    n = length(ts)
+    Diagonal(node.param * zeros(n))
+end
+
+
+
 """Random Walk Kernel"""
 struct RandomWalk <: PrimitiveKernel
     param::Float64
@@ -811,15 +912,15 @@ function eval_cov_mat(node::RandomWalk, ts::Array{Float64})
 end
 
     
-"""Constant kernel"""
-struct Constant <: PrimitiveKernel
+"""Uniform Linear Kernel"""
+struct UniformLinear <: PrimitiveKernel
     param::Float64
 end
 
-eval_cov(node::Constant, t1, t2) = node.param
+eval_cov(node::UniformLinear, t1, t2) = node.param
 
 
-function eval_cov_mat(node::Constant, ts::Array{Float64})
+function eval_cov_mat(node::UniformLinear, ts::Array{Float64})
     n = length(ts)
     fill(node.param, (n, n))
 end
@@ -829,13 +930,13 @@ end
 
 
 """Linear kernel"""
-struct Linear <: PrimitiveKernel
+struct AccelLinear <: PrimitiveKernel
     param::Float64
 end
 
-eval_cov(node::Linear, t1, t2) = (t1 - node.param) * (t2 - node.param)
+eval_cov(node::AccelLinear, t1, t2) = (t1 - node.param) * (t2 - node.param)
 
-function eval_cov_mat(node::Linear, ts::Array{Float64})
+function eval_cov_mat(node::AccelLinear, ts::Array{Float64})
     ts_minus_param = ts .- node.param
     ts_minus_param * ts_minus_param'
 end
@@ -987,14 +1088,11 @@ end
 # This is an array of data types. Each data type takes a parameter, and each data type has a multiple dispatch
 # call associated with it to create a covariance matrix. 
     
-#kernel_types = [RandomWalk, Constant, Linear, Periodic]
-#@dist choose_kernel_type() = kernel_types[categorical([.25, .25, .25, .25])]
+kernel_types = [RandomWalk, UniformLinear, Periodic]
+@dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
 
-#kernel_types = [RandomWalk, Constant, Periodic]
-#@dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
-kernel_types = [RandomWalk, Linear, Constant, Periodic]
-@dist choose_kernel_type() = kernel_types[categorical([1/4, 1/4, 1/4, 1/4])]
-
+#kernel_types = [RandomWalk, UniformLinear, Periodic, Stationary]
+#@dist choose_kernel_type() = kernel_types[categorical([1/4, 1/4, 1/4, 1/4])]
 
 
 function all_dot_permutations(n_dots)
@@ -1027,11 +1125,11 @@ end
         kernel_args = [6, .5, 1]
 
 #        kernel_args = [20, 20]
-    elseif kernel_type == Constant
+    elseif kernel_type == UniformLinear
         # use 1 if bounds are 10, 2 if 20
         kernel_args = [4]
 #        kernel_args = [3]
-    elseif kernel_type == Linear
+    elseif kernel_type == AccelLinear
         kernel_args = [.15]
     elseif kernel_type == RandomWalk
 #        kernel_args = [.2]
@@ -1042,26 +1140,6 @@ end
     return kernel_type(kernel_args...)
 end 
 
-# @gen function covariance_simple(kt)
-#     kernel_type = {(:kernel_type, kt)} ~ choose_kernel_type()
-#     if kernel_type == Periodic
-#         kernel_args = [.5, 2]
-# #        kernel_args = [.5, 5]
-#     elseif kernel_type == Constant
-#         kernel_args = [1]
-# #        kernel_args = [3]
-#     elseif kernel_type == Linear
-#         kernel_args = [.2]
-#     elseif kernel_type == RandomWalk
-#         kernel_args = [2]
-# #        kernel_args = [2]
-#     else
-#         kernel_args = [1]
-#     end
-#     return kernel_type(kernel_args...)
-# end 
-
-
 
 @gen function covariance_prior(kernel_type, kt)
     # Choose a type of kernel
@@ -1071,13 +1149,13 @@ end
     end
     # Otherwise, generate parameters for the primitive kernel.
     if kernel_type == Periodic
-        kernel_args = [{(:scale, kt)} ~ uniform_discrete(1, 10), {(:length, kt)} ~ uniform(.5, .5), {(:period, kt)} ~ uniform_discrete(1, 2)]
-    elseif kernel_type == Constant
+        kernel_args = [{(:scale, kt)} ~ uniform(2, 5), {(:length, kt)} ~ uniform(.5, 1), {(:period, kt)} ~ uniform(1, 5)]
+    elseif kernel_type == UniformLinear
         kernel_args = [{(:param, kt)} ~ uniform(1, 20)]
-    elseif kernel_type == Linear
+    elseif kernel_type == AccelLinear
         kernel_args = [{(:param, kt)} ~ uniform(.3, .4)]
     elseif kernel_type == RandomWalk
-        kernel_args = [{(:param, kt)} ~ uniform_discrete(1, 30)]
+        kernel_args = [{(:param, kt)} ~ uniform(20, 30)]
     else
         kernel_args = [{(:param, kt)} ~ uniform(0, 1)]
     end
