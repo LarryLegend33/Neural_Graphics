@@ -99,21 +99,6 @@ end
 end
 
 
-# this doesn't work yet -- there's much more complexity in connectivity patterns for 4 dots.
-# have to think about whether 2nd order connections are relevant. 
-function sort_dotlist_for_assignment(motion_tree::MetaDiGraph{Int64, Float64},
-                                     dots::Array{Int64})
-    if length(dots) == 0
-        sort_dotlist_for_assignment(motion_tree,
-                                    [dot for dot in 1:nv(motion_tree) if isempty(inneighbors(motion_tree, dot))])
-    elseif length(dots) == nv(motion_tree)
-        return dots
-    else
-        cand_dots = [dot for dot in 1:nv(motion_tree) if !(dot in dots)]
-        sort_dotlist_for_assignment(motion_tree,
-                                    [dot for dot in cand_dots if inneighbors(motion_tree, dot) in dots])
-    end
-end                                    
 
 
 function calculate_pairwise_distance(dotmotion_tuples)
@@ -130,7 +115,7 @@ function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
     answer_graph = MetaDiGraph(num_dots)
     res = 1400
     answer_scene, as_layout = layoutscene(resolution=(res, res), backgroundcolor=:black)
-    dot_menus = [LMenu(answer_scene, options = ["RandomWalk", "Periodic", "UniformLinear", "AccelLinear"]) for i in 1:num_dots]
+    dot_menus = [LMenu(answer_scene, options = ["RandomWalk", "Periodic", "UniformLinear"]) for i in 1:num_dots]
     # incorporate for 3 dots    
     # group_toggles = [LToggle(answer_scene, active = ac) for ac in [true, false]]
     for (dot_id, menu) in enumerate(dot_menus)
@@ -188,11 +173,7 @@ end
         dot = first(dots)
         parents = inneighbors(motion_tree, dot)
         # if parent values haven't been assigned yet, put the dot at the end and recurse.
-        # issue with graph building in the 4 case is you aren't preventing connections
-        # to nodes ABOVE the parent. 
         if count(iszero, [props(motion_tree, p).count for p in parents]) != 0
-            # there are parents when this stack overflows
-#            println([e for e in edges(motion_tree)])
             {*} ~ assign_positions_and_velocities(motion_tree, [dots[2:end];dot], ts)
         else
             # uncomment here for flat prior on position
@@ -229,20 +210,23 @@ end
                     y_vel_mean = sum(parent_velocities_y)
                 end
             end
-            #        cov_func = {*} ~ covariance_simple(dot)
             # sample a kernel type for the dot here. then assign with cov prior conditioned on type
             kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
-            cov_func = {*} ~ covariance_prior(kernel_type, dot)
-            noise = 0.001
-            covmat_x = compute_cov_matrix_vectorized(cov_func, noise, ts)
-            covmat_y = compute_cov_matrix_vectorized(cov_func, noise, ts)
+#            cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
+ #           cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
 
+            cov_func_x = {*} ~ covariance_simple(kernel_type, dot, 1)
+            cov_func_y = {*} ~ covariance_simple(kernel_type, dot, 2)
+     
+            noise = 0.001
+            covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
+            covmat_y = compute_cov_matrix_vectorized(cov_func_y, noise, ts)
             x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_mean, covmat_x)
             y_vel = {(:y_vel, dot)} ~ mvnormal(y_vel_mean, covmat_y)
             # Sample from the GP using a multivariate normal distribution with
             # the kernel-derived covariance matrix.
             set_props!(motion_tree, dot,
-                       Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel, :MType=>typeof(cov_func)))
+                       Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel, :MType=>typeof(cov_func_x)))
             {*} ~ assign_positions_and_velocities(motion_tree, dots[2:end], ts)
         end
     end
@@ -380,10 +364,11 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     return plotvals
 end
 
-function evaluate_accuracy(num_dots::Int64, num_iters::Int64)
+function evaluate_inference_accuracy(num_dots::Int64, num_iters::Int64)
     correct_counter = zeros(4)
     for ni in 1:num_iters
-        t, e, v = imp_inference(num_dots)
+        t, args = dotsample(num_dots)
+        t, e, v = imp_inference(t)
         motion_tree = get_retval(t)[1]
         mp_edge = findmax(countmap(e))[2]
         mp_velocity = findmax(countmap(v))[2]
@@ -504,26 +489,6 @@ end
 # note for JM slides, used 20 particles for 2 dots, 100 for 3.
 # make imp_inference take a number of particles. 
 
-function imp_inference(num_dots::Int)
-    trace, args = dotsample(num_dots)
-    trace_choices = get_choices(trace)
-    observation = Gen.choicemap()
-    num_particles = 200
-    for i in 1:num_dots
-        observation[(:x_vel, i)] = trace[(:x_vel, i)]
-        observation[(:start_y, i)] = trace[(:start_y, i)]
-        observation[(:y_vel, i)] = trace[(:y_vel, i)]
-        observation[(:start_x, i)] = trace[(:start_x, i)]        
-    end
-    edge_list = []
-    kernel_types = []
-    for i in 1:100
-        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, num_particles)
-        push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
-        push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
-    end
-    return trace, edge_list, kernel_types
-end    
 
 function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     trace_choices = get_choices(trace)
@@ -531,7 +496,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     observation = Gen.choicemap()
 
     num_dots = nv(get_retval(trace)[1])
-    num_particles = (num_dots ^ 3) * 1000
+    num_particles = (num_dots ^ 3) * 100
     num_resamples = 30
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
@@ -769,8 +734,8 @@ end
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
     pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
-    inf_results = bayesian_observer(trace)
-#    inf_results = animate_inference(trace)
+#    inf_results = bayesian_observer(trace)
+    inf_results = animate_inference(trace)
     analyze_and_plot_inference(inf_results...)
     #   return trace, inf_results, pw_distances, number_repeats, visible_parent
     return trace
@@ -1116,13 +1081,12 @@ end
 # unconstrained, weight is correctly 0. constrained, weights are identical to categorial probabilities
 # returns a natural log of the prob. 
 
-@gen function covariance_simple(kt)
-    kernel_type = {(:kernel_type, kt)} ~ choose_kernel_type()
+@gen function covariance_simple(kernel_type, dot, dim)
     if kernel_type == Periodic
         #        kernel_args = [.5, .5]
         # note the velocity profile is updating at 4Hz (40 samples over 10 sec),
         # so have to have period be factor of 4 to look periodic. 
-        kernel_args = [6, .5, 1]
+        kernel_args = [6, .5, .3]
 
 #        kernel_args = [20, 20]
     elseif kernel_type == UniformLinear
@@ -1141,26 +1105,66 @@ end
 end 
 
 
-@gen function covariance_prior(kernel_type, kt)
-    # Choose a type of kernel
-    # If this is a composite node, recursively generate subtrees. For now, too complex. 
-    if in(kernel_type, [Plus, Times])
-        return kernel_type({ :left } ~ covariance_prior(), { :right } ~ covariance_prior())
-    end
-    # Otherwise, generate parameters for the primitive kernel.
+@gen function covariance_prior(kernel_type, dot, dim)
     if kernel_type == Periodic
-        kernel_args = [{(:scale, kt)} ~ uniform(2, 5), {(:length, kt)} ~ uniform(.5, 1), {(:period, kt)} ~ uniform(1, 5)]
+        kernel_args = [{(:scale, dot, dim)} ~ uniform(2, 5),
+                       {(:length, dot, dim)} ~ uniform(.5, 2),
+                       {(:period, dot, dim)} ~ uniform(.1, 3)]
     elseif kernel_type == UniformLinear
-        kernel_args = [{(:param, kt)} ~ uniform(1, 20)]
-    elseif kernel_type == AccelLinear
-        kernel_args = [{(:param, kt)} ~ uniform(.3, .4)]
+        kernel_args = [{(:param, dot, dim)} ~ uniform(0, 30)]
     elseif kernel_type == RandomWalk
-        kernel_args = [{(:param, kt)} ~ uniform(20, 30)]
+        kernel_args = [{(:param, dot, dim)} ~ uniform(0, 30)]
     else
-        kernel_args = [{(:param, kt)} ~ uniform(0, 1)]
+        kernel_args = [{(:param, dot, dim)} ~ uniform(0, 1)]
     end
     return kernel_type(kernel_args...)
 end
+
+
+@gen function covariance_experimental(kernel_type, dot, dim)
+    if kernel_type == Periodic
+        kernel_args = [2, 
+                       .5, 
+                       {(:param, dot, dim)} ~ uniform(-5, 5)]
+    elseif kernel_type == UniformLinear
+        kernel_args = [{(:param, dot, dim)} ~ uniform(20, 30)]
+    elseif kernel_type == RandomWalk
+        kernel_args = [{(:param, dot, dim)} ~ uniform(20, 30)]
+    else
+        kernel_args = [{(:param, dot, dim)} ~ uniform(0, 1)]
+    end
+    return kernel_type(kernel_args...)
+end
+
+
+
+# importance sampling works here, but perceptually random and periodic differ too much
+# if the low bound of sinusoidal is 1. its much smoother than random. dropping the subsampling
+# unsmoothens periodic, but unsmoothens random to the point where you can clearly tell just by smoothness. 
+
+# @gen function covariance_prior(kernel_type, dot, dim)
+#     # Choose a type of kernel
+#     # If this is a composite node, recursively generate subtrees. For now, too complex. 
+#     # if in(kernel_type, [Plus, Times])
+#     #     return kernel_type({ :left } ~ covariance_prior(), { :right } ~ covariance_prior())
+#     # end
+#     # Otherwise, generate parameters for the primitive kernel.
+#     if kernel_type == Periodic
+#         kernel_args = [{(:scale, dot, dim)} ~ uniform_discrete(2, 6),
+#                        {(:length, dot, dim)} ~ uniform_discrete(1, 1),
+#                        {(:period, dot, dim)} ~ uniform_discrete(1, 3)]
+#     elseif kernel_type == UniformLinear
+#         kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(0, 30)]
+#     # elseif kernel_type == AccelLinear
+#     #     kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(.3, .4)]
+#     elseif kernel_type == RandomWalk
+# #        kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(10, 30)]
+#         kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(5, 10)]
+#     else
+#         kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(0, 1)]
+#     end
+#     return kernel_type(kernel_args...)
+# end
 
 @dist gamma_bounded_below(shape, scale, bound) = gamma(shape, scale) + bound
                                           

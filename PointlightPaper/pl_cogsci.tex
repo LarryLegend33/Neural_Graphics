@@ -26,12 +26,24 @@
 
 \maketitle
 
+Qs for reader:
+
+1. If considering this task as bayesian inference, does it make sense to pool humans (i.e. study bayes at the population level) or ask the humans for second and third interpretations of the scene (i.e. ``it might be X, but it could be Y''). This would be bayes at the individual level. I think I balanced this with the confidence metric, but would like to know if that's convincing. 
+
+2. General appropriateness of the approach / alternative approaches that might be powerful that I don't know about.
+
+3. Any additional analysis or future directions that may be interesting. 
+
+\section{Abstract}
 \begin{abstract}
-  Changes in the intensity, qualities, or position of a stimulus over time can significantly affect how humans interpret its meaning. One example of this comes from Gunnar Johansson's work on ``Point Light Stimuli'', which revealed that ambiguous arrangements of only a few stationary dots can induce striking perceptions of humans when set in biologically realistic motion. Here, we seek to further elucidate how perceptual meaning arises from the integration of fundamental motion cues. Specifically, we compose dynamic dot scenes by hierarchical combination of four standard motion types observed in physics and everyday life. Using the probabilistic programming system Gen, we implement a Gaussian Process based generative model that first assigns a motion type to each dot (Brownian, Periodic, Uniform Linear, or Accelerating Linear), then generates a directed scene graph that describes inheritance of motion from one dot to another. In this way, ``groups'' of dots are specified that share common motion features and suggest unified objects. The goal of the task we devise is to infer the motion type of each dot and decide which dots belong to which groups (i.e. infer the scene graph); we posit that this constructive approach mirrors the cognitive processes that humans use to identify objects and meaning in sparse motion patterns. Lastly, we implement importance resampling inference constrained on only the observation of position and motion of the dots. We show that our inference program uncovers the correct scene graph and motion type assignment almost 100\% of the time, and that uncertainty in the inference program's posterior reflects the perceptual ambiguity experienced by human observers. However, there are common exceptions where inheritance of motion from one dot to another does not lead to grouping, and other examples where inheritance assignments are surprisingly ambiguous. We address these results below. Overall, we propose that the Gaussian Process abstraction we have implemented enables accurate and explicit reasoning about dot motion scenes, providing a framework for explaining percepts that emerge from random dot patterns.
+  Changes in the intensity, qualities, or position of a stimulus over time can significantly affect how humans interpret its meaning. One example of this comes from Gunnar Johansson's work on point light walkers, which revealed that ambiguous arrangements of only a few stationary dots can induce striking perceptions of humans when set in biologically realistic motion. Here, we seek to further elucidate how perceptual meaning arises from the integration of common motion cues observed both in physics and everyday life. Specifically, using the probabilistic programming system Gen, we have created a model that stochastically composes dynamic dot scenes. This Gaussian Process based model first assigns a primitive motion type to each dot (Random Walk, Periodic, or Uniform Linear), then generates a directed scene graph that describes inheritance of motion from one dot to another. In this way, more complex motion is formulated via groupings of dots that share common motion features and suggest unified objects. 
+  
+  We posit that the model we have constructed may mirror the human cognitive processes involved in dot motion perception. To this end, we have developed an automated task where dot patterns generated from our model are shown to human subjects. It is the job of the subject to infer the motion type assigned to each dot and decide which dots belong to which groups (i.e. infer the scene graph). Once human data has been collected, human performance will be compared to an ideal bayesian observer and importance resampling posteriors that are constrained on only the observation of position and motion of the dots. Overall, we propose that the Gaussian Process abstraction we have implemented enables accurate and explicit reasoning about dot motion scenes, providing a framework for explaining percepts that emerge from random dot patterns.
+
+  
 \end{abstract}
 
-\vspace{10mm}
-
+\vspace{20mm}
 
 
 A set of phenomena observed in past literature and in our own experiences with our model are shown below. Experiments to address questions raised by each phenomenon follow.
@@ -40,30 +52,69 @@ A set of phenomena observed in past literature and in our own experiences with o
 
 \begin{enumerate}
   \item \label{motion_alone_phen}
-  Physicists studying motion (e.g. Brown, Hooke) and humans in their colloquial language (``rhythmic'', ``bobbing'', ``meandering'', ``speeding up'', ``slowing down'') appear to be able to distinguish distinct types of motion in the physical world. However, no studies have posited the generative process that mediates this cognitive ability, nor whether humans can consistently reason about complex motion trajectories in terms of simpler fundamental types. E.g. A sailor's complex trajectory while walking across a moving sailboat is composed of the boat's uniform forward translation, his / her own walking path, the random fluctuations of the wind, and the periodic rhythm of waves. 
-  \item \label{biomotion_phen} A sparse set of white dots moving on a black background can create percepts of \emph{biological motion} (e.g. humans walking or dancing, fish swimming) \cite{Johansson_1973}. No studies have addressed how primitive forms of motion are composed to create biological motion. 
-  \item Dots that share common vectors of motion lead to perceptual grouping (i.e. ``Theory of Vector Analysis'') \cite{Johansson_1973}. In this way, common motion of a set of dots relative to its background allows the recognition of unified objects. However, it is unknown whether this grouping applies to all motion types and whether there are special cases where objects that share motion vectors are not perceived as groups. \label{common_motion_phen}. Our preliminary results indicate that inheritance between two dots moving linearly creates ambiguity in scene graph interpretation. Moreover, periodic motion inheritance often creates ambiguity in object / reference frame distinctions. We will examine these phenomena further in our human study. 
+  Physicists studying motion (e.g. Brown, Hooke) and humans in their colloquial language (``waving'', ``bouncing'', ``roving'', ``meandering'', ``speeding up'', ``slowing down'', ``staying steady'') appear to be able to distinguish distinct types of motion in the physical world. However, no studies have posited the generative process that mediates this cognitive ability, nor whether humans can consistently reason about complex motion trajectories in terms of simpler fundamental types. As an example of this, consider a sailor's complex trajectory while walking across a moving sailboat; his or her motion is composed of the boat's forward translation, their linear walking path, the random fluctuations of the wind, and the periodic rhythm of waves. Can human observers consistently decompose a scene in this way? (If this is a good example, will make a figure illustrating the decomposition of these motion types). 
+  \item \label{biomotion_phen} A sparse set of white dots moving on a black background can create percepts of \emph{biological motion} (e.g. humans walking or dancing, fish swimming) \cite{Johansson_1973}. No studies have addressed how the explicit combination of primitive forms of motion can create biological motion in dot scenes.  
+  \item Dots that share common vectors of motion lead to perceptual grouping (i.e. ``Theory of Vector Analysis'') \cite{Johansson_1973}. In this way, common motion of a set of dots relative to its background allows the recognition of unified objects. However, it is unknown whether this method of grouping applies to all motion types or whether there are special cases where objects that share motion vectors are not perceived as groups. \label{common_motion_phen}. Our initial evidence indicates that shared periodic motion is a stronger cue for grouping than the other two types, and that dot pairs moving with uniform linear velocity yield ambiguous grouping. Moreover, proximity of dots to each other during the stimulus is a clear grouping cue. 
 \end{enumerate}
 
 
+\section{Claims}
+
+\begin{enumerate}
+  \item To address Phenomenon 1, \ref{motion_alone_phen} our Gaussian Process model samples covariance functions for each dot primitive that directly correspond to a fundamental motion type (i.e. Random Walk motion is sampled using a diagonal covariance matrix; Uniform Linear motion is sampled using a parameter times an all-ones covariance matrix). In this way, reasoning about the structure of timeseries observations and reasoning about motion types in patterns becomes synonymous. Comparison between human performance, importance sampling, and an ideal observer will allow us to evaluate the validity of this approach. 
+
+  \item To address Phenomenon 2, \ref{biomotion_phen} we have incorporated a biomotion scale into the answer portal of our human task. Comparison between this scale and the types of scene graphs that generate high and low scores on this scale should be useful and may lead to a better understanding of the characteristics of stimuli that create biomotion percepts. 
+  
+  \item We do not believe the Theory of Vector Analysis is effective in all cases (see Phenomenon 3). Our study will illustrate common failure modes in human perception and their correspondence with inference results, showing that certain ambiguous stimuli lead to both flat posteriors in our model and uncertainty in human answers.
+
+  \item To substantiate our claim that humans compose complex motion from primitive motion types, we add ``held out'' trials where the parents of observed dots in the scene graph are invisible. In this way, composition of motion occurs latently without cues that indicate structure. 
+
+\end{enumerate}
+
+
+\section{Models}
+(Clean code for stimulus generation here with a schematic and math)
+
 \section{Experiments}
 
-Human subjects will be presented a ten second movie of 1, 2, or 3 white dots moving on a black background. (Here, cite a figure that describes math and code that generates the stimulus). The subject will be allowed to replay the stimulus until selecting an answer (described below). In each case, the distribution of human results will be compared to inference results obtained from running importance resampling constrained on velocity and position of the dots in the observed stimulus. 
+Stimuli consist of 1,2, or 3 white dots moving on a black background for 10 seconds. Following a training period where the full scene graph that generated the stimulus is visible to the subject, subjects will be presented 50 point light stimuli. The subject will be allowed to replay the stimulus until entering answers (described below) into an answer portal. 
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{SceneGraph}
+    \caption{On each trial, a stimulus consisting of a set of 1-3 white dots is set in motion (left panel). Each stimulus is generated via an underlying scene graph that describes the motion type of each dot and the inheritance of motion between dots (right panel). In this scene graph, there are 3 dots: two move randomly (red: dots 1 and 2), while one moves with uniform linear velocity (dot 3: cyan). The arrow between dots 1 and 2 indicates that dot 2 inherits the motion of dot 1.}
+    \label{fig:scenegraph}
+\end{figure}
 
 Phenomena described in section \ref{Phenomena} will be addressed with the following experiments.
 
 \begin{enumerate}
-  \item After observing the 10 second video, the goal of the subject is to identify the motion type of each dot (Uniform Linear, Accelerating Linear, Periodic, Brownian), and decide which dots are grouped (i.e. infer the scene graph). The 1-dot case queries the subject's ability to identify the common patterns of motion that we suggest are fundamental building blocks of complex motion. 
-  \item On each trial, the subject will be required to enter a value indicating, on a scale of 1-10, how resemblant the stimulus was to biological motion. This will allow us to assess how biological motion is composed from primitive motion types. 
-  \item On each trial, subjects will be asked to judge their confidence that a particular velocity profile and grouping is correct. The confidence level will be compared to the inference posterior on grouping vs. ungrouping to judge how well our model captures uncertainty in scene interpretation.
+  \item After observing the 10 second video, the goal of the subject is to identify the motion type of each dot (Uniform Linear, Periodic, Random Walk), and decide which dots are grouped (i.e. infer the scene graph). The 1-dot case queries the subject's ability to identify the common patterns of motion that we suggest are fundamental building blocks of complex motion. Scene graph identification will be done using a dropdown menu interface for dot specification and toggle switches to indicate grouping.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{AnswerPortal}
+    \caption{Answer portal that subjects will use to describe the scene graph}
+    \label{fig:answerportal}
+\end{figure}
+
+  \item On each trial, the subject will be required to enter a value indicating, on a slider, how resemblant the stimulus was to biological motion. This will allow us to assess how biological motion is composed from primitive motion types. 
+  \item On each trial, subjects will be asked to judge their confidence using a slider that a particular velocity profile and grouping is correct. The confidence level will be compared to the inference posterior on grouping vs. ungrouping to judge how well our model captures uncertainty in scene interpretation. 
 \end{enumerate}
+
+
 
 \section{Metrics and Figures}
 \begin{enumerate}
-  \item Figure 1: Drawn out sailor walking on a boat example. Show complexity of the actual trajectory of the sailor walking, then decomposition into common motion types (Brownian, Uniform Linear, Periodic).
-  \item Figure 2: Plot accuracy of scene graph inference vs. number of importance particles for 1, 2, and 3 dot sets. Plot probability of most likely graph vs. number of particles as a metric for uncertainty.
-  \item Figure 3: After choosing the correct \# of particles, compare accuracy of inference program to human data. Compare uncertainty responses of subjects to probability of top graph, and also KL-divergence between population responses and full posteriors. Likely here to see grouping errors in linear-linear inheritance graphs. If you do, make a separate panel for this effect. 
-  \item Figure 4: Plot top 5 scene graphs for biomotion metric. Plot bottom 5 scene graphs. Could also rank in a supplementary heat map for all 2 and 3 dot patterns. 
+  \item Figure 1: Drawn out sailor walking on a boat example. Show complexity of the actual trajectory of the sailor walking, then decomposition of the global motion pattern into common motion types (Random Walk, Uniform Linear, Periodic) assigned to each object and force in the scene.
+
+  \item Figure 2: Scatter plot. X-axis is trial number (1-50). Y-axis is probability of correct scene graph identification. Human answers on each trial will be pooled and a mean and error bars will be shown for each trial indicating the percent of the time that humans identified the correct scene graph. Raw human data will also be color coded to the subject and shown (i.e. point at 0 for wrong, point at 100 for correct). Two other measures will also be included for each trial: the posterior probability after importance resampling of the correct scene graph, and the likelihood score of observing the positions and velocities in the dot scene under ideal bayesian observation. Also, for each trial, the confidence score of human observers for that trial will be plotted. This will be a proxy for the posterior probability in the human's mind that the correct scene graph was identified.
+
+  \item Figure 3: Same structure as Figure 2, but only show held out trials. Compare to inference results where invisible parent dot is observed and unobserved. (consider repeating the trial where parent is held out at a later time in the epoch with the parent dot made visible). 
+
+  \item Figure 4: Ability to regenerate the scene based on noisy observations of dot positions over time. This includes hyperparameter inference for the coefficients in each covariance function, and noise in the production of the covariance matrix from the function. Score for distance between groundtruth dot position and regenerated dot position over time as a metric for reconstruction accuracy. Figure will be the reconstruction score for each trial on the y-axis and trial ID on the x-axis. 
+ 
+  \item Figure 5: Plot top 5 scene graphs for biomotion metric. Plot bottom 5 scene graphs. Could also rank in a supplementary heat map for all 2 and 3 dot patterns. 
 \end{enumerate}
   
 \section{Contributions}
@@ -75,17 +126,10 @@ Phenomena described in section \ref{Phenomena} will be addressed with the follow
   \item Explicit recipes for generating random stimuli that at times resemble the features of bio-motion.
 \end{enumerate}    
 
-\section{Claims}
-
-\begin{enumerate}
-  \item Non-parametric Bayesian Models (i.e. CRP) defining flow fields can recapitulate (1). These careful studies explained the phenomenological effects in Johansson's studies, but fail to posit the actual latent structure that exists in humans' perceptual machinery \cite{Gershman_2016}. Our model posits the latent structure that generates motion timeseries and captures human abilities in motion type identification and grouping inference tasks.
-  \item We do not believe the Vector Analysis method works for the case of linear-linear inheritance in scene graphs nor in the ability of humans to distinguish figure / background in periodic->linear inheritance.
-  \item It is likely that the explicit composition of primitive motion types in this study will lead to a better understanding of the characteristics of stimuli that create biomotion percepts. 
-\end{enumerate}
 
 \section{Future Directions}
 
-Our current program requires memory of 2-3 entire timeseries of motion to make perceptual judgements (i.e. the full time series is used to condition importance sampling). It is therefore incapable of revealing fluctuations in certainty about stimulus structure over time. It is also possible that heuristics are involved in defining motion types that could be used as custom proposals to inference algorithms. Future studies will add dots, motion types, and other common GP kernels in order to achieve more complex types of motion that will likely call for custom SMC inference algorithms. 
+Our current program requires memory of 2-3 entire timeseries of motion to make perceptual judgements (i.e. the full time series is used to condition importance sampling). It is therefore incapable of revealing fluctuations in certainty about stimulus structure over time. It is also possible that heuristics are involved in defining motion types that could be used as custom proposals to inference algorithms. Use of SMC inference algorithms should be useful because grouping confidence clearly changes over time when watching a stimulus. As most point light walker experiments are composed of ~5-10 dots, it will be useful to grow the number of dots in the stimuli and inference complexity as we move forward. Moreover, it should be useful to expand the hyperparameter space of covariance function coefficients to get more interesting types of motion; however, it doesn't seem necessary to expand the covariance function type any further -- these 3 primitives can create a wide array of motion types. 
 
 \bibliographystyle{vancouver}
 \bibliography{pl_cogsci.bib}
