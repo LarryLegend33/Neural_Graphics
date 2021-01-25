@@ -31,6 +31,13 @@ num_velocity_points = time_duration * 4
 # length of the velocity vector. your final amount of samples doubles this each time, then adds 1. 
 interp_iters = round(Int64, log(2, (framerate * time_duration) / (num_velocity_points -1)))
 
+periodic_amp_range = [2, 6]
+periodic_length_options = [.5, 1, 2]
+periodic_period_options = [n for n in -1:.25:1 if n != 0]
+uniform_param_range = [20, 30]
+random_param_range = [20, 30]
+
+
 
 function interpolate_coords(vel, iter)
     if iter == 0
@@ -116,6 +123,7 @@ function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
     res = 1400
     answer_scene, as_layout = layoutscene(resolution=(res, res), backgroundcolor=:black)
     dot_menus = [LMenu(answer_scene, options = ["RandomWalk", "Periodic", "UniformLinear"]) for i in 1:num_dots]
+
     # incorporate for 3 dots    
     # group_toggles = [LToggle(answer_scene, active = ac) for ac in [true, false]]
     for (dot_id, menu) in enumerate(dot_menus)
@@ -212,12 +220,10 @@ end
             end
             # sample a kernel type for the dot here. then assign with cov prior conditioned on type
             kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
-#            cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
- #           cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
-
-            cov_func_x = {*} ~ covariance_simple(kernel_type, dot, 1)
-            cov_func_y = {*} ~ covariance_simple(kernel_type, dot, 2)
-     
+            cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
+            cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
+#            cov_func_x = {*} ~ covariance_simple(kernel_type, dot, 1)
+ #           cov_func_y = {*} ~ covariance_simple(kernel_type, dot, 2)
             noise = 0.001
             covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
             covmat_y = compute_cov_matrix_vectorized(cov_func_y, noise, ts)
@@ -226,7 +232,7 @@ end
             # Sample from the GP using a multivariate normal distribution with
             # the kernel-derived covariance matrix.
             set_props!(motion_tree, dot,
-                       Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel, :MType=>typeof(cov_func_x)))
+                       Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel, :MType=>string(typeof(cov_func_x))))
             {*} ~ assign_positions_and_velocities(motion_tree, dots[2:end], ts)
         end
     end
@@ -306,11 +312,31 @@ function find_interesting_samples(num_desired_samples::Int, num_dots::Int)
             continue
         end
     end
-    @save "example_traces.bson" traces
-    @save "difficulties.bson" difficulty
+    @save string("example_traces", num_dots, ".bson") traces
+    @save string("difficulties", num_dots, ".bson") difficulty
 end
 
-    
+function load_and_show_interesting_samples(num_dots::Int)
+    @load string("example_traces", num_dots, ".bson") traces
+    @load string("difficulties", num_dots, ".bson") difficulty
+    filtered_traces = []
+    filtered_difficulty = []
+    for (trace, diff_level) in zip(traces, difficulty)
+        pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
+#    inf_results = bayesian_observer(trace)
+        inf_results = animate_inference(trace)
+        analyze_and_plot_inference(inf_results...)
+        println(string("Difficulty Level:  ", diff_level))
+        println("Keep sample?")
+        ans = readline()
+        if ans == "y"
+            push!(filtered_traces, trace)
+            push!(filtered_difficulty, difficulty)
+        end
+    end
+    @save string("filtered_example_traces", num_dots, ".bson") filtered_traces
+    @save string("filtered_difficulties", num_dots, ".bson") filtered_difficulty
+end    
 
 function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     num_dots = nv(get_retval(trace)[1])
@@ -363,6 +389,9 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     plotvals = [score_matrix, kernel_combos, possible_edges, edge_truthtable]
     return plotvals
 end
+
+prod
+
 
 function evaluate_inference_accuracy(num_dots::Int64, num_iters::Int64)
     correct_counter = zeros(4)
@@ -421,7 +450,7 @@ function analyze_inference_results(score_matrix::Array{Any, 2}, kernels, possibl
             add_edge!(top_g, edge[1], edge[2])
         end
         for (node, vel) in enumerate(vel_types)
-            set_props!(top_g, node, Dict(:MType=>vel))
+            set_props!(top_g, node, Dict(:MType=>string(vel)))
         end
         viz_graph = visualize_scenegraph(top_g)
         push!(top_metagraph_scenes, top_g)
@@ -496,7 +525,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     observation = Gen.choicemap()
 
     num_dots = nv(get_retval(trace)[1])
-    num_particles = (num_dots ^ 3) * 100
+    num_particles = (num_dots ^ 2) * 200
     num_resamples = 30
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
@@ -603,16 +632,14 @@ function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64})
     
     for v in 1:nv(motion_tree)
         mtype = props(motion_tree, v)[:MType]
-        if mtype == UniformLinear
+        if mtype == "UniformLinear"
             nodecolor = :cyan
-        elseif mtype == RandomWalk
+        elseif mtype == "RandomWalk"
             nodecolor = :red
-        elseif mtype == Periodic
+        elseif mtype == "Periodic"
             nodecolor = :purple
-        elseif mtype == AccelLinear
+        elseif mtype == "AccelLinear"
             nodecolor = :pink
-        elseif mtype == Stationary
-            nodecolor = :yellow
         end
         scatter!(scene, [(node_xs[v], node_ys[v])], markersize=50px, color=nodecolor)
         text!(scene, string(v), position=(node_xs[v], node_ys[v]), align= (:center, :center),
@@ -640,11 +667,11 @@ end
 function run_human_experiment()
     println("Subject ID: ")
     subject_id = readline()
-    num_training_trials = 21
+    num_training_trials = 0
     partition = convert(Int, num_training_trials/3)
     training_dot_numbers = [ones(partition); 2*ones(partition);
                             3*ones(partition)]
-    num_trials = 30
+    num_trials = 1
     directory = string("/Users/nightcrawler2/humantest/", subject_id)
     try
         mkdir(directory)
@@ -666,7 +693,6 @@ function run_human_experiment()
         trace, args = dotsample(num_dots)
         pw_dist, num_repeats, visible_parent = render_stim_only(trace, false)
         @save string(directory, "/trace", trial_n, ".bson") trace
-#        @save string(directory, "/inf_results", trial_n, ".bson") inf_results
         answer_graph, confidence, biomotion = answer_portal(trial_n, directory, num_dots)
         savegraph(string(directory, "/answers", trial_n, ".mg"), answer_graph)
         push!(biomotion_results, biomotion)
@@ -686,7 +712,6 @@ end
 # experience 
 
 function score_performance(directories::Array{String, 1})
-    
     for directory in directories
         biomotion_results = @load string(directory + "/biomotion.bson") biomotion_results
         confidence_results = @load string(directory + "/confidence.bson") confidence_results
@@ -725,7 +750,7 @@ function compare_scenegraphs(mg1::MetaDiGraph{Int64, Float64},
     # 4) motion inversions (
     # 5) half correct / one third correct motion patterns
     
-    motion_types_correct = [props(mg1, dot)[:MType] == props(mg2, dot)[:Mtype] for dot in 1:nv(mg1)]
+    motion_types_correct = [props(mg1, dot)[:MType] == props(mg2, dot)[:MType] for dot in 1:nv(mg1)]
     scenegraph_correct = mg1.graph == mg2.graph
     scenegraph_inverted = mg1.graph == reverse(mg2.graph)
     return all(motion_types_correct), scenegraph_correct
@@ -841,20 +866,6 @@ Base.size(node::CompositeKernel) = node.size
 
 
 #- HERE EACH KERNEL TYPE FOR GENERATING TIME SERIES IS DEFINED USING MULTIPLE DISPATCH ON eval_cov AND eval_cov_mat. 
-
-struct Stationary <: PrimitiveKernel
-    param::Float64
-end
-
-function eval_cov(node::Stationary, t1, t2)
-    0
-end        
-
-function eval_cov_mat(node::Stationary, ts::Array{Float64})
-    # keep this structure if you want to keep the param for noise
-    n = length(ts)
-    Diagonal(node.param * zeros(n))
-end
 
 
 
@@ -1105,36 +1116,22 @@ end
 end 
 
 
-@gen function covariance_prior(kernel_type, dot, dim)
-    if kernel_type == Periodic
-        kernel_args = [{(:scale, dot, dim)} ~ uniform(2, 5),
-                       {(:length, dot, dim)} ~ uniform(.5, 2),
-                       {(:period, dot, dim)} ~ uniform(.1, 3)]
-    elseif kernel_type == UniformLinear
-        kernel_args = [{(:param, dot, dim)} ~ uniform(0, 30)]
-    elseif kernel_type == RandomWalk
-        kernel_args = [{(:param, dot, dim)} ~ uniform(0, 30)]
-    else
-        kernel_args = [{(:param, dot, dim)} ~ uniform(0, 1)]
-    end
-    return kernel_type(kernel_args...)
-end
+# @gen function covariance_prior(kernel_type, dot, dim)
+#     if kernel_type == Periodic
+#         kernel_args = [{(:scale, dot, dim)} ~ uniform(2, 5),
+#                        {(:length, dot, dim)} ~ uniform(.5, 2),
+#                        {(:period, dot, dim)} ~ uniform(.1, 3)]
+#     elseif kernel_type == UniformLinear
+#         kernel_args = [{(:param, dot, dim)} ~ uniform(0, 30)]
+#     elseif kernel_type == RandomWalk
+#         kernel_args = [{(:param, dot, dim)} ~ uniform(0, 30)]
+#     else
+#         kernel_args = [{(:param, dot, dim)} ~ uniform(0, 1)]
+#     end
+#     return kernel_type(kernel_args...)
+# end
 
 
-@gen function covariance_experimental(kernel_type, dot, dim)
-    if kernel_type == Periodic
-        kernel_args = [2, 
-                       .5, 
-                       {(:param, dot, dim)} ~ uniform(-5, 5)]
-    elseif kernel_type == UniformLinear
-        kernel_args = [{(:param, dot, dim)} ~ uniform(20, 30)]
-    elseif kernel_type == RandomWalk
-        kernel_args = [{(:param, dot, dim)} ~ uniform(20, 30)]
-    else
-        kernel_args = [{(:param, dot, dim)} ~ uniform(0, 1)]
-    end
-    return kernel_type(kernel_args...)
-end
 
 
 
@@ -1142,34 +1139,32 @@ end
 # if the low bound of sinusoidal is 1. its much smoother than random. dropping the subsampling
 # unsmoothens periodic, but unsmoothens random to the point where you can clearly tell just by smoothness. 
 
-# @gen function covariance_prior(kernel_type, dot, dim)
-#     # Choose a type of kernel
-#     # If this is a composite node, recursively generate subtrees. For now, too complex. 
-#     # if in(kernel_type, [Plus, Times])
-#     #     return kernel_type({ :left } ~ covariance_prior(), { :right } ~ covariance_prior())
-#     # end
-#     # Otherwise, generate parameters for the primitive kernel.
-#     if kernel_type == Periodic
-#         kernel_args = [{(:scale, dot, dim)} ~ uniform_discrete(2, 6),
-#                        {(:length, dot, dim)} ~ uniform_discrete(1, 1),
-#                        {(:period, dot, dim)} ~ uniform_discrete(1, 3)]
-#     elseif kernel_type == UniformLinear
-#         kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(0, 30)]
-#     # elseif kernel_type == AccelLinear
-#     #     kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(.3, .4)]
-#     elseif kernel_type == RandomWalk
-# #        kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(10, 30)]
-#         kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(5, 10)]
-#     else
-#         kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(0, 1)]
-#     end
-#     return kernel_type(kernel_args...)
-# end
+@gen function covariance_prior(kernel_type, dot, dim)
+    # Choose a type of kernel
+    # If this is a composite node, recursively generate subtrees. For now, too complex. 
+    # if in(kernel_type, [Plus, Times])
+    #     return kernel_type({ :left } ~ covariance_prior(), { :right } ~ covariance_prior())
+    # end
+    # Otherwise, generate parameters for the primitive kernel.
+    if kernel_type == Periodic
+        kernel_args = [{(:scale, dot, dim)} ~ uniform_discrete(2, 6),
+                       {(:length, dot, dim)} ~ multinomial([.5, 1, 2]),
+                       {(:period, dot, dim)} ~ multinomial([n for n in -1:.25:1 if n != 0])]
+    elseif kernel_type == UniformLinear
+        kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(0, 30)]
+    elseif kernel_type == RandomWalk
+        kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(10, 30)]
+    else
+        kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(0, 1)]
+    end
+    return kernel_type(kernel_args...)
+end
 
 @dist gamma_bounded_below(shape, scale, bound) = gamma(shape, scale) + bound
-                                          
 
+@dist multinomial(possibilities) = possibilities[uniform_discrete(1, length(possibilities))]
 
+macro datatype(str); :($(Symbol(str))); end
 
 
 
