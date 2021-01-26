@@ -16,6 +16,7 @@
 \usepackage{amssymb}
 \usepackage{capt-of}
 \usepackage{hyperref}
+\usepackage[ruled,vlined]{algorithm2e}
 \usepackage[main=british, polutonikogreek, english]{babel}
 
 \title{A Gaussian Process Model of Pointlight Perception}
@@ -73,7 +74,64 @@ A set of phenomena observed in past literature and in our own experiences with o
 
 
 \section{Models}
-(Clean code for stimulus generation here with a schematic and math)
+
+\begin{equation}
+  Edge \; Assignment \; Order \; Prior: o \sim P(o)
+\end{equation}
+
+\begin{equation}
+  Edge \; Assignment \; Prior: edge_{ij} \sim P(edge_{ij} | o)
+\end{equation}
+
+\begin{equation}
+  GP \; Kernel \; Prior: k_i \sim P(k_i)
+\end{equation}
+
+\begin{equation}
+  Observation \; Noise \; Prior: n_i \sim P(n_i)
+\end{equation}
+
+\begin{equation}
+  Timeseries \; Draw: ts_j \sim P(ts_j | k_j, n_j, ts_i \; if \; edge_{ij} == true)
+\end{equation}
+
+
+\begin{algorithm}
+\DontPrintSemicolon
+\KwData{$G=(X,U)$ such that $G^{tc}$ is an order.} \KwResult{$G’=(X,V)$ with $V\subseteq U$ such that $G’^{tc}$ is an interval order.}
+\Begin{
+  $V \longleftarrow U$\;
+  $S \longleftarrow \emptyset$\;
+  \For{$x\in X$}{
+    $NbSuccInS(x) \longleftarrow 0$\;
+    $NbPredInMin(x) \longleftarrow 0$\;
+    $NbPredNotInMin(x) \longleftarrow |ImPred(x)|$\;
+    }
+  \For{$x \in X$}{
+    \If{$NbPredInMin(x) = 0$ {and} $NbPredNotInMin(x) = 0$}{
+      $AppendToMin(x)$}
+    }
+    \nl\While{$S \neq \emptyset$}{\label{InRes1}
+    \nlset{REM} remove $x$ from the list of $T$ of maximal index\;\label{InResR}
+    \lnl{InRes2}\While{$|S \cap  ImSucc(x)| \neq |S|$}{
+\For{$ y \in S-ImSucc(x)$}{
+\{ remove from $V$ all the arcs $zy$ : \}\; \For{$z \in ImPred(y) \cap Min$}{
+remove the arc $zy$ from $V$\;
+$NbSuccInS(z) \longleftarrow NbSuccInS(z) - 1$\;
+move $z$ in $T$ to the list preceding its present list\; \{i.e. If $z \in T[k]$, move $z$ from $T[k]$ to
+$T[k-1]$\}\; }
+$NbPredInMin(y) \longleftarrow 0$\; $NbPredNotInMin(y) \longleftarrow 0$\; $S \longleftarrow S - \{y\}$\; $AppendToMin(y)$\;
+}
+      }
+    $RemoveFromMin(x)$\;
+    }
+  }
+\caption{IntervalRestriction\label{IR}}
+\end{algorithm}  
+
+
+
+
 
 \section{Experiments}
 

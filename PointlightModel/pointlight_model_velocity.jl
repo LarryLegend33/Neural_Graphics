@@ -1,5 +1,6 @@
 using Makie
 using AbstractPlotting
+using StatsMakie
 using MakieLayout
 using Gen
 using LinearAlgebra
@@ -16,11 +17,8 @@ using CurricularAnalytics
 using BSON: @save, @load
 using MappedArrays
 
-#- One main question is whether we are going to try to reconstruct the identity after the fact. I.e. Are the xs and ys completely known in time and space We can do simultaneous inference on x and y values wrt t. Can also do sequential monte carlo. 
 
 #- starting with init positions b/c this is the type of custom proposal you will get from the tectum. you won't get offests for free. this model accounts for distance effects and velocity effects by traversing the tree. 
-
-#- One thing you might want to think about is keeping the same exact structure but resampling the timeseries. If you do this, may be a good way to test good choices in structure vs sample.
 
 #want a balance between inferability and smoothness
 framerate = 60
@@ -30,14 +28,6 @@ num_velocity_points = time_duration * 4
 # filling in n-1 samples for every interpolation, where n is the
 # length of the velocity vector. your final amount of samples doubles this each time, then adds 1. 
 interp_iters = round(Int64, log(2, (framerate * time_duration) / (num_velocity_points -1)))
-
-periodic_amp_range = [2, 6]
-periodic_length_options = [.5, 1, 2]
-periodic_period_options = [n for n in -1:.25:1 if n != 0]
-uniform_param_range = [20, 30]
-random_param_range = [20, 30]
-
-
 
 function interpolate_coords(vel, iter)
     if iter == 0
@@ -56,15 +46,11 @@ end
         return motion_tree
     end
     (current_dot, cand_parent) = first(candidate_pairs)
-
-    # here add path requirement
-
     current_paths = all_paths(motion_tree)
-
-    #  if has_edge(motion_tree, current_dot, cand_parent) || ne(motion_tree) == nv(motion_tree) - 1
-    if has_edge(motion_tree, current_dot, cand_parent) || any([current_dot in path && cand_parent in path for path in current_paths])
+    # prevents recursion in the motion tree. can add this back in someday to model non-rigid bodies
+    # like a ring of beads
+    if any([current_dot in path && cand_parent in path for path in current_paths])        
         add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(0)
-
     else
         if isempty(inneighbors(motion_tree, cand_parent))
             add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.3)
@@ -98,81 +84,12 @@ end
     motion_tree_updated = {*} ~ populate_edges(motion_tree, candidate_edges)
     dot_list = sort(collect(1:nv(motion_tree_updated)),
                     by=ϕ->(size(inneighbors(motion_tree_updated, ϕ))[1]))
-                         
     motion_tree_assigned = {*} ~ assign_positions_and_velocities(motion_tree_updated,
                                                                  dot_list,
                                                                  ts)
     return motion_tree_assigned, dot_list
 end
 
-
-
-
-function calculate_pairwise_distance(dotmotion_tuples)
-    # each value in dotmotion_tuples is of form ((x1, y1), (x2, y2)) for each dot i to N.
-    pairwise_distances = []
-    for dt in dotmotion_tuples
-        push!(pairwise_distances,
-              [norm(coord2 .- coord1) for (i, coord1) in enumerate(dt) for (j, coord2) in enumerate(dt) if i < j])
-    end
-    return pairwise_distances
-end
-
-function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
-    answer_graph = MetaDiGraph(num_dots)
-    res = 1400
-    answer_scene, as_layout = layoutscene(resolution=(res, res), backgroundcolor=:black)
-    dot_menus = [LMenu(answer_scene, options = ["RandomWalk", "Periodic", "UniformLinear"]) for i in 1:num_dots]
-
-    # incorporate for 3 dots    
-    # group_toggles = [LToggle(answer_scene, active = ac) for ac in [true, false]]
-    for (dot_id, menu) in enumerate(dot_menus)
-        as_layout[dot_id, 1] = vbox!(LText(answer_scene, string("Dot ", dot_id, " Motion Type"), color=:white), menu)
-    end
-     # [dot1 for dot1 in 1:num_dots for dot2 in 1:num_dots if dot1 < dot 2]
-    tog_indices = [(dot1, dot2) for dot1 in 1:num_dots for dot2 in 1:num_dots if dot1 != dot2]
-    toggles = [LToggle(answer_scene, buttoncolor=:black, active=false) for ti in tog_indices]
-    toglabels = [LText(answer_scene, lift(x -> x ? string(dot1, " inherits motion of ", dot2) : string(dot1, " inherits motion of ", dot2),
-                                                          toggles[i].active), color=:white) for (i, (dot1, dot2)) in enumerate(tog_indices)]
-    for tog_index in 1:length(tog_indices)
-        as_layout[num_dots+tog_index, 1] = hbox!(toggles[tog_index], toglabels[tog_index])
-    end
-    sliders = [LSlider(answer_scene, range=0:1:100, startvalue=50) for i in 1:2]
-    confidence = as_layout[num_dots+length(tog_indices) + 1, 1] = vbox!(LText(answer_scene, "Confidence Level", color=:white),
-                                                                        sliders[1])
-    biomotion = as_layout[num_dots+length(tog_indices) + 2, 1] = vbox!(LText(answer_scene, "Biomotion Scale", color=:white),
-                                                                       sliders[2])
-    screen = display(answer_scene)
-
-    stop_anim = false
-    on(events(answer_scene).keyboardbuttons) do button
-        if ispressed(button, Keyboard.enter)
-            stop_anim = true
-        end
-    end
-    for dot in 1:num_dots
-        on(dot_menus[dot].selection) do s
-            set_props!(answer_graph, dot, Dict(:MType=> s))
-        end
-    end
-    for (tswitch, tog_inds) in enumerate(tog_indices)
-        on(toggles[tswitch].active) do gt
-            if gt == true
-                add_edge!(answer_graph, tog_inds[2], tog_inds[1])
-            else
-                rem_edge!(answer_graph, tog_inds[2], tog_inds[1])
-            end
-        end
-    end
-    callback(timer) = (println("times up"))
-    wait(Timer(callback, 20, interval=0))
-    vs = visualize_scenegraph(answer_graph)
-    display(vs)
-    wait(Timer(callback, 5, interval=0))
-    return answer_graph, sliders[1].value, sliders[2].value
-end    
-                      
-    
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
                                               dots::Array{Int64}, ts::Array{Float64})
     if isempty(dots)
@@ -184,7 +101,7 @@ end
         if count(iszero, [props(motion_tree, p).count for p in parents]) != 0
             {*} ~ assign_positions_and_velocities(motion_tree, [dots[2:end];dot], ts)
         else
-            # uncomment here for flat prior on position
+            # use for flat prior on position
             start_x = {(:start_x, dot)} ~ uniform(-5, 5)
             start_y = {(:start_y, dot)} ~ uniform(-5, 5)
             x_vel_mean = zeros(length(ts))
@@ -222,9 +139,8 @@ end
             kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
             cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
             cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
-#            cov_func_x = {*} ~ covariance_simple(kernel_type, dot, 1)
- #           cov_func_y = {*} ~ covariance_simple(kernel_type, dot, 2)
-            noise = 0.001
+#            noise = .001
+            noise = {(:noise, dot)} ~ gamma_bounded_below(.1, .1, .0005)
             covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
             covmat_y = compute_cov_matrix_vectorized(cov_func_y, noise, ts)
             x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_mean, covmat_x)
@@ -237,6 +153,68 @@ end
         end
     end
 end    
+
+
+function calculate_pairwise_distance(dotmotion_tuples)
+    # each value in dotmotion_tuples is of form ((x1, y1), (x2, y2)) for each dot i to N.
+    pairwise_distances = []
+    for dt in dotmotion_tuples
+        push!(pairwise_distances,
+              [norm(coord2 .- coord1) for (i, coord1) in enumerate(dt) for (j, coord2) in enumerate(dt) if i < j])
+    end
+    return pairwise_distances
+end
+
+function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
+    answer_graph = MetaDiGraph(num_dots)
+    res = 1400
+    answer_scene, as_layout = layoutscene(resolution=(res, res), backgroundcolor=:black)
+    dot_menus = [LMenu(answer_scene, options = ["RandomWalk", "Periodic", "UniformLinear"]) for i in 1:num_dots]
+    for (dot_id, menu) in enumerate(dot_menus)
+        as_layout[dot_id, 1] = vbox!(LText(answer_scene, string("Dot ", dot_id, " Motion Type"), color=:white), menu)
+    end
+    tog_indices = [(dot1, dot2) for dot1 in 1:num_dots for dot2 in 1:num_dots if dot1 != dot2]
+    toggles = [LToggle(answer_scene, buttoncolor=:black, active=false) for ti in tog_indices]
+    toglabels = [LText(answer_scene, lift(x -> x ? string(dot1, " inherits motion of ", dot2) : string(dot1, " inherits motion of ", dot2),
+                                                          toggles[i].active), color=:white) for (i, (dot1, dot2)) in enumerate(tog_indices)]
+    for tog_index in 1:length(tog_indices)
+        as_layout[num_dots+tog_index, 1] = hbox!(toggles[tog_index], toglabels[tog_index])
+    end
+    sliders = [LSlider(answer_scene, range=0:1:100, startvalue=50) for i in 1:2]
+    confidence = as_layout[num_dots+length(tog_indices) + 1, 1] = vbox!(LText(answer_scene, "Confidence Level", color=:white),
+                                                                        sliders[1])
+    biomotion = as_layout[num_dots+length(tog_indices) + 2, 1] = vbox!(LText(answer_scene, "Biomotion Scale", color=:white),
+                                                                       sliders[2])
+    screen = display(answer_scene)
+    stop_anim = false
+    on(events(answer_scene).keyboardbuttons) do button
+        if ispressed(button, Keyboard.enter)
+            stop_anim = true
+        end
+    end
+    for dot in 1:num_dots
+        on(dot_menus[dot].selection) do s
+            set_props!(answer_graph, dot, Dict(:MType=> s))
+        end
+    end
+    for (tswitch, tog_inds) in enumerate(tog_indices)
+        on(toggles[tswitch].active) do gt
+            if gt == true
+                add_edge!(answer_graph, tog_inds[2], tog_inds[1])
+            else
+                rem_edge!(answer_graph, tog_inds[2], tog_inds[1])
+            end
+        end
+    end
+    callback(timer) = (println("times up"))
+    wait(Timer(callback, 20, interval=0))
+    vs = visualize_scenegraph(answer_graph)
+    display(vs)
+    wait(Timer(callback, 5, interval=0))
+    return answer_graph, sliders[1].value, sliders[2].value
+end    
+                      
+    
 
 #start with this just being the simulated data itself. eventually have it be a biophysical implementation of a
 # tectal map
@@ -933,29 +911,19 @@ end
 """Periodic kernel"""
 struct Periodic <: PrimitiveKernel
     amplitude::Float64
-    scale::Float64
+    lengthscale::Float64
     period::Float64
 end
 
-# function eval_cov(node::Periodic, t1, t2)
-#     freq = 2 * pi / node.period
-#     exp((-1/node.scale) * (sin(freq * abs(t1 - t2)))^2)
-# end
-
-# function eval_cov_mat(node::Periodic, ts::Array{Float64})
-#     freq = 2 * pi / node.period
-#     abs_diff = abs.(ts .- ts')
-#     exp.((-1/node.scale) .* (sin.(freq .* abs_diff)).^2)
-# end
 
 function eval_cov(node::Periodic, t1, t2)
     (node.amplitude ^ 2) * exp(
-        (-2/node.scale^2) * sin(pi*abs(t1-t2)/node.period)^2) 
+        (-2/node.lengthscale^2) * sin(pi*abs(t1-t2)/node.period)^2) 
 end
 
 function eval_cov_mat(node::Periodic, ts::Array{Float64})
     abs_diff = abs.(ts .-ts')
-    (node.amplitude ^ 2) .* exp.((-2/node.scale^2) .* sin.(pi*abs_diff./node.period).^2) 
+    (node.amplitude ^ 2) .* exp.((-2/node.lengthscale^2) .* sin.(pi*abs_diff./node.period).^2) 
 end
 
 
@@ -1081,8 +1049,7 @@ function return_dot_distribution(n_dots)
     d_permut = all_dot_permutations(n_dots)
     @dist dot_permutations() = d_permut[categorical([1/length(d_permut) for i in 1:length(d_permut)])]
 end    
-# can't pass a number param here. have to make a generator to generate distributions I think. n is not a parameter.
-# 
+
 
 
 
@@ -1147,8 +1114,8 @@ end
     # end
     # Otherwise, generate parameters for the primitive kernel.
     if kernel_type == Periodic
-        kernel_args = [{(:scale, dot, dim)} ~ uniform_discrete(2, 6),
-                       {(:length, dot, dim)} ~ multinomial([.5, 1, 2]),
+        kernel_args = [{(:amplitude, dot, dim)} ~ uniform_discrete(2, 6),
+                       {(:lengthscale, dot, dim)} ~ multinomial([.5, 1, 2]),
                        {(:period, dot, dim)} ~ multinomial([n for n in -1:.25:1 if n != 0])]
     elseif kernel_type == UniformLinear
         kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(0, 30)]
