@@ -97,6 +97,74 @@ A set of phenomena observed in past literature and in our own experiences with o
 
 
 \begin{algorithm}
+  \DontPrintSemicolon
+  \SetKwInOut{Input}{input}\SetKwInOut{Output}{output}
+  \SetKwFunction{Union}{Union}\SetKwFunction{BERNOULLI}{BERNOULLI}
+  \Input{\BlankLine
+    $\gamma$ : Empty directed graph with $numdots$ nodes
+    \BlankLine
+    $\epsilon$ : A randomly ordered list of all possible edges between nodes, with each edge of form (Parent, Child)}
+  \BlankLine
+  \Begin{
+    \For{$edge \in \epsilon$}{
+         \If{$has\_parent(edge[Child])$}{
+           $add\_edge \leftarrow \BERNOULLI(.1)$}
+         \Else{{$add\_edge \leftarrow \BERNOULLI(.3)$}}
+         \If{$add\_edge$}{
+           $\gamma \leftarrow edge$}
+       }}
+   \Blankline  
+   \Output{\BlankLine
+     $\gamma$ : Directed graph where edges describe motion inheritance relationships}
+\caption{Populate Edges}
+\end{algorithm} 
+
+
+\begin{algorithm}
+  \DontPrintSemicolon
+  \SetKwInOut{Input}{input}\SetKwInOut{Output}{output}
+  \SetKwFunction{Union}{Union}\SetKwFunction{UNIFORM}{UNIFORM}
+  \SetKwFunction{Union}{Union}\SetKwFunction{COVPRIOR}{COVPRIOR}
+  \SetKwFunction{Union}{Union}\SetKwFunction{MVNORMAL}{MVNORMAL}
+    \SetKwFunction{Union}{Union}\SetKwFunction{CATEGORICAL}{CATEGORICAL}
+  \Input{\BlankLine
+    $\gamma$ : A directed graph with nodes $n_{1:num\_dots}$}
+  \BlankLine
+  \Begin{
+    \For{$ n \in \n_{1:num\_dots}$}{
+      $InitialPosition_x \leftarrow \UNIFORM(-5, 5)$\;
+      $InitialPosition_y \leftarrow \UNIFORM(-5, 5)$\;
+      $kernel\_type \leftarrow \CATEGORICAL(UniformLinear, RandomWalk, Periodic);$\;
+      $covmat_x \leftarrow \COVPRIOR(kernel\_type)$\;
+      $covmat_y \leftarrow \COVPRIOR(kernel\_type)$\;
+      $mean\_velocity \leftarrow zeros$\;
+      \If{$has\_parents(n)$}{
+        \For{$p \in parents$}
+        {$mean\_velocity $+=$ p[Velocity]$\;}
+      }
+      $Velocity_x \leftarrow \MVNORMAL(mean\_velocity_x , covmat_x)$\;
+      $Velocity_y \leftarrow \MVNORMAL(mean\_velocity_y , covmat_y)$\;
+      $\gamma[n] \leftarrow Velocity, InitialPosition$}}
+   \Blankline  
+   \Output{\BlankLine
+     $\gamma$ : Directed graph with initial positions and velocities assigned for each node}
+\caption{Assign Positions and Velocities}
+\end{algorithm}
+
+
+
+    
+
+    % If{$has\_parent(edge[Child])$}
+    %   {$add\_edge \leftarrow \BERNOULLI(.1)$}
+    % Else{$add\_edge \leftarrow \BERNOULLI(.3)$}}}
+        
+  
+  
+
+
+
+\begin{algorithm}
 \DontPrintSemicolon
 \KwData{$G=(X,U)$ such that $G^{tc}$ is an order.} \KwResult{$G’=(X,V)$ with $V\subseteq U$ such that $G’^{tc}$ is an interval order.}
 \Begin{
