@@ -88,11 +88,11 @@ A set of phenomena observed in past literature and in our own experiences with o
 \end{equation}
 
 \begin{equation}
-  Observation \; Noise \; Prior: n_i \sim P(n_i)
+  Observation \; Noise \; Prior: \epsillon_i \sim P(\epsillon_i)
 \end{equation}
 
 \begin{equation}
-  Timeseries \; Draw: ts_j \sim P(ts_j | k_j, n_j, ts_i \; if \; edge_{ij} == true)
+  Timeseries \; Draw: ts_j \sim P(ts_j | k_j, \epsillon_j, ts_i \; if \; edge_{ij} == true)
 \end{equation}
 
 
@@ -101,13 +101,13 @@ A set of phenomena observed in past literature and in our own experiences with o
   \SetKwInOut{Input}{input}\SetKwInOut{Output}{output}
   \SetKwFunction{Union}{Union}\SetKwFunction{BERNOULLI}{BERNOULLI}
   \Input{\BlankLine
-    $\gamma$ : Empty directed graph with $numdots$ nodes
+    $\gamma$ : Empty directed graph 
     \BlankLine
-    $\epsilon$ : A randomly ordered list of all possible edges between nodes, with each edge of form (Parent, Child)}
+    $\eta$ : Randomly ordered list of candidate edges, with each edge of form (ParentNode, ChildNode)}
   \BlankLine
   \Begin{
-    \For{$edge \in \epsilon$}{
-         \If{$has\_parent(edge[Child])$}{
+    \For{$edge \in \eta$}{
+         \If{$has\_parents(edge[ChildNode])$}{
            $add\_edge \leftarrow \BERNOULLI(.1)$}
          \Else{{$add\_edge \leftarrow \BERNOULLI(.3)$}}
          \If{$add\_edge$}{
@@ -116,22 +116,54 @@ A set of phenomena observed in past literature and in our own experiences with o
    \Blankline  
    \Output{\BlankLine
      $\gamma$ : Directed graph where edges describe motion inheritance relationships}
-\caption{Populate Edges}
+\caption{PopulateEdges}
 \end{algorithm} 
 
 
+% write as an if statement given a kernel type. if kernel type is X, draw the params.
+% 
+\begin{algorithm}
+  \DontPrintSemicolon
+  \SetKwFunction{Union}{Union}\SetKwFunction{UNIFORMDISCRETE}{UNIFORMDISCRETE}
+  \SetKwFunction{Union}{Union}\SetKwFunction{MULTINOMIAL}{MULTINOMIAL}
+  \Input{\BlankLine
+    $\kappa$ : GP kernel type}
+  \BlankLine
+  \Begin{
+    \If{$\kappa == UniformLinear$}{
+      $cov \leftarrow \UNIFORMDISCRETE()$\;
+      $covfunc(t_i, t_j) \leftarrow cov$}
+    \ElseIf{$\kappa == RandomWalk$}{
+      $\sigma^2 \leftarrow \UNIFORMDISCRETE()$\;
+      \If{$i == j$}{
+        $covfunc(t_i, t_j) \leftarrow \sigma^2$}
+      \Else{$covfunc(t_i, t_j) \leftarrow 0$}}
+    \ElseIf{$\kappa == Periodic$}{
+      $a \leftarrow \UNIFORMDISCRETE()$\;
+      $l \leftarrow \MULTINOMIAL()$\;
+      $p \leftarrow \MULTINOMIAL()$\;
+      $covfunc(t_i, t_j) \leftarrow a^2 * e^{(-2/l^2)(sin(\pi*abs(t_i-t_j)/p)^2)}$}
+    $covmat \leftarrow func\_to\_mat(covfunc)$}
+  \BlankLine
+  \Output{
+    covmat: Covariance matrix used for mvnormal sampling}
+  
+\caption{CovariancePrior}
+\end{algorithm}  
+    
 \begin{algorithm}
   \DontPrintSemicolon
   \SetKwInOut{Input}{input}\SetKwInOut{Output}{output}
   \SetKwFunction{Union}{Union}\SetKwFunction{UNIFORM}{UNIFORM}
   \SetKwFunction{Union}{Union}\SetKwFunction{COVPRIOR}{COVPRIOR}
   \SetKwFunction{Union}{Union}\SetKwFunction{MVNORMAL}{MVNORMAL}
-    \SetKwFunction{Union}{Union}\SetKwFunction{CATEGORICAL}{CATEGORICAL}
+  \SetKwFunction{Union}{Union}\SetKwFunction{CATEGORICAL}{CATEGORICAL}
+  \SetKwFunction{Union}{Union}\SetKwFunction{GAMMA}{GAMMA}
   \Input{\BlankLine
     $\gamma$ : A directed graph with nodes $n_{1:num\_dots}$}
   \BlankLine
   \Begin{
-    \For{$ n \in \n_{1:num\_dots}$}{
+    \For{$n \in n_{1:num\_dots}$}{
       $InitialPosition_x \leftarrow \UNIFORM(-5, 5)$\;
       $InitialPosition_y \leftarrow \UNIFORM(-5, 5)$\;
       $kernel\_type \leftarrow \CATEGORICAL(UniformLinear, RandomWalk, Periodic);$\;
@@ -142,8 +174,9 @@ A set of phenomena observed in past literature and in our own experiences with o
         \For{$p \in parents$}
         {$mean\_velocity $+=$ p[Velocity]$\;}
       }
-      $Velocity_x \leftarrow \MVNORMAL(mean\_velocity_x , covmat_x)$\;
-      $Velocity_y \leftarrow \MVNORMAL(mean\_velocity_y , covmat_y)$\;
+      $\epsilon \leftarrow \GAMMA(.1, .1)$\;
+      $Velocity_x \leftarrow \MVNORMAL(mean\_velocity_x , covmat_x, \epsilon)$\;
+      $Velocity_y \leftarrow \MVNORMAL(mean\_velocity_y , covmat_y, \epsilon)$\;
       $\gamma[n] \leftarrow Velocity, InitialPosition$}}
    \Blankline  
    \Output{\BlankLine
@@ -164,38 +197,6 @@ A set of phenomena observed in past literature and in our own experiences with o
 
 
 
-\begin{algorithm}
-\DontPrintSemicolon
-\KwData{$G=(X,U)$ such that $G^{tc}$ is an order.} \KwResult{$G’=(X,V)$ with $V\subseteq U$ such that $G’^{tc}$ is an interval order.}
-\Begin{
-  $V \longleftarrow U$\;
-  $S \longleftarrow \emptyset$\;
-  \For{$x\in X$}{
-    $NbSuccInS(x) \longleftarrow 0$\;
-    $NbPredInMin(x) \longleftarrow 0$\;
-    $NbPredNotInMin(x) \longleftarrow |ImPred(x)|$\;
-    }
-  \For{$x \in X$}{
-    \If{$NbPredInMin(x) = 0$ {and} $NbPredNotInMin(x) = 0$}{
-      $AppendToMin(x)$}
-    }
-    \nl\While{$S \neq \emptyset$}{\label{InRes1}
-    \nlset{REM} remove $x$ from the list of $T$ of maximal index\;\label{InResR}
-    \lnl{InRes2}\While{$|S \cap  ImSucc(x)| \neq |S|$}{
-\For{$ y \in S-ImSucc(x)$}{
-\{ remove from $V$ all the arcs $zy$ : \}\; \For{$z \in ImPred(y) \cap Min$}{
-remove the arc $zy$ from $V$\;
-$NbSuccInS(z) \longleftarrow NbSuccInS(z) - 1$\;
-move $z$ in $T$ to the list preceding its present list\; \{i.e. If $z \in T[k]$, move $z$ from $T[k]$ to
-$T[k-1]$\}\; }
-$NbPredInMin(y) \longleftarrow 0$\; $NbPredNotInMin(y) \longleftarrow 0$\; $S \longleftarrow S - \{y\}$\; $AppendToMin(y)$\;
-}
-      }
-    $RemoveFromMin(x)$\;
-    }
-  }
-\caption{IntervalRestriction\label{IR}}
-\end{algorithm}  
 
 
 
