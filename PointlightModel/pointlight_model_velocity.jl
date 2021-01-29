@@ -269,7 +269,7 @@ function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         end
     end
     count_matrix = reshape(importance_counts, prod(collect(size(kernel_combos))), size(edge_truthtable)[1])
-    inf_results = [count_matrix, kernel_combos, possible_edges, edge_truthtable]
+    inf_results = [count_matrix, kernel_combos, possible_edges, edge_truthtable, all_samples]
 #    plot_inference_results(inf_results...)
     return inf_results
 end                
@@ -303,7 +303,7 @@ function load_and_show_interesting_samples(num_dots::Int)
         pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
         #    inf_results = bayesian_observer(trace)
         inf_results = animate_inference(trace)
-        analyze_and_plot_inference(inf_results...)
+        analyze_and_plot_inference(inf_results[1:4]...)
         println(string("Difficulty Level:  ", diff_level))
         println("Keep sample?")
         ans = readline()
@@ -401,6 +401,8 @@ function hyperparameter_inference(importance_samples, groundtruth_trace)
     num_dims = 2
     hyper_matrix = Dict()
     gt_hypermatrix = Dict()
+    hyper_matrix_MAP = Dict()
+    gt_hyper_comparison = []
     for n in 1:num_dots
         hyper_matrix[n] = []
         gt_hypermatrix[n] = gt_choicemap[(:noise, n)]
@@ -408,13 +410,53 @@ function hyperparameter_inference(importance_samples, groundtruth_trace)
             hyper_matrix[(n, d)] = Any[]
             gt_hypermatrix[(n, d)] = filter_hyperparams(gt_choicemap, n, d)
             for choices in choicemaps
+                #   push!(hyper_matrix[(n, d)], findmax(countmap(filter_hyperparams(choices, n, d)))[2])
                 push!(hyper_matrix[(n, d)], filter_hyperparams(choices, n, d))
                 push!(hyper_matrix[n], choices[(:noise, n)])
             end
+            hyper_matrix_MAP[(n, d)] = findmax(countmap(hyper_matrix[(n, d)]))[2]
+            hyper_matrix_MAP[n] = findmax(countmap(hyper_matrix[n]))[2]
         end                
     end
-    return [findmax(countmap(h))[2] for h in values(hyper_matrix)], gt_hypermatrix
+    #    return [findmax(countmap(h))[2] for h in values(hyper_matrix)], gt_hypermatrix
+    # WRITE HYPERPARAM COMPARISON HERE.
+    for key in keys(hyper_matrix_MAP)
+        hyperparam = hyper_matrix_MAP[key]
+        gtparam = gt_hypermatrix[key]
+
+        if typeof(key) == Int
+            push!(gt_hyper_comparison, (:noise, hyperparam-gtparam))
+            continue
+        end
+        # filters for the scene graph inference being incorrect
+        if typeof(hyperparam) == typeof(gtparam)
+            if isa(hyperparam, Array)
+                push!(gt_hyper_comparison, (:amplitude, hyperparam[1][2] - gtparam[1][2]))
+                push!(gt_hyper_comparison, (:lengthscale, hyperparam[2][2] - gtparam[2][2]))
+                push!(gt_hyper_comparison, (:period, hyperparam[3][2] - gtparam[3][2]))
+            else
+                if hyperparam[1] == :variance
+                    push!(gt_hyper_comparison, (:variance, hyperparam[2] - gtparam[2]))
+                elseif hyperparam[1] == :covariance
+                    push!(gt_hyper_comparison, (:covariance, hyperparam[2] - gtparam[2]))
+                end
+            end
+        end
+    end
+    return hyper_matrix_MAP, gt_hypermatrix, gt_hyper_comparison
 end
+
+function aggregate_hyperparam_inference(hyperlist)
+    hps = [:amplitude, :period, :lengthscale, :noise, :variance, :covariance]
+    hp_dict = Dict()
+    for hp in hps
+        try
+            hp_dict[hp] = [abs(v[2]) for v in hyperlist if v[1] == hp]
+        catch
+        end
+    end
+    return hp_dict
+end    
 
 
 function run_silent_inftest(num_iters::Int, num_dots::Int)
@@ -424,7 +466,7 @@ function run_silent_inftest(num_iters::Int, num_dots::Int)
         push!(traces, trace)
     end
     all_resamples = evaluate_inference_accuracy(traces)
-    inference_hps, gt_hps = hyperparameter_inference(all_resamples[1], traces[1])
+    inference_hps, gt_hps, gt_hp_comparison = hyperparameter_inference(all_resamples[1], traces[1])
 end    
 
 
@@ -757,12 +799,18 @@ function run_human_experiment()
     @save string(directory, "/visible_parent.bson") visible_parent_results
 end    
 
-# now that all trials for humans are the same, you have to load in the human experiment bson here,
-# do inference on only that 
+
+#Friday. Make a human experiment with 4 or 5 trials. Make sure it launches correctly.
+#score performance here and make a graph that follows the RDD. 
 
 function score_performance(directories::Array{String, 1})
     @load "/Users/nightcrawler2/NeuralGraphics/PointlightModel/final_human_experiment.bson" final_human_experiment
-    inf_results_importance = [animate_inference(trace) for trace in final_human_experiment]
+    inf_results_importance_w_hyper = [animate_inference(trace) for trace in final_human_experiment]
+    inf_results_importance = [inf_res[1:4] for inf_res in inf_results_importance_w_hyper]
+    hyperparams = [hyperparameter_inference(inf_res[end], trace)
+                   for (inf_res, trace) in zip(inf_results_importance_w_hyper, final_human_experiment)]
+    # have to make sure the hyperparam and gt answers are in equivalent form so they can be compared.
+    
     inf_results_enumeration = [bayesian_observer(trace) for trace in final_human_experiment]
     for directory in directories
         biomotion_results = @load string(directory + "/biomotion.bson") biomotion_results
@@ -770,7 +818,6 @@ function score_performance(directories::Array{String, 1})
         repeats_results = @load string(directory, "/repeats.bson") repeats_results
         pw_dist_results = @load string(directory, "/pw_dist.bson") pw_dist_results
         visible_parent_results = @load string(directory, "/visible_parent.bson") visible_parent_results
-        number_of_trials = length(biomotion_results)
         human_truth_match = []
         truth_importance_match = []
         truth_enum_match = []
@@ -785,7 +832,7 @@ function score_performance(directories::Array{String, 1})
             push!(human_importance_match, compare_scenegraphs(answer_graph, top_importance_hits[1]))
             push!(human_enum_match, compare_scenegraphs(answer_graph, top_enumeration_hits[1]))
             push!(truth_enum_match, compare_scenegraphs(get_retval(trace)[1], top_enumeration_hits[1]))
-            push!(truth_importance_match, compare_scenegraphs(get_retval(trace)[1], top_importance_hits[1]))            
+            push!(truth_importance_match, compare_scenegraphs(get_retval(trace)[1], top_importance_hits[1]))
         end
     end
 end
@@ -810,7 +857,7 @@ function dotwrap(num_dots::Int)
     pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
 #    inf_results = bayesian_observer(trace)
     inf_results = animate_inference(trace)
-    analyze_and_plot_inference(inf_results...)
+    analyze_and_plot_inference(inf_results[1:4]...)
     #   return trace, inf_results, pw_distances, number_repeats, visible_parent
     return trace
 end
