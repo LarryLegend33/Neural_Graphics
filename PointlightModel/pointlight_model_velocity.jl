@@ -249,7 +249,7 @@ function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     kernel_combos = collect(Iterators.product(kernel_choices...))
     possible_edges = [(i, j) for i in 1:num_dots for j in 1:num_dots if i != j]
     truth_entry = [[0,1] for i in 1:size(possible_edges)[1]]
-    truth_trace, edge_samples, vel_samples = imp_inference(trace)
+    all_samples, edge_samples, vel_samples = imp_inference(trace)
     joint_edge_vel = [(Tuple(e), Tuple(v)) for (e,v) in zip(edge_samples, vel_samples)]
     
     # filters trees with n_dot or more edges
@@ -301,7 +301,7 @@ function load_and_show_interesting_samples(num_dots::Int)
     filtered_difficulty = []
     for (trace, diff_level) in zip(traces, difficulty)
         pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
-#    inf_results = bayesian_observer(trace)
+        #    inf_results = bayesian_observer(trace)
         inf_results = animate_inference(trace)
         analyze_and_plot_inference(inf_results...)
         println(string("Difficulty Level:  ", diff_level))
@@ -314,7 +314,18 @@ function load_and_show_interesting_samples(num_dots::Int)
     end
     @save string("filtered_example_traces", num_dots, ".bson") filtered_traces
     @save string("filtered_difficulties", num_dots, ".bson") filtered_difficulty
-end    
+end
+
+function make_human_experiment(dotrange::UnitRange{Int64})
+    final_traces = []
+    for num_dots in dotrange
+        @load string("filtered_example_traces", num_dots, ".bson") filtered_traces
+        push!(final_traces, filtered_traces)
+    end
+    final_human_experiment = shuffle(reduce(vcat, final_traces))
+    @save string("final_human_experiment.bson") final_human_experiment
+end
+
 
 function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     num_dots = nv(get_retval(trace)[1])
@@ -352,6 +363,8 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
                 enum_constraints[(:start_y, i)] = trace[(:start_y, i)]
             end
             postprob = 0
+            #extremely tricky to implement this observer for hyperparams. have to get help on this -- have to enumerate 3 dots, all kernel combos, all permutations of the variables, all dimensions.
+            # has to be an easier way. 
             for dp in all_dot_permutations(num_dots)
                 enum_constraints[:order_choice] = dp
                 (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
@@ -368,14 +381,60 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     return plotvals
 end
 
-prod
+function filter_hyperparams(choices, n, d)
+    if choices[(:kernel_type, n)] == RandomWalk
+        param = (:variance, choices[(:variance, n, d)])
+    elseif choices[(:kernel_type, n)] == Periodic
+        param =  [(:amplitude, choices[(:amplitude, n, d)]),
+                  (:lengthscale, choices[(:lengthscale, n, d)]),
+                  (:period, choices[(:period, n, d)])]
+    elseif choices[(:kernel_type, n)] == UniformLinear
+        param = (:covariance, choices[(:covariance, n, d)])
+    end
+    return param
+end    
+    
+function hyperparameter_inference(importance_samples, groundtruth_trace)
+    choicemaps = [get_choices(trace) for trace in importance_samples]
+    gt_choicemap = get_choices(groundtruth_trace)
+    num_dots = nv(get_retval(groundtruth_trace)[1])
+    num_dims = 2
+    hyper_matrix = Dict()
+    gt_hypermatrix = Dict()
+    for n in 1:num_dots
+        hyper_matrix[n] = []
+        gt_hypermatrix[n] = gt_choicemap[(:noise, n)]
+        for d in 1:num_dims
+            hyper_matrix[(n, d)] = Any[]
+            gt_hypermatrix[(n, d)] = filter_hyperparams(gt_choicemap, n, d)
+            for choices in choicemaps
+                push!(hyper_matrix[(n, d)], filter_hyperparams(choices, n, d))
+                push!(hyper_matrix[n], choices[(:noise, n)])
+            end
+        end                
+    end
+    return [findmax(countmap(h))[2] for h in values(hyper_matrix)], gt_hypermatrix
+end
 
 
-function evaluate_inference_accuracy(num_dots::Int64, num_iters::Int64)
+function run_silent_inftest(num_iters::Int, num_dots::Int)
+    traces = []
+    for i in 1:num_iters
+        trace, args = dotsample(num_dots);
+        push!(traces, trace)
+    end
+    all_resamples = evaluate_inference_accuracy(traces)
+    inference_hps, gt_hps = hyperparameter_inference(all_resamples[1], traces[1])
+end    
+
+
+function evaluate_inference_accuracy(traces)
     correct_counter = zeros(4)
-    for ni in 1:num_iters
-        t, args = dotsample(num_dots)
-        t, e, v = imp_inference(t)
+    filtered_resamples_per_trace = []
+    for t in traces
+        num_dots = nv(get_retval(t)[1])
+        resamples, e, v = imp_inference(t)
+        filtered_resamples = []
         motion_tree = get_retval(t)[1]
         mp_edge = findmax(countmap(e))[2]
         mp_velocity = findmax(countmap(v))[2]
@@ -383,8 +442,18 @@ function evaluate_inference_accuracy(num_dots::Int64, num_iters::Int64)
         max_score = findmax(scoremat)[2]
         max_enum_vel = kernels[max_score[1]]
         max_enum_edge = edge_tt[max_score[2]]
-        edge_truth = [convert(Int64, has_edge(motion_tree, d1, d2)) for d1 in 1:num_dots for d2 in 1:num_dots if d1 != d2]
+        edge_truth = [convert(Int64, has_edge(motion_tree, d1, d2))
+                      for d1 in 1:num_dots for d2 in 1:num_dots if d1 != d2]
         velocity_truth = [t[(:kernel_type, d)] for d in 1:num_dots]
+        # keep traces where with the max estimate scene graph 
+        for rs in resamples
+            edges = [rs[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k]
+            vel_types = [rs[(:kernel_type, j)] for j in 1:num_dots]
+            if edges == mp_edge && vel_types == mp_velocity
+                push!(filtered_resamples, rs)
+            end
+        end
+        push!(filtered_resamples_per_trace, filtered_resamples)
         if Tuple(edge_truth) == max_enum_edge
             correct_counter[1] += 1
         end
@@ -398,7 +467,8 @@ function evaluate_inference_accuracy(num_dots::Int64, num_iters::Int64)
             correct_counter[4] += 1
         end
     end
-    barplot(correct_counter / num_iters)
+    barplot(correct_counter / length(traces))
+    return filtered_resamples_per_trace
 end        
 
 
@@ -408,7 +478,7 @@ function analyze_and_plot_inference(score_matrix::Array{Any, 2}, kernels,
     plot_inference_results(graphs_and_probs[2:end]...)
 end    
 
-# SPLIT THIS
+
 function analyze_inference_results(score_matrix::Array{Any, 2}, kernels, possible_edges, edge_truth)
     # TOP 3 GRAPHS
     top_graphs = find_top_n_props(3, score_matrix, [])
@@ -501,9 +571,9 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     trace_choices = get_choices(trace)
     args = get_args(trace)
     observation = Gen.choicemap()
-
+    all_samples = []
     num_dots = nv(get_retval(trace)[1])
-    num_particles = (num_dots ^ 2) * 200
+    num_particles = (num_dots ^ 2) * 500
     num_resamples = 30
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
@@ -517,10 +587,11 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, num_particles)
         push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
         push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
+        push!(all_samples, tr)
 #        s = visualize_scenegraph(get_retval(tr)[1])
  #       display(s)
     end
-    return trace, edge_list, kernel_types
+    return all_samples, edge_list, kernel_types
 end
 
 
@@ -666,11 +737,11 @@ function run_human_experiment()
         pw_dist, num_repeats, visible_parent = render_stim_only(trace, true)
         a_scene, confidence, biomotion = answer_portal(training_trial, directory, num_dots)
     end
-    for trial_n in 1:num_trials
-        num_dots = uniform_discrete(1, 3)
-        trace, args = dotsample(num_dots)
+
+    @load "/Users/nightcrawler2/NeuralGraphics/PointlightModel/final_human_experiment.bson" final_human_experiment
+    for (trial_n, trace) in enumerate(final_human_experiment)
+        num_dots = nv(get_retval(trace)[1])
         pw_dist, num_repeats, visible_parent = render_stim_only(trace, false)
-        @save string(directory, "/trace", trial_n, ".bson") trace
         answer_graph, confidence, biomotion = answer_portal(trial_n, directory, num_dots)
         savegraph(string(directory, "/answers", trial_n, ".mg"), answer_graph)
         push!(biomotion_results, biomotion)
@@ -686,10 +757,13 @@ function run_human_experiment()
     @save string(directory, "/visible_parent.bson") visible_parent_results
 end    
 
-# only problem left is that the relationship has to be specified now. there are 2 possibilities for 2 dots, 6 for 3 (1-2, 2-1, 1-3, 3-1, 2-3, 3-2)
-# experience 
+# now that all trials for humans are the same, you have to load in the human experiment bson here,
+# do inference on only that 
 
 function score_performance(directories::Array{String, 1})
+    @load "/Users/nightcrawler2/NeuralGraphics/PointlightModel/final_human_experiment.bson" final_human_experiment
+    inf_results_importance = [animate_inference(trace) for trace in final_human_experiment]
+    inf_results_enumeration = [bayesian_observer(trace) for trace in final_human_experiment]
     for directory in directories
         biomotion_results = @load string(directory + "/biomotion.bson") biomotion_results
         confidence_results = @load string(directory + "/confidence.bson") confidence_results
@@ -702,14 +776,11 @@ function score_performance(directories::Array{String, 1})
         truth_enum_match = []
         human_importance_match = []
         human_enum_match = []
-        for tr in 1:number_of_trials
-            trace = @load string(directory, "/trace", tr, ".bson") trace
-            inf_results_importance = animate_inference(trace)
-            inf_results_enumeration = bayesian_observer(trace)
+        for (tr, trace)  in enumerate(final_human_experiment)
             answer_graph = loadgraph(string(directory, "/answers", tr, ".mg"), MGFormat())
             # run inference here on the saved traces
-            top_importance_hits = analyze_inference_results(inf_results_importance...)
-            top_enumeration_hits = analyze_inference_results(inf_results_enumeration...)
+            top_importance_hits = analyze_inference_results(inf_results_importance[tr]...)
+            top_enumeration_hits = analyze_inference_results(inf_results_enumeration[tr]...)
             push!(human_truth_match, compare_scenegraphs(answer_graph, get_retval(trace)[1]))
             push!(human_importance_match, compare_scenegraphs(answer_graph, top_importance_hits[1]))
             push!(human_enum_match, compare_scenegraphs(answer_graph, top_enumeration_hits[1]))
@@ -1118,11 +1189,9 @@ end
                        {(:lengthscale, dot, dim)} ~ multinomial([.5, 1, 2]),
                        {(:period, dot, dim)} ~ multinomial([n for n in -1:.25:1 if n != 0])]
     elseif kernel_type == UniformLinear
-        kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(0, 30)]
+        kernel_args = [{(:covariance, dot, dim)} ~ uniform_discrete(0, 30)]
     elseif kernel_type == RandomWalk
-        kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(10, 30)]
-    else
-        kernel_args = [{(:param, dot, dim)} ~ uniform_discrete(0, 1)]
+        kernel_args = [{(:variance, dot, dim)} ~ uniform_discrete(10, 30)]
     end
     return kernel_type(kernel_args...)
 end
