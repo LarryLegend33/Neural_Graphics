@@ -80,18 +80,20 @@ end
     motion_tree = MetaDiGraph(n_dots)
     order_distribution = return_dot_distribution(n_dots)
     perceptual_order = { :order_choice } ~ order_distribution()
+    noise = { :noise } ~ gamma_bounded_below(.1, .1, .0005)
     candidate_edges = [p for p in Iterators.product(perceptual_order, perceptual_order) if p[1] != p[2]]
     motion_tree_updated = {*} ~ populate_edges(motion_tree, candidate_edges)
     dot_list = sort(collect(1:nv(motion_tree_updated)),
                     by=ϕ->(size(inneighbors(motion_tree_updated, ϕ))[1]))
     motion_tree_assigned = {*} ~ assign_positions_and_velocities(motion_tree_updated,
                                                                  dot_list,
-                                                                 ts)
+                                                                 ts,
+                                                                 noise)
     return motion_tree_assigned, dot_list
 end
 
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
-                                              dots::Array{Int64}, ts::Array{Float64})
+                                              dots::Array{Int64}, ts::Array{Float64}, noise::Float64)
     if isempty(dots)
         return motion_tree
     else
@@ -139,8 +141,6 @@ end
             kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
             cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
             cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
-#            noise = .001
-            noise = {(:noise, dot)} ~ gamma_bounded_below(.1, .1, .0005)
             covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
             covmat_y = compute_cov_matrix_vectorized(cov_func_y, noise, ts)
             x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_mean, covmat_x)
@@ -149,7 +149,7 @@ end
             # the kernel-derived covariance matrix.
             set_props!(motion_tree, dot,
                        Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel, :MType=>string(typeof(cov_func_x))))
-            {*} ~ assign_positions_and_velocities(motion_tree, dots[2:end], ts)
+            {*} ~ assign_positions_and_velocities(motion_tree, dots[2:end], ts, noise)
         end
     end
 end    
@@ -326,6 +326,26 @@ function make_human_experiment(dotrange::UnitRange{Int64})
     @save string("final_human_experiment.bson") final_human_experiment
 end
 
+# Params are of form 
+#((dot1x, dot1y), (dot2x, dot2y))
+#((10, 10), (10, 10))
+#((1,2,3,4,5,6), (1,2,3,4,5,6))
+function permutation_to_assignment(kernels, params)
+    pdict = Dict()
+    dot_dim_combos = [(dot, dim) for dot in 1:length(kernels) for dim in 1:2]
+    for (dot, dim)  in dot_dim_combos
+        if kernels[dot] == Periodic
+            pdict[(:amplitude, dot, dim)] = params[dot][1*dim]
+            pdict[(:lengthscale, dot, dim)] = params[dot][2*dim]
+            pdict[(:period, dot, dim)] = params[dot][3*dim]
+        elseif kernels[dot] == RandomWalk
+            pdict[(:variance, dot, dim)] = params[dot][dim]
+        elseif kernels[dot] == UniformLinear
+            pdict[(:covariance, dot, dim)] = params[dot][dim]
+        end
+    end
+    return pdict
+end
 
 function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     num_dots = nv(get_retval(trace)[1])
@@ -355,6 +375,7 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         for kc in kernel_combos
             for (dot, k) in enumerate(kc)
                 enum_constraints[(:kernel_type, dot)] = k
+                println(k)
             end
             for i in 1:num_dots
                 enum_constraints[(:x_vel, i)] = trace[(:x_vel, i)]
@@ -363,16 +384,53 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
                 enum_constraints[(:start_y, i)] = trace[(:start_y, i)]
             end
             postprob = 0
-            #extremely tricky to implement this observer for hyperparams. have to get help on this -- have to enumerate 3 dots, all kernel combos, all permutations of the variables, all dimensions.
-            # has to be an easier way. 
+
+            
+
+            # may have to clear past hyperparams here. there's not only two dims, but multiple dots! have to test all combos.
+            # so for loop on params has to go possibly 6 deep.
+            # e.g. for v_1_x in 20:30 for v_1_y in 20:30 for v_2_x in 20:30 for v_2_y in 20:30. but depth is goverened by num dots. 
+            # probably want to use an iterator.prod and add params for each in an array. then iterate through all combinations.
+            # start with a Dict of ranges for params. then cycle through kernel types and add two Dict entries for each type based on the kernel.
+            #
+            kernel_assignments = [enum_constraints[(:kernel_type, i)] for i in 1:num_dots]
+            collect_params_per_ktype = [Iterators.product([param_dict[ktype]..., param_dict[ktype]...]...) for ktype in kernel_assignments]
+        
+
+            # want the entries in the loop to be of form entry = [(amp, length, per), (amp, length, per), (var), (var)]
+            # then enumerate this list as you cycle through the num_dots and dims.
+            # e.g. (:amplitude, 1, 2) = entry[2].
+            # enumerate([(dot, dim) for i in 1:num_dots for j in 1:num_dims])
+            # param_dict is keyed by kernel. values are list of ranges. 1x3 for periodic, 1x1 for others. 
+            # this is easy for 1d arrays of param possibilities but hard to generalize to periodic which has 3 values. 
+
+            # [all possible per assignments, all_possible_per assignments, tup(all possible var assignments)]
+            # this will work!
+            
+            all_param_permutations = Iterators.product(collect_params_per_ktype...)
+            # this is totally correct. for random random, gives all combinations in form of ((10, 10), (10, 11))
             for dp in all_dot_permutations(num_dots)
                 enum_constraints[:order_choice] = dp
-                (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
+             
 #                (tr, w) = Gen.generate(generate_dotmotion, trace_args, enum_constraints)
             #     # HERE YOU HAVE TO REALLY MAKE SURE THIS IS THE RIGHT CHOICE
+              
+                #cycle through param list here. each entry corresponds to dotix, dotiy
+                # refactor so noise is a global feature, not per dot.
+               
+                for param_permutation in all_param_permutations
+                    param_assignments = permutation_to_assignment(kernel_assignments, param_permutation)
+                    [enum_constraints[p.first] = p.second for p in param_assignments]
+                end
+
+                constraints_no_noise_order = [map_entry for map_entry in get_values_shallow(enum_constraints) if !(typeof(map_entry[1]) == Symbol)]
+                constraints_no_params = [map_entry for map_entry in constraints_no_noise_order if !(map_entry[1][1] in [:amplitude, :variance, :covariance, :period, :lengthscale])]
+                enum_constraints = Gen.choicemap(constraints_no_params...)
+                (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
                 postprob += exp(get_score(new_trace))
             end
             append!(scores, postprob)
+            println("finished one tree")
         end
     end
   #  scores /= sum(scores)
@@ -381,19 +439,28 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     return plotvals
 end
 
-function filter_hyperparams(choices, n, d)
-    if choices[(:kernel_type, n)] == RandomWalk
-        param = (:variance, choices[(:variance, n, d)])
-    elseif choices[(:kernel_type, n)] == Periodic
-        param =  [(:amplitude, choices[(:amplitude, n, d)]),
-                  (:lengthscale, choices[(:lengthscale, n, d)]),
-                  (:period, choices[(:period, n, d)])]
-    elseif choices[(:kernel_type, n)] == UniformLinear
-        param = (:covariance, choices[(:covariance, n, d)])
+function filter_hyperparams(choices, gt_choices, n, d)
+    c_graph = get_retval(choices)[1].graph
+    gt_graph = get_retval(gt_choices)[1].graph
+    if c_graph == gt_graph && all([choices[(:kernel_type, i)] == gt_choices[(:kernel_type, i)] for i in 1:nv(gt_graph)])
+        if choices[(:kernel_type, n)] == RandomWalk
+            param = (:variance, choices[(:variance, n, d)])
+        elseif choices[(:kernel_type, n)] == Periodic
+            param =  [(:amplitude, choices[(:amplitude, n, d)]),
+                      (:lengthscale, choices[(:lengthscale, n, d)]),
+                      (:period, choices[(:period, n, d)])]
+        elseif choices[(:kernel_type, n)] == UniformLinear
+            param = (:covariance, choices[(:covariance, n, d)])
+        end
+    else
+        param = ()
     end
     return param
+        
 end    
-    
+
+
+# only want hyper params for when edge AND kernel inference is correct.     
 function hyperparameter_inference(importance_samples, groundtruth_trace)
     choicemaps = [get_choices(trace) for trace in importance_samples]
     gt_choicemap = get_choices(groundtruth_trace)
@@ -403,33 +470,28 @@ function hyperparameter_inference(importance_samples, groundtruth_trace)
     gt_hypermatrix = Dict()
     hyper_matrix_MAP = Dict()
     gt_hyper_comparison = []
+    gt_hypermatrix[:noise] = gt_choicemap[:noise]
+    hyper_matrix[:noise] = [choices[:noise] for choices in choicemaps]
+    hyper_matrix_MAP[:noise] = findmax(countmap(hyper_matrix[:noise]))[2]                            
     for n in 1:num_dots
-        hyper_matrix[n] = []
-        gt_hypermatrix[n] = gt_choicemap[(:noise, n)]
         for d in 1:num_dims
             hyper_matrix[(n, d)] = Any[]
-            gt_hypermatrix[(n, d)] = filter_hyperparams(gt_choicemap, n, d)
+            gt_hypermatrix[(n, d)] = filter_hyperparams(gt_choicemap, gt_choicemap, n, d)
             for choices in choicemaps
-                #   push!(hyper_matrix[(n, d)], findmax(countmap(filter_hyperparams(choices, n, d)))[2])
-                push!(hyper_matrix[(n, d)], filter_hyperparams(choices, n, d))
-                push!(hyper_matrix[n], choices[(:noise, n)])
+                push!(hyper_matrix[(n, d)], filter_hyperparams(choices, gt_choicemap, n, d))
             end
-            hyper_matrix_MAP[(n, d)] = findmax(countmap(hyper_matrix[(n, d)]))[2]
-            hyper_matrix_MAP[n] = findmax(countmap(hyper_matrix[n]))[2]
+            hyper_matrix_MAP[(n, d)] = findmax(countmap(filter(x -> x != (), hyper_matrix[(n, d)])))[2]
         end                
     end
-    #    return [findmax(countmap(h))[2] for h in values(hyper_matrix)], gt_hypermatrix
-    # WRITE HYPERPARAM COMPARISON HERE.
+                            
     for key in keys(hyper_matrix_MAP)
         hyperparam = hyper_matrix_MAP[key]
         gtparam = gt_hypermatrix[key]
-
-        if typeof(key) == Int
+        if key == :noise
             push!(gt_hyper_comparison, (:noise, hyperparam-gtparam))
-            continue
-        end
-        # filters for the scene graph inference being incorrect
-        if typeof(hyperparam) == typeof(gtparam)
+        else
+        # filters for the scene graph inference being incorrect...no this doesn't work. 
+
             if isa(hyperparam, Array)
                 push!(gt_hyper_comparison, (:amplitude, hyperparam[1][2] - gtparam[1][2]))
                 push!(gt_hyper_comparison, (:lengthscale, hyperparam[2][2] - gtparam[2][2]))
@@ -1224,21 +1286,39 @@ end
 # if the low bound of sinusoidal is 1. its much smoother than random. dropping the subsampling
 # unsmoothens periodic, but unsmoothens random to the point where you can clearly tell just by smoothness. 
 
+# @gen function covariance_prior(kernel_type, dot, dim)
+#     # Choose a type of kernel
+#     # If this is a composite node, recursively generate subtrees. For now, too complex. 
+#     # if in(kernel_type, [Plus, Times])
+#     #     return kernel_type({ :left } ~ covariance_prior(), { :right } ~ covariance_prior())
+#     # end
+#     # Otherwise, generate parameters for the primitive kernel.
+#     if kernel_type == Periodic
+#         kernel_args = [{(:amplitude, dot, dim)} ~ uniform_discrete(2, 6),
+#                        {(:lengthscale, dot, dim)} ~ multinomial([.5, 1, 2]),
+#                        {(:period, dot, dim)} ~ multinomial([n for n in -1:.25:1 if n != 0])]
+#     elseif kernel_type == UniformLinear
+#         kernel_args = [{(:covariance, dot, dim)} ~ uniform_discrete(0, 30)]
+#     elseif kernel_type == RandomWalk
+#         kernel_args = [{(:variance, dot, dim)} ~ uniform_discrete(10, 30)]
+#     end
+#     return kernel_type(kernel_args...)
+# end
+
+
+param_dict = Dict(Periodic => [[2, 4, 6], [.5, 1, 2], .2:.2:1],
+                  RandomWalk => [1,45],
+                  UniformLinear => [1,45])
+
 @gen function covariance_prior(kernel_type, dot, dim)
-    # Choose a type of kernel
-    # If this is a composite node, recursively generate subtrees. For now, too complex. 
-    # if in(kernel_type, [Plus, Times])
-    #     return kernel_type({ :left } ~ covariance_prior(), { :right } ~ covariance_prior())
-    # end
-    # Otherwise, generate parameters for the primitive kernel.
     if kernel_type == Periodic
-        kernel_args = [{(:amplitude, dot, dim)} ~ uniform_discrete(2, 6),
-                       {(:lengthscale, dot, dim)} ~ multinomial([.5, 1, 2]),
-                       {(:period, dot, dim)} ~ multinomial([n for n in -1:.25:1 if n != 0])]
+        kernel_args = [{(:amplitude, dot, dim)} ~ multinomial(param_dict[Periodic][1]),
+                       {(:lengthscale, dot, dim)} ~ multinomial(param_dict[Periodic][2]),
+                       {(:period, dot, dim)} ~ multinomial(param_dict[Periodic][3])]
     elseif kernel_type == UniformLinear
-        kernel_args = [{(:covariance, dot, dim)} ~ uniform_discrete(0, 30)]
+        kernel_args = [{(:covariance, dot, dim)} ~ uniform_discrete(param_dict[RandomWalk]...)]
     elseif kernel_type == RandomWalk
-        kernel_args = [{(:variance, dot, dim)} ~ uniform_discrete(10, 30)]
+        kernel_args = [{(:variance, dot, dim)} ~ uniform_discrete(param_dict[UniformLinear]...)]
     end
     return kernel_type(kernel_args...)
 end
@@ -1248,7 +1328,6 @@ end
 @dist multinomial(possibilities) = possibilities[uniform_discrete(1, length(possibilities))]
 
 macro datatype(str); :($(Symbol(str))); end
-
 
 
 
