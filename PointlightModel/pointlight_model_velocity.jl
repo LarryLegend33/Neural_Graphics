@@ -80,7 +80,8 @@ end
     motion_tree = MetaDiGraph(n_dots)
     order_distribution = return_dot_distribution(n_dots)
     perceptual_order = { :order_choice } ~ order_distribution()
-    noise = { :noise } ~ gamma_bounded_below(.1, .1, .0005)
+    ###    noise = { :noise } ~ gamma_bounded_below(.1, .1, .0005)
+    noise = { :noise } ~ multinomial(param_dict[:noise])
     candidate_edges = [p for p in Iterators.product(perceptual_order, perceptual_order) if p[1] != p[2]]
     motion_tree_updated = {*} ~ populate_edges(motion_tree, candidate_edges)
     dot_list = sort(collect(1:nv(motion_tree_updated)),
@@ -301,7 +302,7 @@ function load_and_show_interesting_samples(num_dots::Int)
     filtered_difficulty = []
     for (trace, diff_level) in zip(traces, difficulty)
         pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
-        #    inf_results = bayesian_observer(trace)
+        #    inf_results, top_bayes_graph = bayesian_observer(trace)
         inf_results = animate_inference(trace)
         analyze_and_plot_inference(inf_results[1:4]...)
         println(string("Difficulty Level:  ", diff_level))
@@ -329,15 +330,17 @@ end
 # Params are of form 
 #((dot1x, dot1y), (dot2x, dot2y))
 #((10, 10), (10, 10))
-#((1,2,3,4,5,6), (1,2,3,4,5,6))
+#((amp1x,l1x,period1x,amp1y,l1y,period1y), (1,2,3,4,5,6))
+
+
 function permutation_to_assignment(kernels, params)
     pdict = Dict()
     dot_dim_combos = [(dot, dim) for dot in 1:length(kernels) for dim in 1:2]
     for (dot, dim)  in dot_dim_combos
         if kernels[dot] == Periodic
-            pdict[(:amplitude, dot, dim)] = params[dot][1*dim]
-            pdict[(:lengthscale, dot, dim)] = params[dot][2*dim]
-            pdict[(:period, dot, dim)] = params[dot][3*dim]
+            pdict[(:amplitude, dot, dim)] = params[dot][dim^2]
+            pdict[(:lengthscale, dot, dim)] = params[dot][1+dim^2]
+            pdict[(:period, dot, dim)] = params[dot][2+dim^2]
         elseif kernels[dot] == RandomWalk
             pdict[(:variance, dot, dim)] = params[dot][dim]
         elseif kernels[dot] == UniformLinear
@@ -362,6 +365,8 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     trace_args = get_args(trace)
     trace_choices = get_choices(trace)
     trace_retval = get_retval(trace)
+    top_score = -Inf
+    top_trace = trace
     scores = []
     for eg in edge_truthtable
         enum_constraints = Gen.choicemap()
@@ -372,6 +377,7 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
                 enum_constraints[(:edge, possible_edges[eg_id][1], possible_edges[eg_id][2])] = false
             end
         end
+
         for kc in kernel_combos
             for (dot, k) in enumerate(kc)
                 enum_constraints[(:kernel_type, dot)] = k
@@ -383,60 +389,70 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
                 enum_constraints[(:start_x, i)] = trace[(:start_x, i)]
                 enum_constraints[(:start_y, i)] = trace[(:start_y, i)]
             end
-            postprob = 0
-
-            
-
-            # may have to clear past hyperparams here. there's not only two dims, but multiple dots! have to test all combos.
-            # so for loop on params has to go possibly 6 deep.
-            # e.g. for v_1_x in 20:30 for v_1_y in 20:30 for v_2_x in 20:30 for v_2_y in 20:30. but depth is goverened by num dots. 
-            # probably want to use an iterator.prod and add params for each in an array. then iterate through all combinations.
-            # start with a Dict of ranges for params. then cycle through kernel types and add two Dict entries for each type based on the kernel.
-            #
+            # clears order from the original trace
+            constraints_no_noise_order = [map_entry for map_entry in get_values_shallow(enum_constraints) if !(typeof(map_entry[1]) == Symbol)]
+            constraints_no_params = [map_entry for map_entry in constraints_no_noise_order if !(map_entry[1][1] in [:amplitude, :variance, :covariance, :period, :lengthscale])]
+            enum_constraints = Gen.choicemap(constraints_no_params...)
             kernel_assignments = [enum_constraints[(:kernel_type, i)] for i in 1:num_dots]
             collect_params_per_ktype = [Iterators.product([param_dict[ktype]..., param_dict[ktype]...]...) for ktype in kernel_assignments]
-        
-
-            # want the entries in the loop to be of form entry = [(amp, length, per), (amp, length, per), (var), (var)]
-            # then enumerate this list as you cycle through the num_dots and dims.
-            # e.g. (:amplitude, 1, 2) = entry[2].
-            # enumerate([(dot, dim) for i in 1:num_dots for j in 1:num_dims])
-            # param_dict is keyed by kernel. values are list of ranges. 1x3 for periodic, 1x1 for others. 
-            # this is easy for 1d arrays of param possibilities but hard to generalize to periodic which has 3 values. 
-
-            # [all possible per assignments, all_possible_per assignments, tup(all possible var assignments)]
-            # this will work!
-            
             all_param_permutations = Iterators.product(collect_params_per_ktype...)
             # this is totally correct. for random random, gives all combinations in form of ((10, 10), (10, 11))
+            sum_order_scores = 0
             for dp in all_dot_permutations(num_dots)
                 enum_constraints[:order_choice] = dp
-             
+                sum_order_scores += .001
+                
 #                (tr, w) = Gen.generate(generate_dotmotion, trace_args, enum_constraints)
             #     # HERE YOU HAVE TO REALLY MAKE SURE THIS IS THE RIGHT CHOICE
-              
-                #cycle through param list here. each entry corresponds to dotix, dotiy
-                # refactor so noise is a global feature, not per dot.
-               
-                for param_permutation in all_param_permutations
-                    param_assignments = permutation_to_assignment(kernel_assignments, param_permutation)
-                    [enum_constraints[p.first] = p.second for p in param_assignments]
-                end
 
-                constraints_no_noise_order = [map_entry for map_entry in get_values_shallow(enum_constraints) if !(typeof(map_entry[1]) == Symbol)]
-                constraints_no_params = [map_entry for map_entry in constraints_no_noise_order if !(map_entry[1][1] in [:amplitude, :variance, :covariance, :period, :lengthscale])]
-                enum_constraints = Gen.choicemap(constraints_no_params...)
-                (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
-                postprob += exp(get_score(new_trace))
+                # keep scoring here for scene graphs.
+
+                # probably the main problem is the presence of the hyperparams .
+             #   (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
+#                exp_score = exp(get_score(new_trace))
+                # somehow the trace, when you give it a particular kernel, adjusts the hyperparameters in the trace
+                # i.e. without directly specifying it, the trace ends up with variance elements for a RandomWalk kenrel
+                # even if the original trace is periodic. 
+
+                # is this actually giving the max likely estimate under the constraints? seems like it might be.
+                # don't understand how its changing the param set when you change the kernel set. 
+
+                #                sum_order_scores += exp_score
+             #   sum_order_scores += .0001
+
+                # HERE TOP SCORE IS INEVITABLY A PERIODIC DOT. CANT TELL WHY. 
+#                (tr, w) = Gen.generate(generate_dotmotion, trace_args, enum_constraints)
+
+                #    (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
+                #     pscore = exp(get_score(new_trace))
+ #               sum_order_scores += exp(w)
+                for noise in param_dict[:noise]
+                    enum_constraints[:noise] = noise
+                    for param_permutation in all_param_permutations
+                        param_assignments = permutation_to_assignment(kernel_assignments, param_permutation)
+                        for p in param_assignments
+                            enum_constraints[p.first] = p.second
+                        end
+                        (tr, w) = Gen.generate(generate_dotmotion, trace_args, enum_constraints)
+                    #    (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
+    
+                      #  sum_order_scores += pscore
+                        if w > top_score
+                            top_trace = tr
+                            top_score = w
+                            println("top score")
+                            println(top_score)
+                        end
+                     end
+                end
             end
-            append!(scores, postprob)
-            println("finished one tree")
+            append!(scores, sum_order_scores)
         end
     end
   #  scores /= sum(scores)
     score_matrix = reshape(scores, prod(collect(size(kernel_combos))), size(edge_truthtable)[1])
     plotvals = [score_matrix, kernel_combos, possible_edges, edge_truthtable]
-    return plotvals
+    return plotvals, top_trace
 end
 
 function filter_hyperparams(choices, gt_choices, n, d)
@@ -542,7 +558,7 @@ function evaluate_inference_accuracy(traces)
         motion_tree = get_retval(t)[1]
         mp_edge = findmax(countmap(e))[2]
         mp_velocity = findmax(countmap(v))[2]
-        scoremat, kernels, p_edges, edge_tt = bayesian_observer(t)
+        (scoremat, kernels, p_edges, edge_tt), top_bayes_trace = bayesian_observer(t)
         max_score = findmax(scoremat)[2]
         max_enum_vel = kernels[max_score[1]]
         max_enum_edge = edge_tt[max_score[2]]
@@ -677,7 +693,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     observation = Gen.choicemap()
     all_samples = []
     num_dots = nv(get_retval(trace)[1])
-    num_particles = (num_dots ^ 2) * 500
+    num_particles = (num_dots ^ 2) * 100
     num_resamples = 30
     for i in 1:num_dots
         observation[(:x_vel, i)] = trace[(:x_vel, i)]
@@ -786,11 +802,11 @@ function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64})
     for v in 1:nv(motion_tree)
         mtype = props(motion_tree, v)[:MType]
         if mtype == "UniformLinear"
-            nodecolor = :cyan
+            nodecolor = :lightgreen
         elseif mtype == "RandomWalk"
-            nodecolor = :red
+            nodecolor = :orange
         elseif mtype == "Periodic"
-            nodecolor = :purple
+            nodecolor = :skyblue
         elseif mtype == "AccelLinear"
             nodecolor = :pink
         end
@@ -889,7 +905,7 @@ function score_performance(directories::Array{String, 1})
             answer_graph = loadgraph(string(directory, "/answers", tr, ".mg"), MGFormat())
             # run inference here on the saved traces
             top_importance_hits = analyze_inference_results(inf_results_importance[tr]...)
-            top_enumeration_hits = analyze_inference_results(inf_results_enumeration[tr]...)
+            top_enumeration_hits = analyze_inference_results(inf_results_enumeration[tr][1]...)
             push!(human_truth_match, compare_scenegraphs(answer_graph, get_retval(trace)[1]))
             push!(human_importance_match, compare_scenegraphs(answer_graph, top_importance_hits[1]))
             push!(human_enum_match, compare_scenegraphs(answer_graph, top_enumeration_hits[1]))
@@ -917,11 +933,12 @@ end
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
     pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
-#    inf_results = bayesian_observer(trace)
-    inf_results = animate_inference(trace)
-    analyze_and_plot_inference(inf_results[1:4]...)
+    inf_results, top_bayes_graph = bayesian_observer(trace)
+#    inf_results = animate_inference(trace)
+ #   analyze_and_plot_inference(inf_results[1:4]...)
+    analyze_and_plot_inference(inf_results...)
     #   return trace, inf_results, pw_distances, number_repeats, visible_parent
-    return trace
+    return trace, inf_results, top_bayes_graph
 end
 
 function find_top_n_props(n::Int,
@@ -1306,9 +1323,17 @@ end
 # end
 
 
-param_dict = Dict(Periodic => [[2, 4, 6], [.5, 1, 2], .2:.2:1],
-                  RandomWalk => [1,45],
-                  UniformLinear => [1,45])
+# param_dict = Dict(Periodic => [[2, 4, 6], [.5, 1, 2], .2:.2:1],
+#                   RandomWalk => [collect(1:45)],
+#                   UniformLinear => [collect(1:45)])
+
+param_dict = Dict(Periodic => [[3, 6], [.5, 2], .1:.4:.9],
+                  RandomWalk => [collect(20:2:44)],
+                  UniformLinear => [collect(0:3:33)],
+                  :noise => [.0001, .0005, .001])
+
+
+
 
 @gen function covariance_prior(kernel_type, dot, dim)
     if kernel_type == Periodic
@@ -1316,9 +1341,9 @@ param_dict = Dict(Periodic => [[2, 4, 6], [.5, 1, 2], .2:.2:1],
                        {(:lengthscale, dot, dim)} ~ multinomial(param_dict[Periodic][2]),
                        {(:period, dot, dim)} ~ multinomial(param_dict[Periodic][3])]
     elseif kernel_type == UniformLinear
-        kernel_args = [{(:covariance, dot, dim)} ~ uniform_discrete(param_dict[RandomWalk]...)]
+        kernel_args = [{(:covariance, dot, dim)} ~ multinomial(param_dict[RandomWalk][1])]
     elseif kernel_type == RandomWalk
-        kernel_args = [{(:variance, dot, dim)} ~ uniform_discrete(param_dict[UniformLinear]...)]
+        kernel_args = [{(:variance, dot, dim)} ~ multinomial(param_dict[UniformLinear][1])]
     end
     return kernel_type(kernel_args...)
 end
