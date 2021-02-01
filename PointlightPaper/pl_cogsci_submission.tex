@@ -1,0 +1,219 @@
+
+\documentclass[10pt,letterpaper]{article}
+
+\usepackage{cogsci}
+
+%\cogscifinalcopy % Uncomment this line for the final submission 
+
+
+\usepackage{pslatex}
+\usepackage{apacite}
+\usepackage{float} 
+
+%\usepackage[none]{hyphenat} % Sometimes it can be useful to turn off
+%hyphenation for purposes such as spell checking of the resulting
+%PDF.  Uncomment this block to turn off hyphenation.
+
+
+%\setlength\titlebox{4.5cm}
+% You can expand the titlebox if you need extra space
+% to show all the authors. Please do not make the titlebox
+% smaller than 4.5cm (the original size).
+%%If you do, we reserve the right to require you to change it back in
+%%the camera-ready version, which could interfere with the timely
+%%appearance of your paper in the Proceedings.
+
+
+
+\title{A Gaussian-Process Based Model for Perceiving Structure in Motion}
+ 
+\author{{\large \bf Andrew D Bolton (abolton@Mit.Edu)} \\
+  Department of Psychology, 1202 W. Johnson Street \\
+  Madison, WI 53706 USA
+  \AND {\large \bf Sharon J.~Derry (SDJ@Macc.Wisc.Edu)} \\
+  Department of Educational Psychology, 1025 W. Johnson Street \\
+  Madison, WI 53706 USA}
+
+
+\begin{document}
+
+\maketitle
+
+
+\begin{abstract}
+
+  Changes in the intensity, qualities, or position of a stimulus over time can significantly affect how humans interpret its meaning. One example of this comes from Gunnar Johansson's work on point light stimuli, which revealed that ambiguous arrangements of only a few stationary dots can induce striking perceptions of unified objects when set in motion. Here, we seek to further elucidate how perceptual meaning arises from the integration of common motion cues observed both in physics and everyday life. Specifically, using the probabilistic programming system Gen, we have created a model that stochastically composes dynamic dot scenes. This Gaussian Process based model assigns a primitive motion type to each dot (Random Walk, Periodic, or Uniform Linear), and generates a directed scene graph that describes inheritance of motion from one dot to another. In this way, more complex motion is formulated via groupings of dots that share common motion features and suggest interdependent objects. We posit that the model we have constructed may mirror the cognitive processes involved in dot motion perception. To this end, we developed an automated task where dot patterns generated from our model were shown to human subjects. It was the job of our subjects to infer the motion type assigned to each dot and decide which dots belong to which groups (i.e. infer the scene graph). Human performance was compared to an ideal bayesian observer and importance resampling posteriors that are constrained on only the observation of position and motion of the dots. Overall, we propose that the Gaussian Process abstraction we have implemented enables accurate and explicit reasoning about dot motion scenes, providing a framework for explaining percepts that emerge from random dot patterns.
+
+\textbf{Keywords:}
+motion perception; point light; inverse graphics; Gaussian process  
+\end{abstract}
+
+\section{Introduction}
+
+Physicists studying motion (e.g. Brown, Hooke) and humans in their colloquial language (``waving'', ``bouncing'', ``roving'', ``meandering'', ``speeding up'', ``slowing down'', ``staying steady'') appear to be able to distinguish distinct types of motion in the physical world. CITE PAPER FROM GERSHMAN INTRO ABOUT PRIMACY OF MOTION. 
+
+However, no studies have posited the generative process that mediates our ability to categorize motion, nor whether humans can consistently reason about complex motion trajectories in terms of simpler fundamental types. As an example of this, consider a sailor's complex trajectory while walking across a moving sailboat; his or her motion is composed of the boat's forward translation, their linear walking path, the random fluctuations of the wind, and the periodic rhythm of waves. Can human observers consistently decompose a scene in this way? (If this is a good example, will make a figure illustrating the decomposition of these motion types). MAKE THIS DRAWING. 
+
+A sparse set of white dots moving on a black background can create percepts of \emph{biological motion} (e.g. humans walking or dancing, fish swimming) \cite{Johansson_1973}. No studies have addressed how the explicit combination of primitive forms of motion can create biological motion in dot scenes.  
+
+Dots that share common vectors of motion lead to perceptual grouping (i.e. ``Theory of Vector Analysis'') \cite{Johansson_1973}. In this way, common motion of a set of dots relative to its background allows the recognition of unified objects. However, it is unknown whether this method of grouping applies to all motion types or whether there are special cases where objects that share motion vectors are not perceived as groups. \label{common_motion_phen}. Our initial evidence indicates that shared periodic motion is a stronger cue for grouping than the other two types, and that dot pairs moving with uniform linear velocity yield ambiguous grouping. Moreover, proximity of dots to each other during the stimulus is a clear grouping cue. 
+
+\section{Generating Pointlight Stimuli with a GP-based generative model}
+
+The entire content of a paper (including figures, references, and anything else) can be no longer than six pages in the \textbf{initial submission}. In the \textbf{final submission}, the text of the paper, including an author line, must fit on six pages. Up to one additional page can be used for acknowledgements and references.
+
+The text of the paper should be formatted in two columns with an
+overall width of 7 inches (17.8 cm) and length of 9.25 inches (23.5
+cm), with 0.25 inches between the columns. Leave two line spaces
+between the last author listed and the text of the paper; the text of
+the paper (starting with the abstract) should begin no less than 2.75 inches below the top of the
+page. The left margin should be 0.75 inches and the top margin should
+be 1 inch.  \textbf{The right and bottom margins will depend on
+  whether you use U.S. letter or A4 paper, so you must be sure to
+  measure the width of the printed text.} Use 10~point Times Roman
+with 12~point vertical spacing, unless otherwise specified.
+
+The title should be in 14~point bold font, centered. The title should
+be formatted with initial caps (the first letter of content words
+capitalized and the rest lower case). In the initial submission, the
+phrase ``Anonymous CogSci submission'' should appear below the title,
+centered, in 11~point bold font.  In the final submission, each
+author's name should appear on a separate line, 11~point bold, and
+centered, with the author's email address in parentheses. Under each
+author's name list the author's affiliation and postal address in
+ordinary 10~point type.
+
+Indent the first line of each paragraph by 1/8~inch (except for the
+first paragraph of a new section). Do not add extra vertical space
+between paragraphs.
+
+
+\section{First Level Headings}
+
+First level headings should be in 12~point, initial caps, bold and
+centered. Leave one line space above the heading and 1/4~line space
+below the heading.
+
+
+\subsection{Second Level Headings}
+
+Second level headings should be 11~point, initial caps, bold, and
+flush left. Leave one line space above the heading and 1/4~line
+space below the heading.
+
+
+\subsubsection{Third Level Headings}
+
+Third level headings should be 10~point, initial caps, bold, and flush
+left. Leave one line space above the heading, but no space after the
+heading.
+
+
+\section{Formalities, Footnotes, and Floats}
+
+Use standard APA citation format. Citations within the text should
+include the author's last name and year. If the authors' names are
+included in the sentence, place only the year in parentheses, as in
+\citeA{NewellSimon1972a}, but otherwise place the entire reference in
+parentheses with the authors and year separated by a comma
+\cite{NewellSimon1972a}. List multiple references alphabetically and
+separate them by semicolons
+\cite{ChalnickBillman1988a,NewellSimon1972a}. Use the
+``et~al.'' construction only after listing all the authors to a
+publication in an earlier reference and for citations with four or
+more authors.
+
+
+\subsection{Footnotes}
+
+Indicate footnotes with a number\footnote{Sample of the first
+footnote.} in the text. Place the footnotes in 9~point font at the
+bottom of the column on which they appear. Precede the footnote block
+with a horizontal rule.\footnote{Sample of the second footnote.}
+
+
+\subsection{Tables}
+
+Number tables consecutively. Place the table number and title (in
+10~point) above the table with one line space above the caption and
+one line space below it, as in Table~\ref{sample-table}. You may float
+tables to the top or bottom of a column, and you may set wide tables across
+both columns.
+
+\begin{table}[H]
+\begin{center} 
+\caption{Sample table title.} 
+\label{sample-table} 
+\vskip 0.12in
+\begin{tabular}{ll} 
+\hline
+Error type    &  Example \\
+\hline
+Take smaller        &   63 - 44 = 21 \\
+Always borrow~~~~   &   96 - 42 = 34 \\
+0 - N = N           &   70 - 47 = 37 \\
+0 - N = 0           &   70 - 47 = 30 \\
+\hline
+\end{tabular} 
+\end{center} 
+\end{table}
+
+
+\subsection{Figures}
+
+All artwork must be very dark for purposes of reproduction and should
+not be hand drawn. Number figures sequentially, placing the figure
+number and caption, in 10~point, after the figure with one line space
+above the caption and one line space below it, as in
+Figure~\ref{sample-figure}. If necessary, leave extra white space at
+the bottom of the page to avoid splitting the figure and figure
+caption. You may float figures to the top or bottom of a column, and
+you may set wide figures across both columns.
+
+\begin{figure}[H]
+\begin{center}
+\fbox{CoGNiTiVe ScIeNcE}
+\end{center}
+\caption{This is a figure.} 
+\label{sample-figure}
+\end{figure}
+
+
+\section{Acknowledgments}
+
+In the \textbf{initial submission}, please \textbf{do not include
+  acknowledgements}, to preserve anonymity.  In the \textbf{final submission},
+place acknowledgments (including funding information) in a section \textbf{at
+the end of the paper}.
+
+
+\section{References Instructions}
+
+Follow the APA Publication Manual for citation format, both within the
+text and in the reference list, with the following exceptions: (a) do
+not cite the page numbers of any book, including chapters in edited
+volumes; (b) use the same format for unpublished references as for
+published ones. Alphabetize references by the surnames of the authors,
+with single author entries preceding multiple author entries. Order
+references by the same authors by the year of publication, with the
+earliest first.
+
+Use a first level section heading, ``{\bf References}'', as shown
+below. Use a hanging indent style, with the first line of the
+reference flush against the left margin and subsequent lines indented
+by 1/8~inch. Below are example references for a conference paper, book
+chapter, journal article, dissertation, book, technical report, and
+edited volume, respectively.
+
+\nocite{Lewis1978a}
+
+
+\bibliographystyle{apacite}
+
+\setlength{\bibleftmargin}{.125in}
+\setlength{\bibindent}{-\bibleftmargin}
+
+\bibliography{pl_cogsci.bib}
+
+
+\end{document}

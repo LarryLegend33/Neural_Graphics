@@ -24,29 +24,52 @@
 
 \begin{abstract}
 
-  Hello and thanks for participating! The test you are about to take examines the human ability to distinguish fundamental types of motion described in physics and everyday life. The task also addresses whether humans can explicitly combine simple motion types into more complex percepts. This project is largely motivated by the work of Gunnar Johansson, who showed that only a few white dots in motion on a black background can induce instantaneous perceptions of complex human activities like walking, dancing, and exercising. Our project seeks to examine the underpinnings of how this type of `biomotion` is generated and perceived. 
+  Hello and thanks for participating! The test you are about to take examines our ability to distinguish fundamental types of motion described in physics and everyday life. The task also addresses whether humans can explicitly combine simple motion types into more complex percepts. This project is largely motivated by the work of Gunnar Johansson, who showed that only a few white dots in motion on a black background can induce instantaneous perceptions of complex human activities like walking, dancing, and exercising. Our project seeks to examine how this type of biological motion (i.e. `biomotion`) is generated and perceived. Specifically, we study dot motion patterns using ``scene graphs'', which describe the motion type of each dot and how each dot influences all of its neighboring dots. 
 
-  As a subject, you will be presented 30 patterns of moving white dots. Your first job is to distinguish the motion type of each dot in the scene (Periodic, Brownian, Uniform Linear, Accelerating Linear).
-
-\begin{enumerate}
-  \item Periodic motion means that the same pattern of motion repeats multiple times during the stimulus.
-  \item Brownian motion implies pure randomness -- the dot will move with no particular pattern in random directions as the stimulus unfolds.
-  \item Uniform Linear motion means the dot is moving in a straight line at a constant speed.
-  \item Accelerating Linear motion implies that the dot is also moving in a straight line, but speeding up. 
-\end{enumerate}
-
-  Next, on some trials, a subset of dots in the scene, in addition to its own motion, will have inherited the motion of another dot. It is your job to decide which dots have inherited the motion of which other dots. Dots that influence other dots can be thought of as ``parents'' and dots that receive influence from other dots are ``children'' in a scene graph.
+   As a subject, you will be presented a training phase followed by a test phase. During the training phase, the subject will be able to see the scene graph that generated the dot stimulus they are observing. The test phase consists of 30 moving dot stimuli; the job of the subject is to identify the motion type of each dot in the scene and pinpoint which dots belong to ``groups'', which share components of motion. 
 
 \end{abstract}
+
+\section{Identifying Motion Types}
+
+  When observing stimuli in this task, you must distinguish the motion type of each dot in the scene (Periodic, Random Walk, Uniform Linear, Accelerating Linear). During the training phase of the task, the correct answer to one-dot patterns is shown using single color coded circles (shown below motion type descriptions). In later stages of training, these colored circles will be connected to construct scene graphs that represent the motion types and inheritance relationships in the moving dot scene. 
+
+\begin{enumerate}
+  \item \emph{Periodic} motion means that the same pattern of motion repeats multiple times during the stimulus.
+
+  \includegraphics[width=0.1\textwidth]{PeriodicDot}
+  \item Brownian motion is also known as a \emph{Random Walk}. Random walking dots will move with no particular pattern in random directions as the stimulus unfolds.
+
+  \includegraphics[width=0.1\textwidth]{RandomDot}
+  \item \emph{Uniform Linear} motion means the dot is moving in a straight line at a constant speed.
+
+  \includegraphics[width=0.1\textwidth]{UniformDot}
+  \item \emph{Accelerating Linear} motion implies that the dot is also moving in a straight line, but speeding up.
+
+  \includegraphics[width=0.1\textwidth]{AcceleratingDot}
+\end{enumerate}
+
+
+\section{Grouping}
+  Next, on some trials, a subset of dots in the scene, in addition to its own motion, will have inherited the motion of another dot. It is your job to decide which dots have inherited the motion of which other dots. Dots that influence other dots can be thought of as ``parents'' and dots that receive influence from other dots are ``children'' in the scene graph \ref{fig:scenegraph}.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\textwidth]{SceneGraph}
+    \caption{On each trial, a stimulus consisting of a set of 1-3 white dots is set in motion (left panel). Each stimulus is generated via an underlying scene graph that describes the motion type of each dot and the inheritance of motion between dots (right panel). In this scene graph, there are 3 dots: two move randomly (red: dots 1 and 2), while one moves with uniform linear velocity (dot 3: cyan). The arrow between dots 1 and 2 indicates that dot 2 inherits the motion of dot 1.}
+    \label{fig:scenegraph}
+\end{figure}
+  
 
 \vspace{10mm}
 
 \section{Task Logistics}
 
-When you are ready to begin the task, simply run the `run_human_experiment()` command in the provided REPL. A window will launch showing one to three stationary dots with labels 1-3. You are free to position this window wherever you choose. After a few seconds the dots will begin to move. This stimulus will repeat as many times as you'd like. When you are ready to answer to assign motion types and groupings to each labeled dot, press enter. The window will change to an answer portal where the motion type of each dot should be selected from a drop-down menu. If you believe that a particular dot in the scene is influenced by another dot, switch the toggles that indicate your perceptions. Below the toggles are two sliders: one indicates the amount of confidence in the accuracy of your selection, while the other indicates how similarly you feel the stimulus was to biological motion. 
-  
+When you are ready to begin the task, simply enter the ``run\_human\_experiment()'' command in the provided julia REPL. A window will launch showing one to three stationary dots with labels 1-3. You are free to position this window wherever you choose. After a few seconds the dots will begin to move. This stimulus will repeat as many times as you'd like. When you are ready to assign motion types and groupings to each labeled dot, press enter. The window will change to an answer portal where the motion type of each dot should be selected from corresponding drop-down menus. If you believe that a particular dot in the scene is influenced by another dot, switch the toggles that indicate the inheritance relationship between relevant dots. Below the toggles are two sliders: one indicates the amount of confidence in the accuracy of your selection, while the other indicates how strongly the stimulus resembled biological motion to you.
 
-\end{document} 
+\end{document}
+
+% TONIGHT ADD FIGURES AND DEBUG INFERENCE FOR MORE THAN 3 DOTS
 
   
 %%% Local Variables:
