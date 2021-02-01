@@ -8,7 +8,6 @@ using LightGraphs
 using MetaGraphs
 using Random
 using Images
-using GLFW
 using ShiftedArrays
 using ColorSchemes
 using Statistics
@@ -38,6 +37,7 @@ function interpolate_coords(vel, iter)
         interpolate_coords(vcat(interped_vel...), iter-1)        
     end
 end
+
 
 """ GENERATIVE CODE: These functions output dotmotion stimuli using GP-generated timeseries"""
 
@@ -81,7 +81,7 @@ end
     motion_tree = MetaDiGraph(n_dots)
     order_distribution = return_dot_distribution(n_dots)
     perceptual_order = { :order_choice } ~ order_distribution()
-    ###    noise = { :noise } ~ gamma_bounded_below(.1, .1, .0005)
+    # noise = { :noise } ~ gamma_bounded_below(.1, .1, .0005)
     noise = { :noise } ~ multinomial(param_dict[:noise])
     candidate_edges = [p for p in Iterators.product(perceptual_order, perceptual_order) if p[1] != p[2]]
     motion_tree_updated = {*} ~ populate_edges(motion_tree, candidate_edges)
@@ -93,6 +93,7 @@ end
                                                                  noise)
     return motion_tree_assigned, dot_list
 end
+
 
 @gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
                                               dots::Array{Int64}, ts::Array{Float64}, noise::Float64)
@@ -196,7 +197,7 @@ function find_interesting_samples(num_desired_samples::Int, num_dots::Int)
     traces = []
     difficulty = []
     while(length(traces) < num_desired_samples)
-        trace = dotwrap(num_dots)
+        trace, inf_results = dotwrap(num_dots)
         println("keep trace?")
         ans = readline()
         if ans == "y"
@@ -215,23 +216,32 @@ end
 function load_and_show_interesting_samples(num_dots::Int)
     @load string("example_traces", num_dots, ".bson") traces
     @load string("difficulties", num_dots, ".bson") difficulty
-    filtered_traces = []
-    filtered_difficulty = []
-    for (trace, diff_level) in zip(traces, difficulty)
-        pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
-        #    inf_results, top_bayes_graph = bayesian_observer(trace)
-        inf_results = animate_inference(trace)
-        analyze_and_plot_inference(inf_results[1:4]...)
-        println(string("Difficulty Level:  ", diff_level))
-        println("Keep sample?")
-        ans = readline()
-        if ans == "y"
-            push!(filtered_traces, trace)
-            push!(filtered_difficulty, difficulty)
+    println("Keep All Samples?")
+    ans = readline()
+    if ans == "y"
+        filtered_traces = traces
+        filtered_difficulty = difficulty
+        @save string("filtered_example_traces", num_dots, ".bson") filtered_traces
+        @save string("filtered_difficulties", num_dots, ".bson") filtered_difficulty
+    else
+        filtered_traces = []
+        filtered_difficulty = []
+        for (trace, diff_level) in zip(traces, difficulty)
+            pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
+            #    inf_results, top_bayes_graph = bayesian_observer(trace)
+            inf_results = animate_inference(trace)
+            analyze_and_plot_inference(inf_results[1:4]...)
+            println(string("Difficulty Level:  ", diff_level))
+            println("Keep sample?")
+            ans = readline()
+            if ans == "y"
+                push!(filtered_traces, trace)
+                push!(filtered_difficulty, difficulty)
+            end
         end
+        @save string("filtered_example_traces", num_dots, ".bson") filtered_traces
+        @save string("filtered_difficulties", num_dots, ".bson") filtered_difficulty
     end
-    @save string("filtered_example_traces", num_dots, ".bson") filtered_traces
-    @save string("filtered_difficulties", num_dots, ".bson") filtered_difficulty
 end
 
 function make_human_experiment(dotrange::UnitRange{Int64})
@@ -288,9 +298,9 @@ function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
     callback(timer) = (println("times up"))
     wait(Timer(callback, 20, interval=0))
     vs = visualize_scenegraph(answer_graph)
-    display(vs)
-    wait(Timer(callback, 5, interval=0))
-    return answer_graph, sliders[1].value, sliders[2].value
+  #  display(vs)
+   # wait(Timer(callback, 5, interval=0))
+    return answer_graph, sliders[1].value[], sliders[2].value[]
 end    
                       
 function run_human_experiment()
@@ -318,7 +328,7 @@ function run_human_experiment()
         a_scene, confidence, biomotion = answer_portal(training_trial, directory, num_dots)
     end
 
-    @load "/Users/nightcrawler2/NeuralGraphics/PointlightModel/final_human_experiment.bson" final_human_experiment
+    @load "/Users/nightcrawler2/Neural_Graphics/PointlightModel/final_human_experiment.bson" final_human_experiment
     for (trial_n, trace) in enumerate(final_human_experiment)
         num_dots = nv(get_retval(trace)[1])
         pw_dist, num_repeats, visible_parent = render_stim_only(trace, false)
@@ -335,46 +345,70 @@ function run_human_experiment()
     @save string(directory, "/repeats.bson") repeats_results
     @save string(directory, "/pw_dist.bson") pw_dist_results
     @save string(directory, "/visible_parent.bson") visible_parent_results
+    
 end    
 
 
 #Friday. Make a human experiment with 4 or 5 trials. Make sure it launches correctly.
 #score performance here and make a graph that follows the RDD. 
 
-function score_performance(directories::Array{String, 1})
-    @load "/Users/nightcrawler2/NeuralGraphics/PointlightModel/final_human_experiment.bson" final_human_experiment
+function score_performance(subjects::Array{String, 1})
+    @load "/Users/nightcrawler2/Neural_Graphics/PointlightModel/final_human_experiment.bson" final_human_experiment
     inf_results_importance_w_hyper = [animate_inference(trace) for trace in final_human_experiment]
     inf_results_importance = [inf_res[1:4] for inf_res in inf_results_importance_w_hyper]
     hyperparams = [hyperparameter_inference(inf_res[end], trace)
                    for (inf_res, trace) in zip(inf_results_importance_w_hyper, final_human_experiment)]
     # have to make sure the hyperparam and gt answers are in equivalent form so they can be compared.
-    
+
+    # dont need the full results here. just need the top graph. 
     inf_results_enumeration = [bayesian_observer(trace) for trace in final_human_experiment]
-    for directory in directories
-        biomotion_results = @load string(directory + "/biomotion.bson") biomotion_results
-        confidence_results = @load string(directory + "/confidence.bson") confidence_results
-        repeats_results = @load string(directory, "/repeats.bson") repeats_results
-        pw_dist_results = @load string(directory, "/pw_dist.bson") pw_dist_results
-        visible_parent_results = @load string(directory, "/visible_parent.bson") visible_parent_results
-        human_truth_match = []
-        truth_importance_match = []
-        truth_enum_match = []
-        human_importance_match = []
-        human_enum_match = []
+    all_subject_results = []
+    for subject in subjects
+        directory = string("/Users/nightcrawler2/humantest/", subject)
+        @load string(directory, "/biomotion.bson") biomotion_results
+        println("got here")
+        @load string(directory, "/confidence.bson") confidence_results
+        @load string(directory, "/repeats.bson") repeats_results
+        @load string(directory, "/pw_dist.bson") pw_dist_results
+        @load string(directory, "/visible_parent.bson") visible_parent_results
+        trial_results = Dict(:subject => subject,
+                             :human_truth_match => [],
+                             :truth_importance_match => [],
+                             :truth_enum_match => [],
+                             :human_importance_match => [],
+                             :human_enum_match => [])
         for (tr, trace)  in enumerate(final_human_experiment)
             answer_graph = loadgraph(string(directory, "/answers", tr, ".mg"), MGFormat())
             # run inference here on the saved traces
-            top_importance_hits = analyze_inference_results(inf_results_importance[tr]...)
-            top_enumeration_hits = analyze_inference_results(inf_results_enumeration[tr][1]...)
-            push!(human_truth_match, compare_scenegraphs(answer_graph, get_retval(trace)[1]))
-            push!(human_importance_match, compare_scenegraphs(answer_graph, top_importance_hits[1]))
-            push!(human_enum_match, compare_scenegraphs(answer_graph, top_enumeration_hits[1]))
-            push!(truth_enum_match, compare_scenegraphs(get_retval(trace)[1], top_enumeration_hits[1]))
-            push!(truth_importance_match, compare_scenegraphs(get_retval(trace)[1], top_importance_hits[1]))
+            top_importance_hit = analyze_inference_results(inf_results_importance[tr]...)[1][1]
+            top_enumeration_hit = get_retval(inf_results_enumeration[tr][2])[1]
+            push!(trial_results[:human_truth_match], compare_scenegraphs(answer_graph, get_retval(trace)[1]))
+            push!(trial_results[:human_importance_match], compare_scenegraphs(answer_graph, top_importance_hit))
+            push!(trial_results[:human_enum_match], compare_scenegraphs(answer_graph, top_enumeration_hit))
+            push!(trial_results[:truth_enum_match], compare_scenegraphs(get_retval(trace)[1], top_enumeration_hit))
+            push!(trial_results[:truth_importance_match], compare_scenegraphs(get_retval(trace)[1], top_importance_hit))
         end
+        push!(all_subject_results, trial_results)
     end
+    return all_subject_results
 end
 
+function plot_subject_performance(subject_results_dict)
+    scene = Scene()
+    collect_human_scores = [map(x-> float(all(x)), dict[:human_truth_match]) for dict in subject_results_dict]
+    collect_imp_scores = [map(x-> float(all(x)), dict[:truth_importance_match]) for dict in subject_results_dict]
+    collect_enum_scores = [map(x-> float(all(x)), dict[:truth_enum_match]) for dict in subject_results_dict]
+    human_scores_by_trial = collect(zip(collect_human_scores...))
+    imp_scores_by_trial = collect(zip(collect_imp_scores...))
+    enum_scores_by_trial = collect(zip(collect_enum_scores...))
+
+    # boxplot works where the first array is a set of groups and the second array are the values assigned to the groups:
+    # i.e.  [1,2, 1], [4,5,5] will have 4 and 5 in group 1 and 5 in group2
+    
+    return human_scores_by_trial, imp_scores_by_trial, enum_scores_by_trial
+end    
+
+        
 function compare_scenegraphs(mg1::MetaDiGraph{Int64, Float64},
                              mg2::MetaDiGraph{Int64, Float64})
     # for a systemic analysis, want
@@ -657,9 +691,7 @@ function hyper_permutation_to_assignment(kernels, params)
 end
 
 
-function filter_hyperparams(choices, gt_choices, n, d)
-    c_graph = get_retval(choices)[1].graph
-    gt_graph = get_retval(gt_choices)[1].graph
+function filter_hyperparams(choices, c_graph, gt_choices, gt_graph, n, d)
     if c_graph == gt_graph && all([choices[(:kernel_type, i)] == gt_choices[(:kernel_type, i)] for i in 1:nv(gt_graph)])
         if choices[(:kernel_type, n)] == RandomWalk
             param = (:variance, choices[(:variance, n, d)])
@@ -672,6 +704,11 @@ function filter_hyperparams(choices, gt_choices, n, d)
         end
     else
         param = ()
+        println("wrong graph")
+        println(c_graph == gt_graph)
+        println(c_graph)
+        println(gt_graph)
+        println(all([choices[(:kernel_type, i)] == gt_choices[(:kernel_type, i)] for i in 1:nv(gt_graph)]))
     end
     return param
         
@@ -681,7 +718,9 @@ end
 # only want hyper params for when edge AND kernel inference is correct.     
 function hyperparameter_inference(importance_samples, groundtruth_trace)
     choicemaps = [get_choices(trace) for trace in importance_samples]
+    importance_sample_graphs = [get_retval(trace)[1].graph for trace in importance_samples]
     gt_choicemap = get_choices(groundtruth_trace)
+    gt_graph = get_retval(groundtruth_trace)[1].graph
     num_dots = nv(get_retval(groundtruth_trace)[1])
     num_dims = 2
     hyper_matrix = Dict()
@@ -694,9 +733,9 @@ function hyperparameter_inference(importance_samples, groundtruth_trace)
     for n in 1:num_dots
         for d in 1:num_dims
             hyper_matrix[(n, d)] = Any[]
-            gt_hypermatrix[(n, d)] = filter_hyperparams(gt_choicemap, gt_choicemap, n, d)
-            for choices in choicemaps
-                push!(hyper_matrix[(n, d)], filter_hyperparams(choices, gt_choicemap, n, d))
+            gt_hypermatrix[(n, d)] = filter_hyperparams(gt_choicemap, gt_graph, gt_choicemap, gt_graph, n, d)
+            for (choices, c_graph) in zip(choicemaps, importance_sample_graphs)
+                push!(hyper_matrix[(n, d)], filter_hyperparams(choices, c_graph, gt_choicemap, gt_graph, n, d))
             end
             hyper_matrix_MAP[(n, d)] = findmax(countmap(filter(x -> x != (), hyper_matrix[(n, d)])))[2]
         end                
