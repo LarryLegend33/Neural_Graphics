@@ -191,6 +191,11 @@ function dotwrap(num_dots::Int)
 end
 
 
+    
+
+""" These functions are for creating, administering, and analyzing human data """
+
+
 function assign_task_filename(num_dots::Int, directory::String)
     task_filenames = readdir(directory)
     taskfile_index = 1
@@ -203,9 +208,7 @@ function assign_task_filename(num_dots::Int, directory::String)
         end
     end
 end
-    
 
-""" These functions are for creating, administering, and analyzing human data """
 
 function find_samples_for_task(num_dots::Int, add_to_current_samples::Bool)
     human_task_directory = "/Users/nightcrawler2/humantest"
@@ -243,15 +246,21 @@ function find_samples_for_task(num_dots::Int, add_to_current_samples::Bool)
     end
 end
 
-function filter_samples_for_task(num_dots::Int, filtering::Bool)
+function filter_samples_for_task(num_dots::Int)
     human_task_directory = "/Users/nightcrawler2/humantest"
     for filename in readdir(human_task_directory)
         try
-            if filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
-                @load filename trace
+            taskfile = filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
+            if !taskfile
+                #loops if string is long enough (i.e. another tasktrace file) but not num_dots
+                continue
             end
         catch
+            #loops if string too short (i.e. a subject file)
+            continue
         end
+        println(filename)
+        @load string(human_task_directory, "/", filename) trace
         render_stim_only(trace, true)
         println("keep trace?")
         ans1 = readline()
@@ -283,7 +292,7 @@ function make_human_task(dotrange)
             end
         end
     end
-    shuffled_filenames = shuffle(human_task_order)
+    human_task_order = shuffle(human_task_order)
     @save string(human_task_directory, "/human_task_order.bson") human_task_order
 end
     
@@ -296,9 +305,9 @@ function run_human_experiment()
                             3*ones(partition)]
     num_trials = 1
     human_task_directory = "/Users/nightcrawler2/humantest/"
-    directory = string(human_task_directory, subject_id)
+    subject_directory = string(human_task_directory, subject_id)
     try
-        mkdir(directory)
+        mkdir(subject_directory)
     catch
     end
     biomotion_results = []
@@ -310,28 +319,26 @@ function run_human_experiment()
         num_dots = convert(Int, training_dot_numbers[training_trial])
         trace, args = dotsample(num_dots)
         pw_dist, num_repeats, visible_parent = render_stim_only(trace, true)
-        a_scene, confidence, biomotion = answer_portal(training_trial, directory, num_dots)
+        a_scene, confidence, biomotion = answer_portal(training_trial, subject_directory, num_dots)
     end
-
-    
     @load string(human_task_directory, "human_task_order.bson") human_task_order 
     for (trial_n, trace_id) in enumerate(human_task_order)
         @load string(human_task_directory, "/", trace_id) trace
         num_dots = nv(get_retval(trace)[1])
         pw_dist, num_repeats, visible_parent = render_stim_only(trace, false)
-        answer_graph, confidence, biomotion = answer_portal(trial_n, directory, num_dots)
-        savegraph(string(directory, "/answers", trial_n, ".mg"), answer_graph)
+        answer_graph, confidence, biomotion = answer_portal(trial_n, subject_directory, num_dots)
+        savegraph(string(subject_directory, "/answers", trial_n, ".mg"), answer_graph)
         push!(biomotion_results, biomotion)
         push!(confidence_results, confidence)
         push!(pw_dist_results, pw_dist)
         push!(repeats_results, num_repeats)
         push!(visible_parent_results, visible_parent)
     end
-    @save string(directory, "/biomotion.bson") biomotion_results
-    @save string(directory, "/confidence.bson") confidence_results
-    @save string(directory, "/repeats.bson") repeats_results
-    @save string(directory, "/pw_dist.bson") pw_dist_results
-    @save string(directory, "/visible_parent.bson") visible_parent_results
+    @save string(subject_directory, "/biomotion.bson") biomotion_results
+    @save string(subject_directory, "/confidence.bson") confidence_results
+    @save string(subject_directory, "/repeats.bson") repeats_results
+    @save string(subject_directory, "/pw_dist.bson") pw_dist_results
+    @save string(subject_directory, "/visible_parent.bson") visible_parent_results
 end    
 
 
@@ -391,7 +398,14 @@ end
 #score performance here and make a graph that follows the RDD. 
 
 function score_performance(subjects::Array{String, 1})
-    @load "/Users/nightcrawler2/Neural_Graphics/PointlightModel/final_human_experiment.bson" final_human_experiment
+
+    humantask_directory = "/Users/nightcrawler2/humantest/"
+    final_human_experiment = []
+    @load string(humantask_directory, "human_task_order.bson") human_task_order
+    for trace_id in human_task_order
+        @load string(humantask_directory, trace_id) trace
+        push!(final_human_experiment, trace)
+    end
     inf_results_importance_w_hyper = [animate_inference(trace) for trace in final_human_experiment]
     inf_results_importance = [inf_res[1:4] for inf_res in inf_results_importance_w_hyper]
     hyperparams = [hyperparameter_inference(inf_res[end], trace)
