@@ -191,21 +191,32 @@ function dotwrap(num_dots::Int)
 end
 
 
+function assign_task_filename(num_dots::Int, directory::String)
+    task_filenames = readdir(directory)
+    taskfile_index = 1
+    while(true)
+        file_id = string("tasktrace", num_dots, taskfile_index, ".bson")
+        if !(file_id in task_filenames)
+            return file_id
+        else
+            taskfile_index += 1
+        end
+    end
+end
+    
+
 """ These functions are for creating, administering, and analyzing human data """
 
-function find_samples_for_task(num_dots::Int, addon::Bool)
+function find_samples_for_task(num_dots::Int, add_to_current_samples::Bool)
     human_task_directory = "/Users/nightcrawler2/humantest"
-    trace_count = 1
-    for filename in readdir(human_task_directory)
-        try
-            if filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
-                if !addon
+    if !add_to_current_samples
+        for filename in readdir(human_task_directory)
+            try
+                if filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
                     rm(string(human_task_directory, "/", filename))
-                else
-                    trace_count += 1
                 end
+            catch
             end
-        catch
         end
     end
     while(true)
@@ -221,50 +232,107 @@ function find_samples_for_task(num_dots::Int, addon::Bool)
         println("keep trace?")
         ans2 = readline()
         if ans2 == "y"
-            @save string(human_task_directory, "/tasktrace", num_dots, traces_acquired, ".bson") trace
-            traces_acquired += 1
+            trace_file_id = assign_task_filename(num_dots, human_task_directory)
+            @save string(human_task_directory,"/", trace_file_id) trace
             println("grab more traces?")
             moretraces = readline()
             if moretraces == "n"
                 break
             end
-        else
-            continue
         end
     end
 end
 
 function filter_samples_for_task(num_dots::Int, filtering::Bool)
     human_task_directory = "/Users/nightcrawler2/humantest"
-    if filtering
-        for filename in readdir(human_task_directory)
+    for filename in readdir(human_task_directory)
+        try
+            if filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
+                @load filename trace
+            end
+        catch
+        end
+        render_stim_only(trace, true)
+        println("keep trace?")
+        ans1 = readline()
+        if ans1 == "n"
+            rm(string(human_task_directory, "/", filename))
+            continue
+        end
+        inf_results = animate_inference(trace)
+        analyze_and_plot_inference(inf_results[1:4]...)
+        println("keep trace?")
+        ans2 = readline()
+        if ans2 == "n"
+            rm(string(human_task_directory, "/", filename))
+            continue
+        end
+    end
+end    
+
+function make_human_task(dotrange)
+    human_task_directory = "/Users/nightcrawler2/humantest"
+    human_task_order = []
+    for filename in readdir(human_task_directory)
+        for num_dots in dotrange
             try
                 if filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
-                    @load filename trace
+                    push!(human_task_order, filename)
                 end
             catch
             end
-            render_stim_only(trace, true)
-            println("keep trace?")
-            ans1 = readline()
-            if ans1 == "n"
-                rm(string(human_task_directory, "/", filename))
-                continue
-            end
-            inf_results = animate_inference(trace)
-            analyze_and_plot_inference(inf_results[1:4]...)
-            println("keep trace?")
-            ans2 = readline()
-            if ans2 == "n"
-                rm(string(human_task_directory, "/", filename))
-                continue
-            end
         end
-    else
+    end
+    shuffled_filenames = shuffle(human_task_order)
+    @save string(human_task_directory, "/human_task_order.bson") human_task_order
 end
+    
+function run_human_experiment()
+    println("Subject ID: ")
+    subject_id = readline()
+    num_training_trials = 0
+    partition = convert(Int, num_training_trials/3)
+    training_dot_numbers = [ones(partition); 2*ones(partition);
+                            3*ones(partition)]
+    num_trials = 1
+    human_task_directory = "/Users/nightcrawler2/humantest/"
+    directory = string(human_task_directory, subject_id)
+    try
+        mkdir(directory)
+    catch
+    end
+    biomotion_results = []
+    confidence_results = []
+    pw_dist_results = []
+    repeats_results = []
+    visible_parent_results = []
+    for training_trial in 1:num_training_trials
+        num_dots = convert(Int, training_dot_numbers[training_trial])
+        trace, args = dotsample(num_dots)
+        pw_dist, num_repeats, visible_parent = render_stim_only(trace, true)
+        a_scene, confidence, biomotion = answer_portal(training_trial, directory, num_dots)
+    end
 
-
-
+    
+    @load string(human_task_directory, "human_task_order.bson") human_task_order 
+    for (trial_n, trace_id) in enumerate(human_task_order)
+        @load string(human_task_directory, "/", trace_id) trace
+        num_dots = nv(get_retval(trace)[1])
+        pw_dist, num_repeats, visible_parent = render_stim_only(trace, false)
+        answer_graph, confidence, biomotion = answer_portal(trial_n, directory, num_dots)
+        savegraph(string(directory, "/answers", trial_n, ".mg"), answer_graph)
+        push!(biomotion_results, biomotion)
+        push!(confidence_results, confidence)
+        push!(pw_dist_results, pw_dist)
+        push!(repeats_results, num_repeats)
+        push!(visible_parent_results, visible_parent)
+    end
+    @save string(directory, "/biomotion.bson") biomotion_results
+    @save string(directory, "/confidence.bson") confidence_results
+    @save string(directory, "/repeats.bson") repeats_results
+    @save string(directory, "/pw_dist.bson") pw_dist_results
+    @save string(directory, "/visible_parent.bson") visible_parent_results
+end    
 
 
 
@@ -317,49 +385,6 @@ function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
     return answer_graph, sliders[1].value[], sliders[2].value[]
 end    
                       
-function run_human_experiment()
-    println("Subject ID: ")
-    subject_id = readline()
-    num_training_trials = 0
-    partition = convert(Int, num_training_trials/3)
-    training_dot_numbers = [ones(partition); 2*ones(partition);
-                            3*ones(partition)]
-    num_trials = 1
-    directory = string("/Users/nightcrawler2/humantest/", subject_id)
-    try
-        mkdir(directory)
-    catch
-    end
-    biomotion_results = []
-    confidence_results = []
-    pw_dist_results = []
-    repeats_results = []
-    visible_parent_results = []
-    for training_trial in 1:num_training_trials
-        num_dots = convert(Int, training_dot_numbers[training_trial])
-        trace, args = dotsample(num_dots)
-        pw_dist, num_repeats, visible_parent = render_stim_only(trace, true)
-        a_scene, confidence, biomotion = answer_portal(training_trial, directory, num_dots)
-    end
-    @load "/Users/nightcrawler2/Neural_Graphics/PointlightModel/final_human_experiment.bson" final_human_experiment
-    for (trial_n, trace) in enumerate(final_human_experiment)
-        num_dots = nv(get_retval(trace)[1])
-        pw_dist, num_repeats, visible_parent = render_stim_only(trace, false)
-        answer_graph, confidence, biomotion = answer_portal(trial_n, directory, num_dots)
-        savegraph(string(directory, "/answers", trial_n, ".mg"), answer_graph)
-        push!(biomotion_results, biomotion)
-        push!(confidence_results, confidence)
-        push!(pw_dist_results, pw_dist)
-        push!(repeats_results, num_repeats)
-        push!(visible_parent_results, visible_parent)
-    end
-    @save string(directory, "/biomotion.bson") biomotion_results
-    @save string(directory, "/confidence.bson") confidence_results
-    @save string(directory, "/repeats.bson") repeats_results
-    @save string(directory, "/pw_dist.bson") pw_dist_results
-    @save string(directory, "/visible_parent.bson") visible_parent_results
-    
-end    
 
 
 #Friday. Make a human experiment with 4 or 5 trials. Make sure it launches correctly.
@@ -1371,7 +1396,7 @@ end
 # 
 param_dict = Dict(Periodic => [[3, 8], [.1], [.2, 1]],
                   RandomWalk => [collect(15:10:45)],
-                  UniformLinear => [collect(6:6:24)],
+                  UniformLinear => [collect(4:4:16)],
                   :noise => [.0001, .0005])
 
 
