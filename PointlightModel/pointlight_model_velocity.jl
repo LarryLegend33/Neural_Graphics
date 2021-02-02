@@ -182,77 +182,91 @@ function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
     pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
 #    inf_results, top_bayes_graph = bayesian_observer(trace)
-    inf_results = animate_inference(trace)
-    analyze_and_plot_inference(inf_results[1:4]...)
+#    inf_results = animate_inference(trace)
+#    analyze_and_plot_inference(inf_results[1:4]...)
  #   analyze_and_plot_inference(inf_results...)
     #   return trace, inf_results, pw_distances, number_repeats, visible_parent
 #    return trace, inf_results, top_bayes_graph
-    return trace, inf_results
+ #   return trace, inf_results
 end
 
 
 """ These functions are for creating, administering, and analyzing human data """
 
-function find_interesting_samples(num_desired_samples::Int, num_dots::Int)
-    traces = []
-    difficulty = []
-    while(length(traces) < num_desired_samples)
-        trace, inf_results = dotwrap(num_dots)
+function find_samples_for_task(num_dots::Int, addon::Bool)
+    human_task_directory = "/Users/nightcrawler2/humantest"
+    trace_count = 1
+    for filename in readdir(human_task_directory)
+        try
+            if filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
+                if !addon
+                    rm(string(human_task_directory, "/", filename))
+                else
+                    trace_count += 1
+                end
+            end
+        catch
+        end
+    end
+    while(true)
+        trace, args = dotsample(num_dots)
+        render_stim_only(trace, true)
         println("keep trace?")
-        ans = readline()
-        if ans == "y"
-            push!(traces, trace)
-            println("Enter Difficulty Level")
-            diff = readline()
-            push!(difficulty, diff)
+        ans1 = readline()
+        if ans1 != "y"
+            continue
+        end
+        inf_results = animate_inference(trace)
+        analyze_and_plot_inference(inf_results[1:4]...)
+        println("keep trace?")
+        ans2 = readline()
+        if ans2 == "y"
+            @save string(human_task_directory, "/tasktrace", num_dots, traces_acquired, ".bson") trace
+            traces_acquired += 1
+            println("grab more traces?")
+            moretraces = readline()
+            if moretraces == "n"
+                break
+            end
         else
             continue
         end
     end
-    @save string("example_traces", num_dots, ".bson") traces
-    @save string("difficulties", num_dots, ".bson") difficulty
 end
 
-function load_and_show_interesting_samples(num_dots::Int)
-    @load string("example_traces", num_dots, ".bson") traces
-    @load string("difficulties", num_dots, ".bson") difficulty
-    println("Keep All Samples?")
-    ans = readline()
-    if ans == "y"
-        filtered_traces = traces
-        filtered_difficulty = difficulty
-        @save string("filtered_example_traces", num_dots, ".bson") filtered_traces
-        @save string("filtered_difficulties", num_dots, ".bson") filtered_difficulty
-    else
-        filtered_traces = []
-        filtered_difficulty = []
-        for (trace, diff_level) in zip(traces, difficulty)
-            pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
-            #    inf_results, top_bayes_graph = bayesian_observer(trace)
+function filter_samples_for_task(num_dots::Int, filtering::Bool)
+    human_task_directory = "/Users/nightcrawler2/humantest"
+    if filtering
+        for filename in readdir(human_task_directory)
+            try
+                if filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
+                    @load filename trace
+                end
+            catch
+            end
+            render_stim_only(trace, true)
+            println("keep trace?")
+            ans1 = readline()
+            if ans1 == "n"
+                rm(string(human_task_directory, "/", filename))
+                continue
+            end
             inf_results = animate_inference(trace)
             analyze_and_plot_inference(inf_results[1:4]...)
-            println(string("Difficulty Level:  ", diff_level))
-            println("Keep sample?")
-            ans = readline()
-            if ans == "y"
-                push!(filtered_traces, trace)
-                push!(filtered_difficulty, difficulty)
+            println("keep trace?")
+            ans2 = readline()
+            if ans2 == "n"
+                rm(string(human_task_directory, "/", filename))
+                continue
             end
         end
-        @save string("filtered_example_traces", num_dots, ".bson") filtered_traces
-        @save string("filtered_difficulties", num_dots, ".bson") filtered_difficulty
-    end
+    else
 end
 
-function make_human_experiment(dotrange::UnitRange{Int64})
-    final_traces = []
-    for num_dots in dotrange
-        @load string("filtered_example_traces", num_dots, ".bson") filtered_traces
-        push!(final_traces, filtered_traces)
-    end
-    final_human_experiment = shuffle(reduce(vcat, final_traces))
-    @save string("final_human_experiment.bson") final_human_experiment
-end
+
+
+
+
 
 function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
     answer_graph = MetaDiGraph(num_dots)
@@ -327,7 +341,6 @@ function run_human_experiment()
         pw_dist, num_repeats, visible_parent = render_stim_only(trace, true)
         a_scene, confidence, biomotion = answer_portal(training_trial, directory, num_dots)
     end
-
     @load "/Users/nightcrawler2/Neural_Graphics/PointlightModel/final_human_experiment.bson" final_human_experiment
     for (trial_n, trace) in enumerate(final_human_experiment)
         num_dots = nv(get_retval(trace)[1])
@@ -366,7 +379,6 @@ function score_performance(subjects::Array{String, 1})
     for subject in subjects
         directory = string("/Users/nightcrawler2/humantest/", subject)
         @load string(directory, "/biomotion.bson") biomotion_results
-        println("got here")
         @load string(directory, "/confidence.bson") confidence_results
         @load string(directory, "/repeats.bson") repeats_results
         @load string(directory, "/pw_dist.bson") pw_dist_results
@@ -398,13 +410,25 @@ function plot_subject_performance(subject_results_dict)
     collect_human_scores = [map(x-> float(all(x)), dict[:human_truth_match]) for dict in subject_results_dict]
     collect_imp_scores = [map(x-> float(all(x)), dict[:truth_importance_match]) for dict in subject_results_dict]
     collect_enum_scores = [map(x-> float(all(x)), dict[:truth_enum_match]) for dict in subject_results_dict]
-    human_scores_by_trial = collect(zip(collect_human_scores...))
-    imp_scores_by_trial = collect(zip(collect_imp_scores...))
-    enum_scores_by_trial = collect(zip(collect_enum_scores...))
+    human_scores_by_trial = [collect(z) for z in zip(collect_human_scores...)]
+    imp_scores_by_trial = [collect(z) for z in zip(collect_imp_scores...)]
+    enum_scores_by_trial = [collect(z) for z in zip(collect_enum_scores...)]
 
+    println(collect_human_scores)
+    println(collect_imp_scores)
     # boxplot works where the first array is a set of groups and the second array are the values assigned to the groups:
     # i.e.  [1,2, 1], [4,5,5] will have 4 and 5 in group 1 and 5 in group2
+    trial_indices = [ind*ones(length(sc)) for (ind, sc) in enumerate(human_scores_by_trial)]
+    boxplot_entries = [vcat(trial_indices...), vcat(human_scores_by_trial...)]
+
+    # THIS IS IF YOU WANT A BOXPLOT FOR EACH TRIAL FOR EACH CONDITION. 
+    #    boxplot!(scene, boxplot_entries..., width=.1)
+    #    boxplot!(scene, .1 .+ boxplot_entries[1], boxplot_entries[2], width=.1, color=:lightblue)
+
     
+    
+
+    display(scene)
     return human_scores_by_trial, imp_scores_by_trial, enum_scores_by_trial
 end    
 
@@ -976,12 +1000,12 @@ end
 function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, show_scenegraph::Bool)
     motion_tree = get_retval(trace)[1]
     # ask which has the max of incoming edges
-    bounds = 20
+    bounds = 25
     res = 1400
     outer_padding = 0
     dotmotion, raw_dotmotion = tree_to_coords(motion_tree)
     dot_w_most_incoming_edges = findmax(map(x -> length(reachable_to(motion_tree.graph, x)), 1:nv(motion_tree)))[2]    
-    if bernoulli(.3) && ne(motion_tree) > 0 
+    if bernoulli(.05) && ne(motion_tree) > 0 
         parent_visible = false
         dotmotion = [[d[dot_w_most_incoming_edges]] for d in dotmotion]
         println("invisible parent")
@@ -1002,9 +1026,9 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     f(t, coords) = coords[t]
     for n in 1:nv(motion_tree)
         textloc = Tuple(props(motion_tree, n)[:Position])
-        text!(scene, string(n), position = textloc, color=lift(t -> f_color(t), time_node), textsize=2)
+        text!(scene, string(n), position = textloc .+ .1, color=lift(t -> f_color(t), time_node), textsize=2.5)
     end
-    scatter!(scene, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=10px, color=RGBf0(255, 255, 255))
+    scatter!(scene, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=15px, color=RGBf0(255, 255, 255))
     xlims!(scene, (-bounds, bounds))
     ylims!(scene, (-bounds, bounds))
     # for j in 1:nv(motion_tree)
@@ -1342,17 +1366,13 @@ end
 #                   RandomWalk => [collect(1:45)],
 #                   UniformLinear => [collect(1:45)])
 
-# param_dict = Dict(Periodic => [[3, 6], [.5, 2], .1:.4:.9],
-#                   RandomWalk => [collect(20:2:44)],
-#                   UniformLinear => [collect(0:3:33)],
-#                   :noise => [.0001, .0005, .001])
 
-param_dict = Dict(Periodic => [[3, 6], [.75], [.1, .5]],
-                  RandomWalk => [collect(10:10:40)],
-                  UniformLinear => [collect(0:12:36)],
+# always make sure length scale is small. more dynamics.
+# 
+param_dict = Dict(Periodic => [[3, 8], [.1], [.2, 1]],
+                  RandomWalk => [collect(15:10:45)],
+                  UniformLinear => [collect(6:6:24)],
                   :noise => [.0001, .0005])
-
-
 
 
 @gen function covariance_prior(kernel_type, dot, dim)
