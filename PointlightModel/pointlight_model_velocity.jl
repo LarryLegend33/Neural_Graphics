@@ -182,8 +182,8 @@ function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
     pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
 #    inf_results, top_bayes_graph = bayesian_observer(trace)
-#    inf_results = animate_inference(trace)
-#    analyze_and_plot_inference(inf_results[1:4]...)
+    inf_results = animate_inference(trace)
+    analyze_and_plot_inference(inf_results[1:4]...)
  #   analyze_and_plot_inference(inf_results...)
     #   return trace, inf_results, pw_distances, number_repeats, visible_parent
 #    return trace, inf_results, top_bayes_graph
@@ -236,7 +236,8 @@ function find_samples_for_task(num_dots::Int, add_to_current_samples::Bool)
         ans2 = readline()
         if ans2 == "y"
             trace_file_id = assign_task_filename(num_dots, human_task_directory)
-            @save string(human_task_directory,"/", trace_file_id) trace
+            trace_args, trace_choices = get_args(trace), get_choices(trace)
+            @save string(human_task_directory,"/", trace_file_id) trace_args trace_choices
             println("grab more traces?")
             moretraces = readline()
             if moretraces == "n"
@@ -260,7 +261,8 @@ function filter_samples_for_task(num_dots::Int)
             continue
         end
         println(filename)
-        @load string(human_task_directory, "/", filename) trace
+        @load string(human_task_directory, "/", filename) trace_args trace_choices
+        (trace, w) = Gen.generate(generate_dotmotion, trace_args, trace_choices)
         render_stim_only(trace, true)
         println("keep trace?")
         ans1 = readline()
@@ -323,7 +325,8 @@ function run_human_experiment()
     end
     @load string(human_task_directory, "human_task_order.bson") human_task_order 
     for (trial_n, trace_id) in enumerate(human_task_order)
-        @load string(human_task_directory, "/", trace_id) trace
+        @load string(human_task_directory, "/", trace_id) trace_args trace_choices
+        (trace, w) = Gen.generate(generate_dotmotion, trace_args, trace_choices)
         num_dots = nv(get_retval(trace)[1])
         pw_dist, num_repeats, visible_parent = render_stim_only(trace, false)
         answer_graph, confidence, biomotion = answer_portal(trial_n, subject_directory, num_dots)
@@ -346,6 +349,7 @@ end
 function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
     answer_graph = MetaDiGraph(num_dots)
     res = 1400
+    stop_anim = false
     answer_scene, as_layout = layoutscene(resolution=(res, res), backgroundcolor=:black)
     dot_menus = [LMenu(answer_scene, options = ["RandomWalk", "Periodic", "UniformLinear"]) for i in 1:num_dots]
     for (dot_id, menu) in enumerate(dot_menus)
@@ -384,9 +388,17 @@ function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
             end
         end
     end
-    callback(timer) = (println("times up"))
-    wait(Timer(callback, 20, interval=0))
-    vs = visualize_scenegraph(answer_graph)
+
+    on(events(answer_scene).keyboardbuttons) do button
+        if ispressed(button, Keyboard.enter)
+            stop_anim = true
+        end
+    end
+
+    # first arg passed to timedwait has to be a function
+    query_enter() = stop_anim
+    timedwait(query_enter, 30.0)
+#    vs = visualize_scenegraph(answer_graph)
   #  display(vs)
    # wait(Timer(callback, 5, interval=0))
     return answer_graph, sliders[1].value[], sliders[2].value[]
