@@ -20,9 +20,16 @@ using MappedArrays
 #- starting with init positions b/c this is the type of custom proposal you will get from the tectum. you won't get offests for free. this model accounts for distance effects and velocity effects by traversing the tree. 
 
 #want a balance between inferability and smoothness
-framerate = 60
-time_duration = 10
-num_velocity_points = time_duration * 4
+
+# ORIGINAL
+#framerate = 60
+#time_duration = 10
+#num_velocity_points = time_duration * 4
+
+framerate = 30
+time_duration = 5
+#num_velocity_points = time_duration * framerate
+num_velocity_points = convert(Int, time_duration * framerate / 6)
 
 # filling in n-1 samples for every interpolation, where n is the
 # length of the velocity vector. your final amount of samples doubles this each time, then adds 1. 
@@ -144,12 +151,18 @@ end
             kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
             cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
             cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
+#            println(cov_func_x)
+#            println(cov_func_y)
             covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
             covmat_y = compute_cov_matrix_vectorized(cov_func_y, noise, ts)
             x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_mean, covmat_x)
             y_vel = {(:y_vel, dot)} ~ mvnormal(y_vel_mean, covmat_y)
             # Sample from the GP using a multivariate normal distribution with
             # the kernel-derived covariance matrix.
+            if kernel_type == Periodic
+                x_vel .-= mean(x_vel)
+                y_vel .-= mean(y_vel)
+            end
             set_props!(motion_tree, dot,
                        Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel, :Velocity_Y=>y_vel, :MType=>string(typeof(cov_func_x))))
             {*} ~ assign_positions_and_velocities(motion_tree, dots[2:end], ts, noise)
@@ -187,7 +200,10 @@ function dotwrap(num_dots::Int)
  #   analyze_and_plot_inference(inf_results...)
     #   return trace, inf_results, pw_distances, number_repeats, visible_parent
 #    return trace, inf_results, top_bayes_graph
- #   return trace, inf_results
+#    s = Scene()
+#    plot!(props(get_retval(trace)[1], 1)[:Velocity_X], color=:blue)
+#    plot!(props(get_retval(trace)[1], 1)[:Velocity_Y], color=:red)
+#    display(s)
 end
 
 
@@ -544,7 +560,7 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         for kc in kernel_combos
             for (dot, k) in enumerate(kc)
                 enum_constraints[(:kernel_type, dot)] = k
-                println(k)
+#                println(k)
             end
             for i in 1:num_dots
                 enum_constraints[(:x_vel, i)] = trace[(:x_vel, i)]
@@ -1077,9 +1093,9 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     f(t, coords) = coords[t]
     for n in 1:nv(motion_tree)
         textloc = Tuple(props(motion_tree, n)[:Position])
-        text!(scene, string(n), position = textloc .+ .1, color=lift(t -> f_color(t), time_node), textsize=2.5)
+        text!(scene, string(n), position = (textloc[1], textloc[2] + 1), color=lift(t -> f_color(t), time_node), textsize=2)
     end
-    scatter!(scene, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=15px, color=RGBf0(255, 255, 255))
+    scatter!(scene, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=14px, color=RGBf0(255, 255, 255))
     xlims!(scene, (-bounds, bounds))
     ylims!(scene, (-bounds, bounds))
     # for j in 1:nv(motion_tree)
@@ -1420,11 +1436,48 @@ end
 
 # always make sure length scale is small. more dynamics.
 # 
-param_dict = Dict(Periodic => [[3, 8], [.1], [.2, 1]],
-                  RandomWalk => [collect(15:10:45)],
-                  UniformLinear => [collect(4:4:16)],
+# param_dict = Dict(Periodic => [[3, 8], [.1], [.2, 1]],
+#                   RandomWalk => [collect(15:10:45)],
+#                   UniformLinear => [collect(4:4:16)],
+#                   :noise => [.0001, .0005])
+
+
+
+# if its .1 lengthscale, can't get faster than 3 repeats per 40 samples.
+# even with l = 3, p = .5, get 3 repeats.
+# l = 1, p = 4, only 2
+
+
+# can think of amplitude this way. all velocity amplitudes are on average the same.
+# but if you increase the period, the same velocity vectors will get added successively, making the dot go off the screen.
+# you can sample a single parameter and subtract it from the amplitude.
+#
+
+# interpolating 10 times out creates an aliasing problem. that's why you get 3 repeats. it's the amount of fluctuations inside
+# the rhythm that are controlled by the period. do this out by hand. instead of interpolating, can go up to 100 frames at 20 fps, for a 5 sec stimulus.
+
+
+# 100 / per ?
+
+
+# OK This is a good start. For next iteration, want to use non-interpolated, 150 frames, 30 fps.
+# Then use per = .5, 1, 2, with amp 50 / per. For random, want to use a random kernel then a
+# squared exponential multiplier. Then can smooth out the randomness a bit with non-interpolation so that
+# its as smooth as the interpolated version. 
+
+
+# 50 / per without interp, 25 with
+per = 1
+amp = 30 / per
+
+param_dict = Dict(Periodic => [[15], [.5, 1], [1, 2]],
+                  RandomWalk => [collect(100:50:250)],
+                  UniformLinear => [collect(2:2:8)],
                   :noise => [.0001, .0005])
 
+
+# TEST DROPPING THE PERIOD HYPERPARAMS TO MAKE SURE YOU HAVE AN UNDERSTANDING OF THIS VALUE.
+# CURRENTLY THE CYCLE REPEATS 3 TIME FOR ALMOST EVERY SAMPLE. See if the cycle repeats 6 times with period halving, etc. 
 
 @gen function covariance_prior(kernel_type, dot, dim)
     if kernel_type == Periodic
