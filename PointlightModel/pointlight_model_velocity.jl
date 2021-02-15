@@ -26,14 +26,6 @@ using MappedArrays
 #time_duration = 10
 #num_velocity_points = time_duration * 4
 
-framerate = 30
-time_duration = 5
-#num_velocity_points = time_duration * framerate
-num_velocity_points = convert(Int, time_duration * framerate / 6)
-
-# filling in n-1 samples for every interpolation, where n is the
-# length of the velocity vector. your final amount of samples doubles this each time, then adds 1. 
-interp_iters = round(Int64, log(2, (framerate * time_duration) / (num_velocity_points -1)))
 
 function interpolate_coords(vel, iter)
     if iter == 0
@@ -151,15 +143,15 @@ end
             kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
             cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
             cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
-#            println(cov_func_x)
-#            println(cov_func_y)
+            println(cov_func_x)
+            println(cov_func_y)
             covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
             covmat_y = compute_cov_matrix_vectorized(cov_func_y, noise, ts)
             x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_mean, covmat_x)
             y_vel = {(:y_vel, dot)} ~ mvnormal(y_vel_mean, covmat_y)
             # Sample from the GP using a multivariate normal distribution with
             # the kernel-derived covariance matrix.
-            if kernel_type == Periodic
+            if kernel_type == Periodic || kernel_type == RandomWalk || kernel_type == SquaredExponential
                 x_vel .-= mean(x_vel)
                 y_vel .-= mean(y_vel)
             end
@@ -194,16 +186,17 @@ end
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
     pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
-#    inf_results, top_bayes_graph = bayesian_observer(trace)
-    inf_results = animate_inference(trace)
-    analyze_and_plot_inference(inf_results[1:4]...)
- #   analyze_and_plot_inference(inf_results...)
+ #   inf_results, top_bayes_graph = bayesian_observer(trace)
+#    inf_results = animate_inference(trace)
+#    analyze_and_plot_inference(inf_results[1:4]...)
+#    analyze_and_plot_inference(inf_results...)
     #   return trace, inf_results, pw_distances, number_repeats, visible_parent
-#    return trace, inf_results, top_bayes_graph
-#    s = Scene()
-#    plot!(props(get_retval(trace)[1], 1)[:Velocity_X], color=:blue)
-#    plot!(props(get_retval(trace)[1], 1)[:Velocity_Y], color=:red)
-#    display(s)
+    #    return trace, inf_results, top_bayes_graph
+  #  return get_choices(top_bayes_graph)
+    s = Scene()
+    plot!(props(get_retval(trace)[1], 1)[:Velocity_X], color=:blue)
+    plot!(props(get_retval(trace)[1], 1)[:Velocity_Y], color=:red)
+    display(s)
 end
 
 
@@ -560,7 +553,7 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         for kc in kernel_combos
             for (dot, k) in enumerate(kc)
                 enum_constraints[(:kernel_type, dot)] = k
-#                println(k)
+                println(k)
             end
             for i in 1:num_dots
                 enum_constraints[(:x_vel, i)] = trace[(:x_vel, i)]
@@ -988,7 +981,7 @@ end
 
 function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64})
     outer_padding = 0
-    res = 1000
+    res = 1400
     paths = all_paths(motion_tree)
     # by the end of this loop have all connected and all unconnected paths
     for v in 1:nv(motion_tree)
@@ -1004,7 +997,7 @@ function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64})
     node_xs, node_ys = xy_node_positions(paths, zeros(Int, nv(motion_tree)), zeros(Int, nv(motion_tree)), 1, motion_tree, longest_path)
     
     # create scene without layout b/c text only works in scenes -- can't add it to LAxis.
-    scene = Scene(backgroundcolor=RGBf0(0, 0, 0), resolution=(800,800))
+    scene = Scene(backgroundcolor=RGBf0(0, 0, 0), resolution=(res,res))
     for e in edges(motion_tree)
         arrows!(scene, [node_xs[e.src]], [node_ys[e.src]],
                 .8 .* [node_xs[e.dst]-node_xs[e.src]], .8 .* [node_ys[e.dst]-node_ys[e.src]], arrowcolor=:lightgray, linecolor=:lightgray, arrowsize=.1)
@@ -1015,11 +1008,11 @@ function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64})
         if mtype == "UniformLinear"
             nodecolor = :lightgreen
         elseif mtype == "RandomWalk"
-            nodecolor = :orange
+            nodecolor = :pink
         elseif mtype == "Periodic"
             nodecolor = :skyblue
-        elseif mtype == "AccelLinear"
-            nodecolor = :pink
+        elseif mtype == "SquaredExponential"
+            nodecolor = :orange
         end
         scatter!(scene, [(node_xs[v], node_ys[v])], markersize=50px, color=nodecolor)
         text!(scene, string(v), position=(node_xs[v], node_ys[v]), align= (:center, :center),
@@ -1198,17 +1191,34 @@ function eval_cov_mat(node::AccelLinear, ts::Array{Float64})
     ts_minus_param * ts_minus_param'
 end
 
+# """Squared exponential kernel"""
+# struct SquaredExponential <: PrimitiveKernel
+#     length_scale::Float64
+# end
+
+# eval_cov(node::SquaredExponential, t1, t2) =
+#     exp(-0.5 * (t1 - t2) * (t1 - t2) / node.length_scale)
+
+# function eval_cov_mat(node::SquaredExponential, ts::Array{Float64})
+#     diff = ts .- ts'
+#     exp.(-0.5 .* diff .* diff ./ node.length_scale)
+# end
+
+
+# note that in the gaussian process lit the subtraction here is often the norm
+
 """Squared exponential kernel"""
 struct SquaredExponential <: PrimitiveKernel
+    amplitude::Float64
     length_scale::Float64
 end
 
 eval_cov(node::SquaredExponential, t1, t2) =
-    exp(-0.5 * (t1 - t2) * (t1 - t2) / node.length_scale)
+    node.amplitude * exp(-0.5 * (t1 - t2) * (t1 - t2) / (node.length_scale ^ 2))
 
 function eval_cov_mat(node::SquaredExponential, ts::Array{Float64})
     diff = ts .- ts'
-    exp.(-0.5 .* diff .* diff ./ node.length_scale)
+    node.amplitude .* exp.(-0.5 .* diff .* diff ./ (node.length_scale ^ 2))
 end
 
 """Periodic kernel"""
@@ -1334,9 +1344,8 @@ end
 
 # This is an array of data types. Each data type takes a parameter, and each data type has a multiple dispatch
 # call associated with it to create a covariance matrix. 
-    
-kernel_types = [RandomWalk, UniformLinear, Periodic]
-@dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
+
+
 
 #kernel_types = [RandomWalk, UniformLinear, Periodic, Stationary]
 #@dist choose_kernel_type() = kernel_types[categorical([1/4, 1/4, 1/4, 1/4])]
@@ -1465,32 +1474,93 @@ end
 # squared exponential multiplier. Then can smooth out the randomness a bit with non-interpolation so that
 # its as smooth as the interpolated version. 
 
+""" PARAMS FOR INTERPOLATION BASED TASK """
 
-# 50 / per without interp, 25 with
-per = 1
-amp = 30 / per
+framerate = 30
+time_duration = 10
+#num_velocity_points = time_duration * framerate
+num_velocity_points = convert(Int, time_duration * framerate / 6)
 
-param_dict = Dict(Periodic => [[15], [.5, 1], [1, 2]],
-                  RandomWalk => [collect(100:50:250)],
-                  UniformLinear => [collect(2:2:8)],
+# filling in n-1 samples for every interpolation, where n is the
+# length of the velocity vector. your final amount of samples doubles this each time, then adds 1. 
+interp_iters = round(Int64, log(2, (framerate * time_duration) / (num_velocity_points -1)))
+
+param_dict = Dict(Periodic => [[10, 30], [.5], [1, 2]],
+                  RandomWalk => [collect(100:100:400)],
+                  UniformLinear => [collect(5:5:20)],
+                  SquaredExponential => [collect(50:150:200), [.01, .2]],
                   :noise => [.0001, .0005])
+
+kernel_types = [SquaredExponential, UniformLinear, Periodic]
+@dist choose_kernel_type() = kernel_types[categorical([2/2, 0/2, 0/2])]
+
+
+
+
+""" PARAMS FOR NO INTERPOLATION, RICHER MOTION TASK """ 
+
+
+# framerate = 30
+# time_duration = 10
+# num_velocity_points = convert(Int, time_duration * framerate)
+
+# # filling in n-1 samples for every interpolation, where n is the
+# # length of the velocity vector. your final amount of samples doubles this each time, then adds 1. 
+# interp_iters = round(Int64, log(2, (framerate * time_duration) / (num_velocity_points -1)))
+
+# param_dict = Dict(Periodic => [[50], [.5, 1, 2], [1, 3, 5]],
+#                   RandomWalk => [collect(20:50:320)],
+#                   UniformLinear => [collect(2:2:15)],
+#                   SquaredExponential => [collect(1:10:500), collect(.01:.02:.03)],
+#                   :noise => [.0001, .0005])
+
+# kernel_types = [RandomWalk, UniformLinear, Periodic, SquaredExponential]
+# @dist choose_kernel_type() = kernel_types[categorical([1/4, 0/4, 0/4, 3/4])]
+
+
+
+@gen function covariance_prior(kernel_type, dot, dim)
+    if kernel_type == Periodic
+        lengthscale = {(:lengthscale, dot, dim)} ~ multinomial(param_dict[Periodic][2])
+        period = {(:period, dot, dim)} ~ multinomial(param_dict[Periodic][3])
+        #     amplitude = {(:amplitude, dot, dim)} ~ multinomial([50/period])
+        amplitude = {(:amplitude, dot, dim)} ~ multinomial(param_dict[Periodic][1])
+        kernel_args = [amplitude, lengthscale, period]
+    elseif kernel_type == UniformLinear
+        kernel_args = [{(:covariance, dot, dim)} ~ multinomial(param_dict[UniformLinear][1])]
+    elseif kernel_type == RandomWalk
+        kernel_args = [{(:variance, dot, dim)} ~ multinomial(param_dict[RandomWalk][1])]
+    elseif kernel_type == SquaredExponential
+        kernel_args = [{(:amplitude, dot, dim)} ~ multinomial(param_dict[SquaredExponential][1]),
+                       {(:lengthscale, dot , dim)} ~ multinomial(param_dict[SquaredExponential][2])]        
+    end
+    return kernel_type(kernel_args...)
+end
+
+
+
+
+
+
 
 
 # TEST DROPPING THE PERIOD HYPERPARAMS TO MAKE SURE YOU HAVE AN UNDERSTANDING OF THIS VALUE.
 # CURRENTLY THE CYCLE REPEATS 3 TIME FOR ALMOST EVERY SAMPLE. See if the cycle repeats 6 times with period halving, etc. 
 
-@gen function covariance_prior(kernel_type, dot, dim)
-    if kernel_type == Periodic
-        kernel_args = [{(:amplitude, dot, dim)} ~ multinomial(param_dict[Periodic][1]),
-                       {(:lengthscale, dot, dim)} ~ multinomial(param_dict[Periodic][2]),
-                       {(:period, dot, dim)} ~ multinomial(param_dict[Periodic][3])]
-    elseif kernel_type == UniformLinear
-        kernel_args = [{(:covariance, dot, dim)} ~ multinomial(param_dict[UniformLinear][1])]
-    elseif kernel_type == RandomWalk
-        kernel_args = [{(:variance, dot, dim)} ~ multinomial(param_dict[RandomWalk][1])]
-    end
-    return kernel_type(kernel_args...)
-end
+# @gen function covariance_prior(kernel_type, dot, dim)
+#     if kernel_type == Periodic
+#         kernel_args = [{(:amplitude, dot, dim)} ~ multinomial(param_dict[Periodic][1]),
+#                        {(:lengthscale, dot, dim)} ~ multinomial(param_dict[Periodic][2]),
+#                        {(:period, dot, dim)} ~ multinomial(param_dict[Periodic][3])]
+#     elseif kernel_type == UniformLinear
+#         kernel_args = [{(:covariance, dot, dim)} ~ multinomial(param_dict[UniformLinear][1])]
+#     elseif kernel_type == RandomWalk
+#         kernel_args = [{(:variance, dot, dim)} ~ multinomial(param_dict[RandomWalk][1])]
+#     elseif kernel_type == SquaredExponential
+#         kernel_args = [{(:smoothness, dot, dim)} ~ multinomial(param_dict[SquaredExponential][1])]        
+#     end
+#     return kernel_type(kernel_args...)
+# end
 
 @dist gamma_bounded_below(shape, scale, bound) = gamma(shape, scale) + bound
 
