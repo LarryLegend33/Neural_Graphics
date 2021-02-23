@@ -61,86 +61,69 @@ end
 # note that if you constrain generate_dotmotion on an unallowable edge (e.g. [1,3]), it wont prevent the inverse edge from being true.
 # have to specify all edges at once.
 
+
 @gen function generate_dotmotion(ts::Array{Float64}, 
-                                 n_dots::Int)
+                                    n_dots::Int)
     motion_tree = MetaDiGraph(n_dots)
     order_distribution = return_dot_distribution(n_dots)
     perceptual_order = { :order_choice } ~ order_distribution()
-    # noise = { :noise } ~ gamma_bounded_below(.1, .1, .0005)
     noise = { :noise } ~ multinomial(param_dict[:noise])
     candidate_edges = [p for p in Iterators.product(perceptual_order, perceptual_order) if p[1] != p[2]]
     motion_tree_updated = {*} ~ populate_edges(motion_tree, candidate_edges)
     dot_list = sort(collect(1:nv(motion_tree_updated)),
                     by=ϕ->(size(inneighbors(motion_tree_updated, ϕ))[1]))
-    motion_tree_assigned = {*} ~ assign_positions_and_velocities(motion_tree_updated,
-                                                                 dot_list,
-                                                                 ts,
-                                                                 noise)
+    motion_tree_assigned = {*} ~ assign_positions(motion_tree_updated,
+                                                  dot_list,
+                                                  ts,
+                                                  noise)
     return motion_tree_assigned, dot_list
 end
 
 
-@gen function assign_positions_and_velocities(motion_tree::MetaDiGraph{Int64, Float64},
-                                              dots::Array{Int64}, ts::Array{Float64}, noise::Float64)
+@gen function assign_positions(motion_tree::MetaDiGraph{Int64, Float64},
+                               dots::Array{Int64}, ts::Array{Float64}, noise::Float64)
     if isempty(dots)
         return motion_tree
     else
         dot = first(dots)
         parents = inneighbors(motion_tree, dot)
-        # if parent values haven't been assigned yet, put the dot at the end and recurse.
-        if count(iszero, [props(motion_tree, p).count for p in parents]) != 0
-            {*} ~ assign_positions_and_velocities(motion_tree, [dots[2:end];dot], ts, noise)
+        offset_x = {(:offset_x, dot)} ~ uniform_discrete(-5, 5)
+        offset_y = {(:offset_y, dot)} ~ uniform_discrete(-5, 5)
+        if isempty(parents)
+            x_pos_mean = offset_x * ones(length(ts))
+            y_pos_mean = offset_y * ones(length(ts))
         else
-            # use for flat prior on position
-            start_x = {(:start_x, dot)} ~ uniform(-5, 5)
-            start_y = {(:start_y, dot)} ~ uniform(-5, 5)
-
-            if isempty(parents)
-                x_vel_bias = zeros(length(ts))
-                y_vel_bias = zeros(length(ts))
+            parent_positions_x = [props(motion_tree, p)[:Position_X] for p in parents]
+            parent_positions_y = [props(motion_tree, p)[:Position_Y] for p in parents]
+            if size(parents)[1] > 1
+                x_pos_mean = [offset_x + mx for mx in mean(parent_positions_x)]
+                y_pos_mean = [offset_y + my for my in mean(parent_positions_y)]
             else
-                if size(parents)[1] > 1
-                    avg_parent_position = mean([props(motion_tree, p)[:Position] for p in parents])
-                    parent_position = [round(Int, pp) for pp in avg_parent_position]
-                else
-                    parent_position = props(motion_tree, parents[1])[:Position]
-                end
-     #           start_x = {(:start_x, dot)} ~ uniform_discrete(parent_position[1]-1, parent_position[1]+1)
-    #            start_y = {(:start_y, dot)} ~ uniform_discrete(parent_position[2]-1, parent_position[2]+1)
-                parent_velocities_x = [props(motion_tree, p)[:Velocity_X] for p in parents]
-                parent_velocities_y = [props(motion_tree, p)[:Velocity_Y] for p in parents]
-                if size(parents)[1] == 1
-                    x_vel_bias = parent_velocities_x[1]
-                    y_vel_bias = parent_velocities_y[1]
-                else
-                    x_vel_bias = sum(parent_velocities_x)
-                    y_vel_bias = sum(parent_velocities_y)
-                end
+                x_pos_mean = [offset_x + px for px in parent_positions_x[1]]
+                y_pos_mean = [offset_y + py for py in parent_positions_y[1]]
             end
-            # sample a kernel type for the dot here. then assign with cov prior conditioned on type
-            kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
-            cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
-            cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
-#            println(cov_func_x)
-#            println(cov_func_y)
-            covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
-            covmat_y = compute_cov_matrix_vectorized(cov_func_y, noise, ts)
-             # bias has to be here. how to normalize periodic if you have to infer xvel?
-        #    x_vel = {(:x_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
-        #    y_vel = {(:y_vel, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
-            x_vel = {(:x_vel, dot)} ~ mvnormal(x_vel_bias, covmat_x)
-            y_vel = {(:y_vel, dot)} ~ mvnormal(y_vel_bias, covmat_y)
-            # Sample from the GP using a multivariate normal distribution with
-            # the kernel-derived covariance matrix.
-#            if kernel_type == Periodic || kernel_type == RandomWalk || kernel_type == SquaredExponential
- #               x_vel .-= mean(x_vel)
-  #              y_vel .-= mean(y_vel)
-            #         end
-            set_props!(motion_tree, dot,
-                       Dict(:Position=>[start_x, start_y], :Velocity_X=>x_vel,
-                            :Velocity_Y=>y_vel, :MType=>string(typeof(cov_func_x))))
-            {*} ~ assign_positions_and_velocities(motion_tree, dots[2:end], ts, noise)
         end
+        kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
+        cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
+        cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
+
+        add_branch_jitter = {(:add_branch_jitter, dot)} ~ bernoulli(.2)
+        if add_branch_jitter
+            jitter_mag = {(:jitter_magnitude, dot)} ~ multinomial([.01, .05])
+            noise_covfunc = RandomWalk(jitter_mag)
+            covmat_x = compute_cov_matrix_vectorized(Plus(cov_func_x, noise_covfunc), noise, ts)
+            covmat_y = compute_cov_matrix_vectorized(Plus(cov_func_y, noise_covfunc), noise, ts)
+        else
+            covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
+            covmat_y = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
+        end
+        x_pos = {(:x_pos, dot)} ~ mvnormal(x_pos_mean, covmat_x)
+        y_pos = {(:y_pos, dot)} ~ mvnormal(y_pos_mean, covmat_y)
+        # Sample from the GP using a multivariate normal distribution with
+        # the kernel-derived covariance matrix.
+        set_props!(motion_tree, dot,
+                   Dict(:Position_X=>x_pos, :Position_Y=>y_pos, :MType=>string(typeof(cov_func_x))))
+        {*} ~ assign_positions(motion_tree, dots[2:end], ts, noise)
     end
 end    
 
@@ -158,7 +141,7 @@ end
 
 """ These functions wrap model runs and inference to evaluate inference accuracy """ 
 function dotsample(num_dots::Int)
-    ts = range(1, stop=time_duration, length=num_velocity_points)
+    ts = range(1, stop=time_duration, length=num_position_points)
     gdm_args = (convert(Array{Float64}, ts), num_dots)
     trace = Gen.simulate(generate_dotmotion, gdm_args)
     trace_choices = get_choices(trace)
@@ -169,16 +152,18 @@ function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
     pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
  #   inf_results, top_bayes_graph = bayesian_observer(trace)
-    inf_results = animate_inference(trace)
-    analyze_and_plot_inference(inf_results[1:4]...)
+#    inf_results = animate_inference(trace)
+#    analyze_and_plot_inference(inf_results[1:4]...)
 #    analyze_and_plot_inference(inf_results...)
     #   return trace, inf_results, pw_distances, number_repeats, visible_parent
     #    return trace, inf_results, top_bayes_graph
   #  return get_choices(top_bayes_graph)
-#    s = Scene()
- #   plot!(props(get_retval(trace)[1], 1)[:Velocity_X], color=:blue)
-  #  plot!(props(get_retval(trace)[1], 1)[:Velocity_Y], color=:red)
-#    display(s)
+    s = Scene()
+    for i in 1:nv(get_retval(trace)[1])
+        plot!(props(get_retval(trace)[1], i)[:Position_X], color=:blue)
+        plot!(props(get_retval(trace)[1], i)[:Position_Y], color=:red)
+    end
+    display(s)
 end
 
 
@@ -387,14 +372,15 @@ function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
         end
     end
 
-    on(events(answer_scene).keyboardbuttons) do button
-        if ispressed(button, Keyboard.enter)
-            stop_anim = true
-        end
-    end
+    # on(events(answer_scene).keyboardbuttons) do button
+    #     if ispressed(button, Keyboard.enter)
+    #         stop_anim = true
+    #     end
+    # end
 
     # first arg passed to timedwait has to be a function
     query_enter() = stop_anim
+    # will either stop when you press enter or when 30 seconds have passed. 
     timedwait(query_enter, 30.0)
 #    vs = visualize_scenegraph(answer_graph)
   #  display(vs)
@@ -549,10 +535,8 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
                 println(k)
             end
             for i in 1:num_dots
-                enum_constraints[(:x_vel, i)] = trace[(:x_vel, i)]
-                enum_constraints[(:y_vel, i)] = trace[(:y_vel, i)]
-                enum_constraints[(:start_x, i)] = trace[(:start_x, i)]
-                enum_constraints[(:start_y, i)] = trace[(:start_y, i)]
+                enum_constraints[(:x_pos, i)] = trace[(:x_pos, i)]
+                enum_constraints[(:y_pos, i)] = trace[(:y_pos, i)]
             end
             # clears order from the original trace
             constraints_no_noise_order = [map_entry for map_entry in get_values_shallow(enum_constraints) if !(typeof(map_entry[1]) == Symbol)]
@@ -636,10 +620,8 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     num_particles = (num_dots ^ 2) * 100
     num_resamples = 30
     for i in 1:num_dots
-        observation[(:x_vel, i)] = trace[(:x_vel, i)]
-        observation[(:start_y, i)] = trace[(:start_y, i)]
-        observation[(:y_vel, i)] = trace[(:y_vel, i)]
-        observation[(:start_x, i)] = trace[(:start_x, i)]        
+        observation[(:x_pos, i)] = trace[(:x_pos, i)]
+        observation[(:y_pos, i)] = trace[(:y_pos, i)]
     end
     edge_list = []
     kernel_types = []
@@ -721,6 +703,23 @@ function plot_inference_results(rendered_graphs, probabilities)
     final_scene = hbox(scene, 
                        scene_graph_scene)
     screen = display(final_scene)
+    stop_anim = false
+    on(events(final_scene).keyboardbuttons) do button
+        if ispressed(button, Keyboard.enter)
+            stop_anim = true
+        end
+    end
+
+    # on(events(answer_scene).keyboardbuttons) do button
+    #     if ispressed(button, Keyboard.enter)
+    #         stop_anim = true
+    #     end
+    # end
+
+    # first arg passed to timedwait has to be a function
+    query_enter() = stop_anim
+    # will either stop when you press enter or when 30 seconds have passed. 
+    timedwait(query_enter, 200.0)
     # uncomment if you want to block until the window is closed
     #  wait(screen)
     
@@ -908,15 +907,17 @@ end
 
 """ These functions are for visualizing scenegraphs and animating dotmotion using Makie """
 
+
 function tree_to_coords(tree::MetaDiGraph{Int64, Float64})
     num_dots = nv(tree)
-    dotmotion = fill(zeros(2), num_dots, size(interpolate_coords(props(tree, 1)[:Velocity_X], interp_iters))[1])
+#    dotmotion = fill(zeros(2), num_dots, size(interpolate_coords(props(tree, 1)[:Position_X], interp_iters))[1])
+    dotmotion = fill(zeros(2), num_dots, size(props(tree, 1)[:Position_X])[1])
     # Assign first dot positions based on its initial XY position and velocities
     for dot in 1:num_dots
         dot_data = props(tree, dot)
-        dotmotion[dot, :] = [[x, y] for (x, y) in zip(
-            dot_data[:Position][1] .+ cumsum(interpolate_coords(dot_data[:Velocity_X], interp_iters)) ./ framerate,
-            dot_data[:Position][2] .+ cumsum(interpolate_coords(dot_data[:Velocity_Y], interp_iters)) ./ framerate)]
+        dotmotion[dot, :] = [[x, y] for (x, y) in zip(dot_data[:Position_X], dot_data[:Position_Y])]
+            # interpolate_coords(dot_data[:Position_X], interp_iters),
+            # interpolate_coords(dot_data[:Position_Y], interp_iters))]
     end
     dotmotion_tuples = [[Tuple(dotmotion[i, j]) for i in 1:num_dots] for j in 1:size(dotmotion)[2]]
     return dotmotion_tuples, dotmotion
@@ -1057,7 +1058,7 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     time_node = Node(1);
     f(t, coords) = coords[t]
     for n in 1:nv(motion_tree)
-        textloc = Tuple(props(motion_tree, n)[:Position])
+        textloc = (props(motion_tree, n)[:Position_X][1], props(motion_tree, n)[:Position_Y][1])
         text!(scene, string(n), position = (textloc[1], textloc[2] + 1), color=lift(t -> f_color(t), time_node), textsize=2)
     end
     scatter!(scene, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=14px, color=RGBf0(255, 255, 255))
@@ -1134,44 +1135,31 @@ function eval_cov_mat(node::RandomWalk, ts::Array{Float64})
 end
 
     
-"""Uniform Linear Kernel"""
-struct UniformLinear <: PrimitiveKernel
+"""Constant Kernel"""
+struct Constant <: PrimitiveKernel
     param::Float64
 end
 
-eval_cov(node::UniformLinear, t1, t2) = node.param
+eval_cov(node::Constant, t1, t2) = node.param
 
 
-function eval_cov_mat(node::UniformLinear, ts::Array{Float64})
+function eval_cov_mat(node::Constant, ts::Array{Float64})
     n = length(ts)
     fill(node.param, (n, n))
 end
 
 
 """Linear kernel"""
-struct AccelLinear <: PrimitiveKernel
+struct UniformLinear <: PrimitiveKernel
     param::Float64
 end
 
-eval_cov(node::AccelLinear, t1, t2) = (t1 - node.param) * (t2 - node.param)
+eval_cov(node::UniformLinear, t1, t2) = (t1 - node.param) * (t2 - node.param)
 
-function eval_cov_mat(node::AccelLinear, ts::Array{Float64})
+function eval_cov_mat(node::UniformLinear, ts::Array{Float64})
     ts_minus_param = ts .- node.param
     ts_minus_param * ts_minus_param'
 end
-
-# """Squared exponential kernel"""
-# struct SquaredExponential <: PrimitiveKernel
-#     length_scale::Float64
-# end
-
-# eval_cov(node::SquaredExponential, t1, t2) =
-#     exp(-0.5 * (t1 - t2) * (t1 - t2) / node.length_scale)
-
-# function eval_cov_mat(node::SquaredExponential, ts::Array{Float64})
-#     diff = ts .- ts'
-#     exp.(-0.5 .* diff .* diff ./ node.length_scale)
-# end
 
 
 # note that in the gaussian process lit the subtraction here is often the norm
@@ -1325,78 +1313,29 @@ end
 
 
 
-
-# OK This is a good start. For next iteration, want to use non-interpolated, 150 frames, 30 fps.
-# Then use per = .5, 1, 2, with amp 50 / per. For random, want to use a random kernel then a
-# squared exponential multiplier. Then can smooth out the randomness a bit with non-interpolation so that
-# its as smooth as the interpolated version.
-
-""" PARAMS FOR INTERPOLATION BASED TASK WITH NO MEAN SUBTRACTION """
+""" PARAMS FOR GAUSSIAN PROCESS AND KERNEL CHOICES """
 
 framerate = 30
-time_duration = 10
-#num_velocity_points = time_duration * framerate
-num_velocity_points = convert(Int, time_duration * framerate / 6)
+time_duration = 2
+num_position_points = time_duration * framerate
 
-# filling in n-1 samples for every interpolation, where n is the
-# length of the velocity vector. your final amount of samples doubles this each time, then adds 1. 
-interp_iters = round(Int64, log(2, (framerate * time_duration) / (num_velocity_points -1)))
+# can't interpolate in the position based model -- then you get linear motion inside the periodic and random motion. 
+#interp_iters = round(Int64, log(2, (framerate * time_duration) / (num_position_points -1)))
 
-param_dict = Dict(Periodic => [[5, 10], [.5], [1, 1.5]],
-                  RandomWalk => [collect(20:20:80)],
-                  UniformLinear => [collect(5:5:20)],
-                  SquaredExponential => [collect(50:150:200), [.01, .2]],
-                  :noise => [.0001, .0005])
+param_dict = Dict(Periodic => [[5, 10], [.5, 1], [1, 2]],
+                  RandomWalk => [collect(5:5:20)],
+                  UniformLinear => [collect(10:5:25)],
+                  SquaredExponential => [collect(25:50:225), [.1, .2]],
+                  :noise => [.00001, .0001])
 
-kernel_types = [RandomWalk, UniformLinear, Periodic]
+#kernel_types = [RandomWalk, Periodic, SquaredExponential, UniformLinear]
+#@dist choose_kernel_type() = kernel_types[categorical([1/4, 1/4, 1/4, 1/4])]
+
+kernel_types = [Periodic, SquaredExponential, UniformLinear]
 @dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
 
 
 
-""" PARAMS FOR INTERPOLATION BASED TASK WITH MEAN SUBTRACTED PERIODIC AND RANDOM"""
-
-# framerate = 30
-# time_duration = 10
-# #num_velocity_points = time_duration * framerate
-# num_velocity_points = convert(Int, time_duration * framerate / 6)
-
-# # filling in n-1 samples for every interpolation, where n is the
-# # length of the velocity vector. your final amount of samples doubles this each time, then adds 1. 
-# interp_iters = round(Int64, log(2, (framerate * time_duration) / (num_velocity_points -1)))
-
-# param_dict = Dict(Periodic => [[10, 20], [.5], [1, 2]],
-#                   RandomWalk => [collect(50:50:200)],
-#                   UniformLinear => [collect(5:5:20)],
-#                   SquaredExponential => [collect(50:150:200), [.01, .2]],
-#                   :noise => [.0001, .0005])
-
-# kernel_types = [RandomWalk, UniformLinear, Periodic]
-# @dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
-
-
-
-
-""" PARAMS FOR NO INTERPOLATION, RICHER MOTION TASK """ 
-
-# Note random motion is impossible with interpolation. Currently scaling up 6x,
-# which creates correlations in 6-point windows. Once you get rid of interpolation, random walking behavior becomes jarringly vibrational. A better approximation to sinusoidal motion's smoothness is the squared exponential which maintains correlations over specified timewindows. 
-
-# framerate = 30
-# time_duration = 10
-# num_velocity_points = convert(Int, time_duration * framerate)
-
-# # filling in n-1 samples for every interpolation, where n is the
-# # length of the velocity vector. your final amount of samples doubles this each time, then adds 1. 
-# interp_iters = round(Int64, log(2, (framerate * time_duration) / (num_velocity_points -1)))
-
-# param_dict = Dict(Periodic => [[50], [.5, 1, 2], [1, 3, 5]],
-#                   RandomWalk => [collect(20:50:320)],
-#                   UniformLinear => [collect(2:2:15)],
-#                   SquaredExponential => [collect(1:10:500), collect(.01:.02:.03)],
-#                   :noise => [.0001, .0005])
-
-# kernel_types = [RandomWalk, UniformLinear, Periodic, SquaredExponential]
-# @dist choose_kernel_type() = kernel_types[categorical([1/4, 0/4, 0/4, 3/4])]
 
 
 
@@ -1409,6 +1348,8 @@ kernel_types = [RandomWalk, UniformLinear, Periodic]
         kernel_args = [amplitude, lengthscale, period]
     elseif kernel_type == UniformLinear
         kernel_args = [{(:covariance, dot, dim)} ~ multinomial(param_dict[UniformLinear][1])]
+ #   elseif kernel_type == UniformLinear
+  #      kernel_args = [{(:covariance, dot, dim)} ~ multinomial(param_dict[UniformLinear][1])]
     elseif kernel_type == RandomWalk
         kernel_args = [{(:variance, dot, dim)} ~ multinomial(param_dict[RandomWalk][1])]
     elseif kernel_type == SquaredExponential
