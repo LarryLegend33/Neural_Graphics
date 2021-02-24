@@ -16,7 +16,6 @@ using CurricularAnalytics
 using BSON: @save, @load
 using MappedArrays
 
-ENV["MPLBACKEND"] = "TkAgg"
 
 function interpolate_coords(vel, iter)
     if iter == 0
@@ -106,17 +105,10 @@ end
         kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
         cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
         cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
-
-        add_branch_jitter = {(:add_branch_jitter, dot)} ~ bernoulli(.2)
-        if add_branch_jitter
-            jitter_mag = {(:jitter_magnitude, dot)} ~ multinomial([.01, .05])
-            noise_covfunc = RandomWalk(jitter_mag)
-            covmat_x = compute_cov_matrix_vectorized(Plus(cov_func_x, noise_covfunc), noise, ts)
-            covmat_y = compute_cov_matrix_vectorized(Plus(cov_func_y, noise_covfunc), noise, ts)
-        else
-            covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
-            covmat_y = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
-        end
+        jitter_mag = {(:jitter, dot)} ~ multinomial(param_dict[:jitter])
+        noise_covfunc = RandomWalk(jitter_mag)
+        covmat_x = compute_cov_matrix_vectorized(Plus(cov_func_x, noise_covfunc), noise, ts)
+        covmat_y = compute_cov_matrix_vectorized(Plus(cov_func_y, noise_covfunc), noise, ts)
         x_pos = {(:x_pos, dot)} ~ mvnormal(x_pos_mean, covmat_x)
         y_pos = {(:y_pos, dot)} ~ mvnormal(y_pos_mean, covmat_y)
         # Sample from the GP using a multivariate normal distribution with
@@ -151,13 +143,15 @@ end
 function dotwrap(num_dots::Int)
     trace, args = dotsample(num_dots)
     pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
- #   inf_results, top_bayes_graph = bayesian_observer(trace)
+    inf_results, top_bayes_graph = bayesian_observer(trace)
+    analyze_and_plot_inference(inf_results...)
 #    inf_results = animate_inference(trace)
 #    analyze_and_plot_inference(inf_results[1:4]...)
-#    analyze_and_plot_inference(inf_results...)
+
     #   return trace, inf_results, pw_distances, number_repeats, visible_parent
     #    return trace, inf_results, top_bayes_graph
-  #  return get_choices(top_bayes_graph)
+    #  return get_choices(top_bayes_graph)
+#    s = visualize_scenegraph(get_retval(top_bayes_graph)[1])
     s = Scene()
     for i in 1:nv(get_retval(trace)[1])
         plot!(props(get_retval(trace)[1], i)[:Position_X], color=:blue)
@@ -400,7 +394,6 @@ function score_human_performance(subjects::Array{String, 1}, reinfer_traces)
         (trace, w) = Gen.generate(generate_dotmotion, trace_args, trace_choices)
         push!(final_human_experiment, trace)
     end
-
     if reinfer_traces
         inf_results_importance_w_hyper = [animate_inference(trace) for trace in final_human_experiment]
         inf_results_enumeration = [bayesian_observer(trace)[2] for trace in final_human_experiment]
@@ -504,7 +497,9 @@ end
 function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     num_dots = nv(get_retval(trace)[1])
     kernel_choices = [kernel_types for i in 1:num_dots]
+    jitter_choices = [param_dict[:jitter] for i in 1:num_dots]
     kernel_combos = collect(Iterators.product(kernel_choices...))
+    jitter_combos = collect(Iterators.product(jitter_choices...))
     possible_edges = [(i, j) for i in 1:num_dots for j in 1:num_dots if i != j]
     truth_entry = [[0,1] for i in 1:size(possible_edges)[1]]
     if !isempty(truth_entry)
@@ -519,8 +514,14 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     top_score = -Inf
     top_trace = trace
     scores = []
+    enum_constraints = Gen.choicemap()
+    for i in 1:num_dots
+        enum_constraints[(:x_pos, i)] = trace[(:x_pos, i)]
+        enum_constraints[(:y_pos, i)] = trace[(:y_pos, i)]
+        enum_constraints[(:offset_x, i)] = trace[(:offset_x, i)]
+        enum_constraints[(:offset_y, i)] = trace[(:offset_y, i)]
+    end
     for eg in edge_truthtable
-        enum_constraints = Gen.choicemap()
         for (eg_id, e) in enumerate(eg)
             if e == 1
                 enum_constraints[(:edge, possible_edges[eg_id][1], possible_edges[eg_id][2])] = true
@@ -528,15 +529,11 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
                 enum_constraints[(:edge, possible_edges[eg_id][1], possible_edges[eg_id][2])] = false
             end
         end
-
+        
         for kc in kernel_combos
             for (dot, k) in enumerate(kc)
                 enum_constraints[(:kernel_type, dot)] = k
                 println(k)
-            end
-            for i in 1:num_dots
-                enum_constraints[(:x_pos, i)] = trace[(:x_pos, i)]
-                enum_constraints[(:y_pos, i)] = trace[(:y_pos, i)]
             end
             # clears order from the original trace
             constraints_no_noise_order = [map_entry for map_entry in get_values_shallow(enum_constraints) if !(typeof(map_entry[1]) == Symbol)]
@@ -546,35 +543,40 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
             collect_params_per_ktype = [Iterators.product([param_dict[ktype]..., param_dict[ktype]...]...) for ktype in kernel_assignments]
             all_param_permutations = Iterators.product(collect_params_per_ktype...)
             # this is totally correct. for random random, gives all combinations in form of ((10, 10), (10, 11))
-            sum_order_scores = 0
+            scene_scores = []
             for dp in all_dot_permutations(num_dots)
                 enum_constraints[:order_choice] = dp
-                sum_order_scores += .001
-                #    (new_trace, w, a, ad) = Gen.update(trace, get_args(trace), (NoChange(),), enum_constraints)
-                #     pscore = exp(get_score(new_trace))
- #               sum_order_scores += exp(w)
-                for noise in param_dict[:noise]
-                    enum_constraints[:noise] = noise
-                    for param_permutation in all_param_permutations
-                        param_assignments = hyper_permutation_to_assignment(kernel_assignments, param_permutation)
-                        for p in param_assignments
-                            enum_constraints[p.first] = p.second
+                for jc in jitter_combos
+                    for (dot, j) in enumerate(jc)
+                        enum_constraints[(:jitter, dot)] = j
+                    end
+                    for noise in param_dict[:noise]
+                        enum_constraints[:noise] = noise
+                        for param_permutation in all_param_permutations
+                            param_assignments = hyper_permutation_to_assignment(kernel_assignments, param_permutation)
+                            for p in param_assignments
+                                enum_constraints[p.first] = p.second
+                            end
+                            (tr, w) = Gen.generate(generate_dotmotion, trace_args, enum_constraints)
+                            append!(scene_scores, w)
+                            if w > top_score
+                                top_trace = tr
+                                top_score = w
+                                println("top score")
+                                println(top_score)
+                            end
                         end
-                        (tr, w) = Gen.generate(generate_dotmotion, trace_args, enum_constraints)
-                        if w > top_score
-                            top_trace = tr
-                            top_score = w
-                            println("top score")
-                            println(top_score)
-                        end
-                     end
+                    end
                 end
             end
-            append!(scores, sum_order_scores)
+            push!(scores, scene_scores)
         end
     end
-  #  scores /= sum(scores)
-    score_matrix = reshape(scores, prod(collect(size(kernel_combos))), size(edge_truthtable)[1])
+    total_score = logsumexp(convert(Array{Float64, 1}, vcat(scores...)))
+    println("TOTAL SCORE")
+    score_scenegraph = [sum(map(x-> exp(x - total_score), sc)) for sc in scores]
+    println(score_scenegraph)
+    score_matrix = reshape(score_scenegraph, prod(collect(size(kernel_combos))), size(edge_truthtable)[1])
     plotvals = [score_matrix, kernel_combos, possible_edges, edge_truthtable]
     return plotvals, top_trace
 end
@@ -622,6 +624,8 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     for i in 1:num_dots
         observation[(:x_pos, i)] = trace[(:x_pos, i)]
         observation[(:y_pos, i)] = trace[(:y_pos, i)]
+        observation[(:offset_x, i)] = trace[(:offset_x, i)]
+        observation[(:offset_y, i)] = trace[(:offset_y, i)]
     end
     edge_list = []
     kernel_types = []
@@ -637,14 +641,14 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
 end
 
 
-function analyze_and_plot_inference(score_matrix::Array{Any, 2}, kernels,
+function analyze_and_plot_inference(score_matrix, kernels,
                                     possible_edges, edge_truth)
     graphs_and_probs = analyze_inference_results(score_matrix, kernels, possible_edges, edge_truth)
     plot_inference_results(graphs_and_probs[2:end]...)
 end    
 
 
-function analyze_inference_results(score_matrix::Array{Any, 2}, kernels, possible_edges, edge_truth)
+function analyze_inference_results(score_matrix, kernels, possible_edges, edge_truth)
     # TOP 3 GRAPHS
     top_graphs = find_top_n_props(3, score_matrix, [])
     rendered_graphs = []
@@ -1015,7 +1019,7 @@ end
 
 
 function find_top_n_props(n::Int,
-                          score_matrix::Array{Any, 2},
+                          score_matrix,
                           max_inds)
     mi = findmax(mappedarray(x-> isfinite(x) ? x : 0.0, score_matrix))
     if n == 0 || mi[1] == 0
@@ -1151,14 +1155,15 @@ end
 
 """Linear kernel"""
 struct UniformLinear <: PrimitiveKernel
-    param::Float64
+    c::Float64
+    σ::Float64
 end
 
-eval_cov(node::UniformLinear, t1, t2) = (t1 - node.param) * (t2 - node.param)
+eval_cov(node::UniformLinear, t1, t2) = node.σ^2 * (t1 - node.c) * (t2 - node.c)
 
 function eval_cov_mat(node::UniformLinear, ts::Array{Float64})
-    ts_minus_param = ts .- node.param
-    ts_minus_param * ts_minus_param'
+    ts_minus_param = ts .- node.c
+    node.σ^2 .* (ts_minus_param * ts_minus_param')
 end
 
 
@@ -1315,18 +1320,28 @@ end
 
 """ PARAMS FOR GAUSSIAN PROCESS AND KERNEL CHOICES """
 
-framerate = 30
-time_duration = 2
+framerate = 25
+time_duration = 3
 num_position_points = time_duration * framerate
 
 # can't interpolate in the position based model -- then you get linear motion inside the periodic and random motion. 
 #interp_iters = round(Int64, log(2, (framerate * time_duration) / (num_position_points -1)))
 
-param_dict = Dict(Periodic => [[5, 10], [.5, 1], [1, 2]],
-                  RandomWalk => [collect(5:5:20)],
-                  UniformLinear => [collect(10:5:25)],
-                  SquaredExponential => [collect(25:50:225), [.1, .2]],
-                  :noise => [.00001, .0001])
+# param_dict = Dict(Periodic => [[5, 10], [.5, 1], [1, 2]],
+#                   RandomWalk => [collect(5:5:20)],
+#                   UniformLinear => [collect(10:5:25)],
+#                   SquaredExponential => [collect(25:50:225), [.1, .2]],
+#                   :noise => [.00001, .0001],
+#                   :jitter => [0, .01, .1])
+
+
+param_dict = Dict(Periodic => [[5], [.5, 1], [1]],
+                  UniformLinear => [[5,10], [5]],
+                  SquaredExponential => [[25, 50], [.1, .2]],
+                  :noise => [.00001],
+                  :jitter => [0, .01, .1])
+
+
 
 #kernel_types = [RandomWalk, Periodic, SquaredExponential, UniformLinear]
 #@dist choose_kernel_type() = kernel_types[categorical([1/4, 1/4, 1/4, 1/4])]
@@ -1347,9 +1362,9 @@ kernel_types = [Periodic, SquaredExponential, UniformLinear]
         amplitude = {(:amplitude, dot, dim)} ~ multinomial(param_dict[Periodic][1])
         kernel_args = [amplitude, lengthscale, period]
     elseif kernel_type == UniformLinear
-        kernel_args = [{(:covariance, dot, dim)} ~ multinomial(param_dict[UniformLinear][1])]
- #   elseif kernel_type == UniformLinear
-  #      kernel_args = [{(:covariance, dot, dim)} ~ multinomial(param_dict[UniformLinear][1])]
+        lengthscale =  {(:lengthscale, dot , dim)} ~ multinomial(param_dict[UniformLinear][1])  
+        variance = {(:variance, dot, dim)} ~ multinomial(param_dict[UniformLinear][2])
+        kernel_args = [lengthscale, variance]
     elseif kernel_type == RandomWalk
         kernel_args = [{(:variance, dot, dim)} ~ multinomial(param_dict[RandomWalk][1])]
     elseif kernel_type == SquaredExponential
