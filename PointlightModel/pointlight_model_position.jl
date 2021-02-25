@@ -61,13 +61,16 @@ end
 # have to specify all edges at once.
 
 
-@gen function generate_dotmotion(ts::Array{Float64}, 
-                                    n_dots::Int)
+@gen function generate_dotmotion(ts::Array{Float64})
+
+    n_dots = { :n_dots } ~ poisson_bounded_below(1)
     motion_tree = MetaDiGraph(n_dots)
     order_distribution = return_dot_distribution(n_dots)
     perceptual_order = { :order_choice } ~ order_distribution()
     noise = { :noise } ~ multinomial(param_dict[:noise])
     candidate_edges = [p for p in Iterators.product(perceptual_order, perceptual_order) if p[1] != p[2]]
+
+    
     motion_tree_updated = {*} ~ populate_edges(motion_tree, candidate_edges)
     dot_list = sort(collect(1:nv(motion_tree_updated)),
                     by=ϕ->(size(inneighbors(motion_tree_updated, ϕ))[1]))
@@ -86,6 +89,7 @@ end
     else
         dot = first(dots)
         parents = inneighbors(motion_tree, dot)
+        isvisible = {(:isvisible, dot)} ~ bernoulli(.6)
         offset_x = {(:offset_x, dot)} ~ uniform_discrete(-5, 5)
         offset_y = {(:offset_y, dot)} ~ uniform_discrete(-5, 5)
         if isempty(parents)
@@ -132,32 +136,32 @@ end
 
 
 """ These functions wrap model runs and inference to evaluate inference accuracy """ 
-function dotsample(num_dots::Int)
+function dotsample()
     ts = range(1, stop=time_duration, length=num_position_points)
-    gdm_args = (convert(Array{Float64}, ts), num_dots)
-    trace = Gen.simulate(generate_dotmotion, gdm_args)
+    gdm_args = convert(Array{Float64}, ts)
+    trace = Gen.simulate(generate_dotmotion, (gdm_args, ))
     trace_choices = get_choices(trace)
     return trace, gdm_args
 end    
 
-function dotwrap(num_dots::Int)
-    trace, args = dotsample(num_dots)
-    pw_distances, number_repeats, visible_parent = render_stim_only(trace, true)
-    inf_results, top_bayes_graph = bayesian_observer(trace)
-    analyze_and_plot_inference(inf_results...)
+function dotwrap()
+    trace, args = dotsample()
+    pw_distances, number_repeats = render_stim_only(trace, true)
+#    inf_results, top_bayes_graph = bayesian_observer(trace)
+#    analyze_and_plot_inference(inf_results...)
 #    inf_results = animate_inference(trace)
-#    analyze_and_plot_inference(inf_results[1:4]...)
+ #   analyze_and_plot_inference(inf_results[1:4]...)
 
-    #   return trace, inf_results, pw_distances, number_repeats, visible_parent
+    #   return trace, inf_results, pw_distances, number_repeats
     #    return trace, inf_results, top_bayes_graph
     #  return get_choices(top_bayes_graph)
 #    s = visualize_scenegraph(get_retval(top_bayes_graph)[1])
-    s = Scene()
-    for i in 1:nv(get_retval(trace)[1])
-        plot!(props(get_retval(trace)[1], i)[:Position_X], color=:blue)
-        plot!(props(get_retval(trace)[1], i)[:Position_Y], color=:red)
-    end
-    display(s)
+    # s = Scene()
+    # for i in 1:nv(get_retval(trace)[1])
+    #     plot!(props(get_retval(trace)[1], i)[:Position_X], color=:blue)
+    #     plot!(props(get_retval(trace)[1], i)[:Position_Y], color=:red)
+    # end
+    # display(s)
 end
 
 
@@ -288,11 +292,10 @@ function run_human_experiment()
     confidence_results = []
     pw_dist_results = []
     repeats_results = []
-    visible_parent_results = []
     for training_trial in 1:num_training_trials
         num_dots = convert(Int, training_dot_numbers[training_trial])
         trace, args = dotsample(num_dots)
-        pw_dist, num_repeats, visible_parent = render_stim_only(trace, true)
+        pw_dist, num_repeats = render_stim_only(trace, true)
         a_scene, confidence, biomotion = answer_portal(training_trial, subject_directory, num_dots)
     end
     @load string(human_task_directory, "human_task_order.bson") human_task_order 
@@ -300,25 +303,23 @@ function run_human_experiment()
         @load string(human_task_directory, "/", trace_id) trace_args trace_choices
         (trace, w) = Gen.generate(generate_dotmotion, trace_args, trace_choices)
         num_dots = nv(get_retval(trace)[1])
-        pw_dist, num_repeats, visible_parent = render_stim_only(trace, false)
+        pw_dist, num_repeats = render_stim_only(trace, false)
 #        inf_results = animate_inference(trace)
 #        analyze_and_plot_inference(inf_results[1:4]...)
         # GIVES YOU SCENEGRAPH. 
 # UNCOMMENT IF YOU WANT TO SHOW THE GROUND TRUTH AFTER THE FIRST PASS         
-#        pw_dist, num_repeats, visible_parent = render_stim_only(trace, true)
+#        pw_dist, num_repeats = render_stim_only(trace, true)
         answer_graph, confidence, biomotion = answer_portal(trial_n, subject_directory, num_dots)
         savegraph(string(subject_directory, "/answers", trial_n, ".mg"), answer_graph)
         push!(biomotion_results, biomotion)
         push!(confidence_results, confidence)
         push!(pw_dist_results, pw_dist)
         push!(repeats_results, num_repeats)
-        push!(visible_parent_results, visible_parent)
     end
     @save string(subject_directory, "/biomotion.bson") biomotion_results
     @save string(subject_directory, "/confidence.bson") confidence_results
     @save string(subject_directory, "/repeats.bson") repeats_results
     @save string(subject_directory, "/pw_dist.bson") pw_dist_results
-    @save string(subject_directory, "/visible_parent.bson") visible_parent_results
 end    
 
 
@@ -417,7 +418,6 @@ function score_human_performance(subjects::Array{String, 1}, reinfer_traces)
         @load string(directory, "/confidence.bson") confidence_results
         @load string(directory, "/repeats.bson") repeats_results
         @load string(directory, "/pw_dist.bson") pw_dist_results
-        @load string(directory, "/visible_parent.bson") visible_parent_results
         trial_results = Dict(:subject => subject,
                              :human_truth_match => [],
                              :truth_importance_match => [],
@@ -516,10 +516,12 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     scores = []
     enum_constraints = Gen.choicemap()
     for i in 1:num_dots
-        enum_constraints[(:x_pos, i)] = trace[(:x_pos, i)]
-        enum_constraints[(:y_pos, i)] = trace[(:y_pos, i)]
-        enum_constraints[(:offset_x, i)] = trace[(:offset_x, i)]
-        enum_constraints[(:offset_y, i)] = trace[(:offset_y, i)]
+        if trace[(:isvisible, dot)]
+            enum_constraints[(:x_pos, i)] = trace[(:x_pos, i)]
+            enum_constraints[(:y_pos, i)] = trace[(:y_pos, i)]
+            enum_constraints[(:offset_x, i)] = trace[(:offset_x, i)]
+            enum_constraints[(:offset_y, i)] = trace[(:offset_y, i)]
+        end
     end
     for eg in edge_truthtable
         for (eg_id, e) in enumerate(eg)
@@ -622,10 +624,12 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     num_particles = (num_dots ^ 2) * 100
     num_resamples = 30
     for i in 1:num_dots
-        observation[(:x_pos, i)] = trace[(:x_pos, i)]
-        observation[(:y_pos, i)] = trace[(:y_pos, i)]
-        observation[(:offset_x, i)] = trace[(:offset_x, i)]
-        observation[(:offset_y, i)] = trace[(:offset_y, i)]
+        if trace[(:isvisible, dot)]
+            observation[(:x_pos, i)] = trace[(:x_pos, i)]
+            observation[(:y_pos, i)] = trace[(:y_pos, i)]
+            observation[(:offset_x, i)] = trace[(:offset_x, i)]
+            observation[(:offset_y, i)] = trace[(:offset_y, i)]
+        end
     end
     edge_list = []
     kernel_types = []
@@ -912,18 +916,24 @@ end
 """ These functions are for visualizing scenegraphs and animating dotmotion using Makie """
 
 
-function tree_to_coords(tree::MetaDiGraph{Int64, Float64})
-    num_dots = nv(tree)
-#    dotmotion = fill(zeros(2), num_dots, size(interpolate_coords(props(tree, 1)[:Position_X], interp_iters))[1])
-    dotmotion = fill(zeros(2), num_dots, size(props(tree, 1)[:Position_X])[1])
-    # Assign first dot positions based on its initial XY position and velocities
-    for dot in 1:num_dots
-        dot_data = props(tree, dot)
-        dotmotion[dot, :] = [[x, y] for (x, y) in zip(dot_data[:Position_X], dot_data[:Position_Y])]
-            # interpolate_coords(dot_data[:Position_X], interp_iters),
-            # interpolate_coords(dot_data[:Position_Y], interp_iters))]
+function tree_to_coords(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    tree = get_retval(trace)[1]
+    visible_dots = [dot for dot in 1:nv(tree) if trace[(:isvisible, dot)]]
+    dotmotion = fill(zeros(2), length(visible_dots), size(props(tree, 1)[:Position_X])[1])
+    if isempty(visible_dots)
+        return [], []
     end
-    dotmotion_tuples = [[Tuple(dotmotion[i, j]) for i in 1:num_dots] for j in 1:size(dotmotion)[2]]
+    vis_dot_index = 1
+    for dot in 1:nv(tree)
+        if dot in visible_dots
+            dot_data = props(tree, dot)
+            println("Past here")
+            dotmotion[vis_dot_index, :] = [[x, y] for (x, y) in zip(dot_data[:Position_X], dot_data[:Position_Y])]
+            vis_dot_index += 1
+        end
+    end
+    println(dotmotion)
+    dotmotion_tuples = [[Tuple(dotmotion[i, j]) for i in 1:length(visible_dots)] for j in 1:size(dotmotion)[2]]
     return dotmotion_tuples, dotmotion
 end
 
@@ -962,9 +972,6 @@ function xy_node_positions(paths::Array{Array, 1},
         # each path has its own x coord. first path goes to x = 1, and unassigned will have xcoord = 0 
         [xc[dot] == 0 ? xc[dot] = n_iters : xc[dot] = xc[dot] for dot in path]
         # reachable_to counts how many dots are connected in the path stemming from the current dot.
-
-        # inverted this at the end! wtf just make it right here. 
-        
         [yc[dot] = longest_path - length(reachable_to(motion_tree.graph, dot)) for dot in path]
         xy_node_positions(paths[2:end], xc, yc, n_iters+1, motion_tree, longest_path)
     end
@@ -1035,22 +1042,19 @@ end
 
 
 function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, show_scenegraph::Bool)
-    motion_tree = get_retval(trace)[1]
     # ask which has the max of incoming edges
     bounds = 25
     res = 1400
     outer_padding = 0
-    dotmotion, raw_dotmotion = tree_to_coords(motion_tree)
-    dot_w_most_incoming_edges = findmax(map(x -> length(reachable_to(motion_tree.graph, x)), 1:nv(motion_tree)))[2]    
-    if bernoulli(.05) && ne(motion_tree) > 0 
-        parent_visible = false
-        dotmotion = [[d[dot_w_most_incoming_edges]] for d in dotmotion]
-        println("invisible parent")
-    else
-        parent_visible = true
+    dotmotion, raw_dotmotion = tree_to_coords(trace)
+    if isempty(dotmotion)
+        println("NO VISIBLE DOTS")
+        return [], []
     end
+    motion_tree = get_retval(trace)[1]
     pairwise_distances = calculate_pairwise_distance(raw_dotmotion)
-    stationary_duration = 100
+    invisible_dots = [dot for dot in 1:nv(motion_tree) if !trace[(:isvisible, dot)]]
+    stationary_duration = 50
     stationary_coords = [dotmotion[1] for i in 1:stationary_duration]
     f(t, coords) = coords[t]
     f_color(t) = t < stationary_duration ? :white : :black
@@ -1061,9 +1065,11 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     scene = Scene(backgroundcolor=black, resolution=(res, res))
     time_node = Node(1);
     f(t, coords) = coords[t]
-    for n in 1:nv(motion_tree)
-        textloc = (props(motion_tree, n)[:Position_X][1], props(motion_tree, n)[:Position_Y][1])
-        text!(scene, string(n), position = (textloc[1], textloc[2] + 1), color=lift(t -> f_color(t), time_node), textsize=2)
+    for dot in 1:nv(motion_tree)
+        if !(dot in invisible_dots)
+            textloc = (props(motion_tree, dot)[:Position_X][1], props(motion_tree, dot)[:Position_Y][1])
+            text!(scene, string(dot), position = (textloc[1], textloc[2] + 1), color=lift(t -> f_color(t), time_node), textsize=2)
+        end
     end
     scatter!(scene, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=14px, color=RGBf0(255, 255, 255))
     xlims!(scene, (-bounds, bounds))
@@ -1099,7 +1105,7 @@ function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
         time_node[] = i
         sleep(1/framerate)
     end
-    return pairwise_distances, num_repeats, parent_visible
+    return pairwise_distances, num_repeats
 end
 
 
@@ -1334,17 +1340,22 @@ num_position_points = time_duration * framerate
 #                   :noise => [.00001, .0001],
 #                   :jitter => [0, .01, .1])
 
+# THESE PARAMS ARE GOOD -- BUT UNIFORM DOESNT STAY IN BOUNDS OFTEN
 
-param_dict = Dict(Periodic => [[5], [.5, 1], [1]],
-                  UniformLinear => [[5,10], [5]],
-                  SquaredExponential => [[25, 50], [.1, .2]],
+# param_dict = Dict(Periodic => [[5], [.5, 1], [1]],
+#                   UniformLinear => [[.5,1], [10]],
+#                   SquaredExponential => [[25, 50], [.1, .2]],
+#                   :noise => [.00001],
+#                   :jitter => [0, .01, .1])
+
+# kernel_types = [Periodic, SquaredExponential, UniformLinear]
+# @dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
+
+param_dict = Dict(Periodic => [[3], [.5, 1], [1]],
+                  UniformLinear => [[.5], [6, 12]],
+                  SquaredExponential => [[2, 10], [.05]],
                   :noise => [.00001],
                   :jitter => [0, .01, .1])
-
-
-
-#kernel_types = [RandomWalk, Periodic, SquaredExponential, UniformLinear]
-#@dist choose_kernel_type() = kernel_types[categorical([1/4, 1/4, 1/4, 1/4])]
 
 kernel_types = [Periodic, SquaredExponential, UniformLinear]
 @dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
@@ -1376,6 +1387,8 @@ end
 
 
 @dist gamma_bounded_below(shape, scale, bound) = gamma(shape, scale) + bound
+
+@dist poisson_bounded_below(bound) = poisson(1) + bound
 
 @dist multinomial(possibilities) = possibilities[uniform_discrete(1, length(possibilities))]
 
