@@ -15,18 +15,77 @@ using StatsBase
 using CurricularAnalytics
 using BSON: @save, @load
 using MappedArrays
+using Base.Threads: @spawn
 
 
-function interpolate_coords(vel, iter)
-    if iter == 0
-        return vel
-    else
-        interped_vel = vcat([[vel[i], mean([vel[i], vel[i+1]])] for i in 1:length(vel)-1]...)
-        push!(interped_vel, vel[end])
-        interpolate_coords(vcat(interped_vel...), iter-1)        
+
+function manipulate_trace(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints)
+    choices = choicemap(get_choices(trace))
+    args = get_args(trace)
+    println("here")
+    if !isempty(constraints)
+        for key in keys(constraints)
+            choices[key] = constraints[key]
+        end
     end
+    (updated_trace, w, retdiff, discard) = Gen.update(trace, args, (), choices)
+    scenegraph = trace_to_tree(updated_trace)
+    @spawn render_stim_only(updated_trace, scenegraph, true)
+    return updated_trace
+end    
+
+
+function simple_wrap()
+    ts = range(1, stop=time_duration, length=num_position_points)
+    gdm_args = convert(Array{Float64}, ts)
+    tr = Gen.simulate(generate_scenegraph, (gdm_args,))
+    scenegraph = trace_to_tree(tr)
+    render_stim_only(tr, scenegraph, true)
+    simple_importance_sampling(tr, Dict(:num_dots => tr[:num_dots]))
+    return tr
 end
 
+
+function trace_to_tree(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    choicemap = get_choices(trace)
+    num_dots = trace[:num_dots]
+    scenegraph = MetaDiGraph(num_dots)
+    for dot in 1:num_dots
+        x_pos = trace[(:x_pos, dot)] .+ trace[(:jitter, dot)]
+        y_pos = trace[(:y_pos, dot)] .+ trace[(:jitter, dot)]
+        for parent in 1:dot-1
+            if trace[(:edge, parent, dot)]
+                add_edge!(scenegraph, parent, dot)
+                x_pos .+= trace[(:x_pos, parent)]
+                y_pos .+= trace[(:y_pos, parent)]
+                x_pos .+= trace[(:jitter, parent)]
+                y_pos .+= trace[(:jitter, parent)]
+            end
+        end
+        set_props!(scenegraph, dot,
+                   Dict(:Position_X=>x_pos, :Position_Y=>y_pos, :MType=>string(trace[(:kernel_type, dot)])))
+    end
+    return scenegraph
+end    
+
+@gen function generate_scenegraph(ts::Array{Float64})
+    num_dots = { :num_dots } ~ poisson_bounded_below(1)
+    noise = { :noise } ~ multinomial(param_dict[:noise])
+    for dot in 1:num_dots
+        for parent in 1:dot-1
+            add_edge = {(:edge, parent, dot)} ~ bernoulli(.3)
+        end
+        kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
+        cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
+        cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
+        jitter = {(:jitter, dot)} ~ multinomial(param_dict[:jitter])
+        covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
+        covmat_y = compute_cov_matrix_vectorized(cov_func_y, noise, ts)
+        xpos = {(:x_pos, dot)} ~ mvnormal(ts, covmat_x)
+        ypos = {(:y_pos, dot)} ~ mvnormal(ts, covmat_y)
+        isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
+    end
+end
 
 """ GENERATIVE CODE: These functions output dotmotion stimuli using GP-generated timeseries"""
 
@@ -63,22 +122,21 @@ end
 
 @gen function generate_dotmotion(ts::Array{Float64})
 
-    n_dots = { :n_dots } ~ poisson_bounded_below(1)
-    motion_tree = MetaDiGraph(n_dots)
-    order_distribution = return_dot_distribution(n_dots)
+    num_dots = { :num_dots } ~ poisson_bounded_below(1)
+    motion_tree = MetaDiGraph(num_dots)
+    order_distribution = return_dot_distribution(num_dots)
     perceptual_order = { :order_choice } ~ order_distribution()
     noise = { :noise } ~ multinomial(param_dict[:noise])
     candidate_edges = [p for p in Iterators.product(perceptual_order, perceptual_order) if p[1] != p[2]]
-
-    
     motion_tree_updated = {*} ~ populate_edges(motion_tree, candidate_edges)
-    dot_list = sort(collect(1:nv(motion_tree_updated)),
-                    by=ϕ->(size(inneighbors(motion_tree_updated, ϕ))[1]))
+#    dot_list = sort(collect(1:nv(motion_tree_updated)),
+    #                   by=ϕ->(size(inneighbors(motion_tree_updated, ϕ))[1]))
+    topographically_ordered_dot_list = topological_sort_by_dfs(motion_tree_updated)
     motion_tree_assigned = {*} ~ assign_positions(motion_tree_updated,
-                                                  dot_list,
+                                                  topographically_ordered_dot_list,
                                                   ts,
                                                   noise)
-    return motion_tree_assigned, dot_list
+    return motion_tree_assigned, topographically_ordered_dot_list
 end
 
 
@@ -89,7 +147,7 @@ end
     else
         dot = first(dots)
         parents = inneighbors(motion_tree, dot)
-        isvisible = {(:isvisible, dot)} ~ bernoulli(.6)
+        isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
         offset_x = {(:offset_x, dot)} ~ uniform_discrete(-5, 5)
         offset_y = {(:offset_y, dot)} ~ uniform_discrete(-5, 5)
         if isempty(parents)
@@ -147,11 +205,9 @@ end
 function dotwrap()
     trace, args = dotsample()
     pw_distances, number_repeats = render_stim_only(trace, true)
-#    inf_results, top_bayes_graph = bayesian_observer(trace)
-#    analyze_and_plot_inference(inf_results...)
-#    inf_results = animate_inference(trace)
- #   analyze_and_plot_inference(inf_results[1:4]...)
-
+    imp_samples, imp_graphs = imp_inference(trace, Dict())
+    rendered_graphs, probabilities = top_imp_results(imp_graphs)
+    plot_inference_results(rendered_graphs, probabilities)
     #   return trace, inf_results, pw_distances, number_repeats
     #    return trace, inf_results, top_bayes_graph
     #  return get_choices(top_bayes_graph)
@@ -162,10 +218,25 @@ function dotwrap()
     #     plot!(props(get_retval(trace)[1], i)[:Position_Y], color=:red)
     # end
     # display(s)
+    return trace
 end
 
+# if this is going to change anything, need to separate trace generation from
+# the MetaGraph construction, because currently you can change the trace, but the retval
+# will still be the original metagraph with the originally assigned metadata.
 
+# when you currently change an edge or the jitter, nothing will happen. have to re-render the trace
+# based on the manipulated values. can pass populate edges, because no assignment of positions has happened yet. 
+
+
+
+
+
+function manipulate_trace(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
+                          )
+    choicemap = get_choices(trace)
     
+end    
 
 """ These functions are for creating, administering, and analyzing human data """
 
@@ -584,6 +655,19 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
 end
 
 
+function find_top_metagraphs(graphlist, unique_graphs)
+    if isempty(graphlist)
+        sorted_graphs = sort(unique_graphs, by= l -> length(l), rev=true)
+        total_graphs = length(vcat(unique_graphs...))
+        return [sg[1] for sg in sorted_graphs], [length(sg) / total_graphs for sg in sorted_graphs]
+    else
+        eq_to_element1 = map(x -> x == graphlist[1], graphlist)
+        push!(unique_graphs, graphlist[eq_to_element1])
+        find_top_metagraphs(graphlist[.!eq_to_element1], unique_graphs)
+    end
+end
+
+
 function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     num_dots = nv(get_retval(trace)[1])
     kernel_choices = [kernel_types for i in 1:num_dots]
@@ -615,35 +699,63 @@ function animate_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     return inf_results
 end
 
-function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+
+
+""" this is fine for when you have a trace, but if its a dot array, you have to specify the dot IDs first, 
+and the offsets won't be observable in a true sense -- only the position of the observed dots """
+
+
+
+
+function simple_importance_sampling(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints)
+    all_importance_samples, all_is_graphs = imp_inference(trace, constraints)
+    top_samples, probabilities = top_imp_results(all_is_graphs)
+    plot_inference_results(top_samples, probabilities)
+end
+
+    
+function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
+                       constraints)
     trace_choices = get_choices(trace)
     args = get_args(trace)
-    observation = Gen.choicemap()
+    observations = Gen.choicemap()
     all_samples = []
-    num_dots = nv(get_retval(trace)[1])
+    all_graphs = []
+    num_dots = trace[:num_dots]
     num_particles = (num_dots ^ 2) * 100
     num_resamples = 30
     for i in 1:num_dots
-        if trace[(:isvisible, dot)]
-            observation[(:x_pos, i)] = trace[(:x_pos, i)]
-            observation[(:y_pos, i)] = trace[(:y_pos, i)]
-            observation[(:offset_x, i)] = trace[(:offset_x, i)]
-            observation[(:offset_y, i)] = trace[(:offset_y, i)]
+        if trace[(:isvisible, i)]
+            observations[(:x_pos, i)] = trace[(:x_pos, i)]
+            observations[(:y_pos, i)] = trace[(:y_pos, i)]
+     #       observations[(:offset_x, i)] = trace[(:offset_x, i)]
+     #       observations[(:offset_y, i)] = trace[(:offset_y, i)]
         end
     end
-    edge_list = []
-    kernel_types = []
+    [observations[constraint] = constraints[constraint] for constraint in keys(constraints)]
     for i in 1:num_resamples
-        (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observation, num_particles)
-        push!(edge_list, [tr[(:edge, j, k)] for j in 1:num_dots for k in 1:num_dots if j!=k])
-        push!(kernel_types, [tr[(:kernel_type, j)] for j in 1:num_dots])
+       # (tr, w) = Gen.importance_resampling(generate_dotmotion, args, observations, num_particles)
+        (tr, w) = Gen.importance_resampling(generate_scenegraph, args, observations, num_particles)
+        #        tr_graph = get_retval(tr)[1]
+        tr_graph = trace_to_tree(tr)
+        for i in 1:tr[:num_dots]
+            rem_prop!(tr_graph, i, :Position_X)
+            rem_prop!(tr_graph, i, :Position_Y)
+        end    
         push!(all_samples, tr)
-#        s = visualize_scenegraph(get_retval(tr)[1])
- #       display(s)
+        push!(all_graphs, tr_graph)
     end
-    return all_samples, edge_list, kernel_types
+    return all_samples, all_graphs
 end
 
+
+function top_imp_results(all_graphs)
+    # want the top graphs and probabilities
+    top_graphs, probabilities = find_top_metagraphs(all_graphs, [])
+    top_n = min(3, length(top_graphs))
+    viz_graphs = [visualize_scenegraph(tg) for tg in top_graphs[1:top_n]]
+    return viz_graphs, probabilities[1:top_n]
+end
 
 function analyze_and_plot_inference(score_matrix, kernels,
                                     possible_edges, edge_truth)
@@ -912,12 +1024,14 @@ end
 
 
 
+# Plotting function will now take the top 3 traces raw as well as their probabilities. 
+
 
 """ These functions are for visualizing scenegraphs and animating dotmotion using Makie """
 
 
-function tree_to_coords(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    tree = get_retval(trace)[1]
+function tree_to_coords(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, tree)
+#    tree = get_retval(trace)[1]
     visible_dots = [dot for dot in 1:nv(tree) if trace[(:isvisible, dot)]]
     dotmotion = fill(zeros(2), length(visible_dots), size(props(tree, 1)[:Position_X])[1])
     if isempty(visible_dots)
@@ -927,12 +1041,10 @@ function tree_to_coords(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     for dot in 1:nv(tree)
         if dot in visible_dots
             dot_data = props(tree, dot)
-            println("Past here")
             dotmotion[vis_dot_index, :] = [[x, y] for (x, y) in zip(dot_data[:Position_X], dot_data[:Position_Y])]
             vis_dot_index += 1
         end
     end
-    println(dotmotion)
     dotmotion_tuples = [[Tuple(dotmotion[i, j]) for i in 1:length(visible_dots)] for j in 1:size(dotmotion)[2]]
     return dotmotion_tuples, dotmotion
 end
@@ -1041,17 +1153,17 @@ function find_top_n_props(n::Int,
 end    
 
 
-function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, show_scenegraph::Bool)
+function render_stim_only(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, motion_tree, show_scenegraph::Bool)
     # ask which has the max of incoming edges
     bounds = 25
     res = 1400
     outer_padding = 0
-    dotmotion, raw_dotmotion = tree_to_coords(trace)
+    dotmotion, raw_dotmotion = tree_to_coords(trace, motion_tree)
     if isempty(dotmotion)
         println("NO VISIBLE DOTS")
         return [], []
     end
-    motion_tree = get_retval(trace)[1]
+#    motion_tree = get_retval(trace)[1]
     pairwise_distances = calculate_pairwise_distance(raw_dotmotion)
     invisible_dots = [dot for dot in 1:nv(motion_tree) if !trace[(:isvisible, dot)]]
     stationary_duration = 50
@@ -1311,14 +1423,14 @@ function predict_pos(covariance_fn::Kernel, noise::Float64,
 end
 
 
-function all_dot_permutations(n_dots)
-    all_ranges = [1:n_dots for i in 1:n_dots]
-    all_permutations = [i for i in Iterators.product(all_ranges...) if length(unique(i)) == n_dots]
+function all_dot_permutations(num_dots)
+    all_ranges = [1:num_dots for i in 1:num_dots]
+    all_permutations = [i for i in Iterators.product(all_ranges...) if length(unique(i)) == num_dots]
     return collect(all_permutations)
 end    
 
-function return_dot_distribution(n_dots)
-    d_permut = all_dot_permutations(n_dots)
+function return_dot_distribution(num_dots)
+    d_permut = all_dot_permutations(num_dots)
     @dist dot_permutations() = d_permut[categorical([1/length(d_permut) for i in 1:length(d_permut)])]
 end    
 
@@ -1355,12 +1467,17 @@ param_dict = Dict(Periodic => [[3], [.5, 1], [1]],
                   UniformLinear => [[.5], [6, 12]],
                   SquaredExponential => [[2, 10], [.05]],
                   :noise => [.00001],
-                  :jitter => [0, .01, .1])
+                  :jitter => [zeros(num_position_points),
+                              [normal(0, .01) for i in 1:num_position_points],
+                              [normal(0, .05) for i in 1:num_position_points]])
+#        :jitter => [0, .01, .1])
 
 kernel_types = [Periodic, SquaredExponential, UniformLinear]
 @dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
 
 
+#kernel_types = [Periodic, SquaredExponential, UniformLinear, Plus]
+#@dist choose_kernel_type(multinomial_probabilities) = kernel_types[categorical(multinomial_probabilities)]
 
 
 
@@ -1384,6 +1501,45 @@ kernel_types = [Periodic, SquaredExponential, UniformLinear]
     end
     return kernel_type(kernel_args...)
 end
+
+
+
+# in covfunc prior, sample two param sets for every kernel -- for x and y.
+# each node will now carry a param for x and y. in our paradigm, a dot moving
+# with uniform x and periodic y is simply a periodic dot inheriting motion of a uniform dot.
+# hyperparam scaling will minimize x or y contribution in this case.
+# a Plus is an internal node, and everything else is a Leaf.
+#
+
+
+@gen function covfunc_prior(mn_probs)
+    # Choose a type of kernel
+    kernel_type ~ choose_kernel_type(mn_probs)
+   # If this is a composite node, recursively generate subtrees. But you want to reduce the prob of a Plus the more time you create a Plus. 
+    if in(kernel_type, [Plus, Times])
+        return kernel_type({:left} ~ covfunc_prior(mn_probs), {:right} ~ covfunc_prior(mn_probs))
+    end
+    if kernel_type == Periodic
+        lengthscale = { :lengthscale } ~ multinomial(param_dict[Periodic][2])
+        period = { :period } ~ multinomial(param_dict[Periodic][3])
+        #     amplitude = {(:amplitude, dot, dim)} ~ multinomial([50/period])
+        amplitude = {:amplitude} ~ multinomial(param_dict[Periodic][1])
+        kernel_args = [amplitude, lengthscale, period]
+    elseif kernel_type == UniformLinear
+        lengthscale =  { :lengthscale } ~ multinomial(param_dict[UniformLinear][1])  
+        variance = { :variance } ~ multinomial(param_dict[UniformLinear][2])
+        kernel_args = [lengthscale, variance]
+    elseif kernel_type == RandomWalk
+        kernel_args = [{ :variance } ~ multinomial(param_dict[RandomWalk][1])]
+    elseif kernel_type == SquaredExponential
+        kernel_args = [{ :amplitude } ~ multinomial(param_dict[SquaredExponential][1]),
+                       { :lengthscale } ~ multinomial(param_dict[SquaredExponential][2])]        
+    end
+    return kernel_type(kernel_args...)
+end
+
+
+
 
 
 @dist gamma_bounded_below(shape, scale, bound) = gamma(shape, scale) + bound
