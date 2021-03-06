@@ -18,7 +18,7 @@ using MappedArrays
 using Base.Threads: @spawn
 
 
-
+# have to kill old threads when you launch a new one. 
 
 
 """ GENERATIVE CODE: These functions output dotmotion stimuli using GP-generated timeseries"""
@@ -26,7 +26,8 @@ using Base.Threads: @spawn
 
 @gen function generate_dot_scene(ts::Array{Float64})
     num_dots = { :num_dots } ~ poisson_bounded_below(1)
-    perceptual_noise_magnitude = { :perceptual_noise_magnitude } ~ gamma_bounded_below(.1, 1, 0)
+    println(num_dots)
+    perceptual_noise_magnitude = { :perceptual_noise_magnitude } ~ multinomial([.01, .1, 1])
     for dot in 1:num_dots
         for parent in 1:dot-1
             add_edge = {(:edge, parent, dot)} ~ bernoulli(.3)
@@ -35,10 +36,13 @@ using Base.Threads: @spawn
         cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
         cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
         noise = {*} ~ generate_white_noise(perceptual_noise_magnitude, :perceptual_noise, ts, dot)
-        jitter_magnitude = {(:jitter_magnitude, dot)} ~ poisson(.5)
+        #  jitter_magnitude = {(:jitter_magnitude, dot)} ~ poisson(.5)
+        jitter_magnitude = {(:jitter_magnitude, dot)} ~ multinomial([0, 1, 3])
+        println(jitter_magnitude)
         jitter = {*} ~ generate_white_noise(float(jitter_magnitude), :jitter, ts, dot)
-        covmat_x = compute_cov_matrix_vectorized(cov_func_x, noise, ts)
-        covmat_y = compute_cov_matrix_vectorized(cov_func_y, noise, ts)
+        # need a tiny bit of noise else factorization errors
+        covmat_x = compute_cov_matrix_vectorized(cov_func_x, ϵ, ts)
+        covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
         xpos = {(:x_pos, dot)} ~ mvnormal(ts, covmat_x)
         ypos = {(:y_pos, dot)} ~ mvnormal(ts, covmat_y)
         isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
@@ -47,7 +51,7 @@ end
 
 
 @gen function generate_white_noise(variance::Float64, rv::Symbol, ts::Array{Float64}, dot::Int64)
-    covmat = compute_cov_matrix_vectorized(RandomWalk(variance), 0, ts)
+    covmat = compute_cov_matrix_vectorized(RandomWalk(variance), 1^-10, ts)
     white_noise = {(rv, dot)} ~ mvnormal(ts, covmat)
     return white_noise
 end
@@ -62,14 +66,14 @@ function dotwrap()
     dotwrap(constraints)
 end
 
-function dotwrap(constraints)
+function dotwrap(constraints::Gen.DynamicChoiceMap)
     (trace, weight) = Gen.generate(generate_dot_scene, 
-                           (timepoints, 
-                           constraints))
-    dotwrap(trace, Dict())
+                                   (timepoints,),  
+                                   constraints)
+    dotwrap(trace, choicemap())
 end
                  
-function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints)
+function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints::Gen.DynamicChoiceMap)
     choices = choicemap(get_choices(trace))
     args = get_args(trace)
     println("here")
@@ -80,19 +84,21 @@ function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraint
     end
     (updated_trace, w, retdiff, discard) = Gen.update(trace, args, (), choices)
     scenegraph = trace_to_tree(updated_trace)
-    @spawn render_dotmotion(updated_trace, scenegraph, true)
+    render_dotmotion(updated_trace, scenegraph, true)
+ #   @spawn render_dotmotion(updated_trace, scenegraph, true)
     #    simple_importance_sampling(tr, Dict(:num_dots => tr[:num_dots]))
     # s = Scene()
     # for i in 1:nv(get_retval(trace)[1])
     #     plot!(props(get_retval(trace)[1], i)[:Position_X], color=:blue)
     #     plot!(props(get_retval(trace)[1], i)[:Position_Y], color=:red)
     # end
-    # display(s)    
+    # display(s)
+    return trace
 end    
 
 
 function reassign_whitenoise(dots::Array{Int64}, variance::Float64, rv::Symbol, ts::Array{Float64})
-    choices = Dict()
+    choices = choicemap()
     for dot in dots
         choice_mag_symbol = Symbol(string(rv), "_magnitude")
         choices[choice_mag_symbol] = variance
@@ -1290,13 +1296,8 @@ timepoints = convert(Array{Float64}, range(1, stop=time_duration, length=num_pos
 
 param_dict = Dict(Periodic => [[3], [.5, 1], [1]],
                   UniformLinear => [[.5], [6, 12]],
-                  SquaredExponential => [[2, 10], [.05]],
-                  :noise => [.00001],
-                  :jitter => [zeros(num_position_points),
-                              [normal(0, .1) for i in 1:num_position_points],
-                              [normal(0, 1) for i in 1:num_position_points]])
-#        :jitter => [0, .01, .1])
-
+                  SquaredExponential => [[2, 10], [.05]])
+ϵ = 1^-10
 kernel_types = [Periodic, SquaredExponential, UniformLinear]
 @dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
 
