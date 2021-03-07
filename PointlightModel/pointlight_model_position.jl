@@ -18,7 +18,8 @@ using MappedArrays
 using Base.Threads: @spawn
 
 
-# have to kill old threads when you launch a new one. 
+# have to kill old threads when you launch a new one, because render thread keeps running.
+# try first limiting the total number of threads.
 
 
 """ GENERATIVE CODE: These functions output dotmotion stimuli using GP-generated timeseries"""
@@ -26,7 +27,6 @@ using Base.Threads: @spawn
 
 @gen function generate_dot_scene(ts::Array{Float64})
     num_dots = { :num_dots } ~ poisson_bounded_below(1)
-    println(num_dots)
     perceptual_noise_magnitude = { :perceptual_noise_magnitude } ~ multinomial([.01, .1, 1])
     for dot in 1:num_dots
         for parent in 1:dot-1
@@ -36,24 +36,23 @@ using Base.Threads: @spawn
         cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
         cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
         noise = {*} ~ generate_white_noise(perceptual_noise_magnitude, :perceptual_noise, ts, dot)
-        #  jitter_magnitude = {(:jitter_magnitude, dot)} ~ poisson(.5)
-        jitter_magnitude = {(:jitter_magnitude, dot)} ~ multinomial([0, 1, 3])
-        println(jitter_magnitude)
+        jitter_magnitude = {(:jitter_magnitude, dot)} ~ multinomial([0, .01, .1, 1])
         jitter = {*} ~ generate_white_noise(float(jitter_magnitude), :jitter, ts, dot)
         # need a tiny bit of noise else factorization errors
         covmat_x = compute_cov_matrix_vectorized(cov_func_x, ϵ, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
-        xpos = {(:x_pos, dot)} ~ mvnormal(ts, covmat_x)
-        ypos = {(:y_pos, dot)} ~ mvnormal(ts, covmat_y)
+        xpos = {(:x_pos, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
+        ypos = {(:y_pos, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
         isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
     end
 end
 
 
 @gen function generate_white_noise(variance::Float64, rv::Symbol, ts::Array{Float64}, dot::Int64)
-    covmat = compute_cov_matrix_vectorized(RandomWalk(variance), 1^-10, ts)
-    white_noise = {(rv, dot)} ~ mvnormal(ts, covmat)
-    return white_noise
+    covmat = compute_cov_matrix_vectorized(RandomWalk(variance), ϵ, ts)
+    white_noise_x = {(rv, dot, :x)} ~ mvnormal(zeros(length(ts)), covmat)
+    white_noise_y = {(rv, dot, :y)} ~ mvnormal(zeros(length(ts)), covmat)
+    return white_noise_x, white_noise_y
 end
     
 
@@ -74,18 +73,18 @@ function dotwrap(constraints::Gen.DynamicChoiceMap)
 end
                  
 function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints::Gen.DynamicChoiceMap)
-    choices = choicemap(get_choices(trace))
+   # choices = choicemap(get_choices(trace))
     args = get_args(trace)
-    println("here")
-    if !isempty(constraints)
-        for key in keys(constraints)
-            choices[key] = constraints[key]
-        end
-    end
-    (updated_trace, w, retdiff, discard) = Gen.update(trace, args, (), choices)
+    # println("here")
+    # if !isempty(constraints)
+    #     for key in keys(constraints.leaf_nodes)
+    #         choices[key] = constraints[key]
+    #     end
+    # end
+    (updated_trace, w, retdiff, discard) = Gen.update(trace, args, (), constraints)
     scenegraph = trace_to_tree(updated_trace)
     render_dotmotion(updated_trace, scenegraph, true)
- #   @spawn render_dotmotion(updated_trace, scenegraph, true)
+#   @spawn render_dotmotion(updated_trace, scenegraph, true)
     #    simple_importance_sampling(tr, Dict(:num_dots => tr[:num_dots]))
     # s = Scene()
     # for i in 1:nv(get_retval(trace)[1])
@@ -97,27 +96,49 @@ function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraint
 end    
 
 
-function reassign_whitenoise(dots::Array{Int64}, variance::Float64, rv::Symbol, ts::Array{Float64})
+function reassign_whitenoise(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
+                             dots::Array{Int64, 1}, variance::Float64, rv::Symbol)
     choices = choicemap()
-    for dot in dots
-        choice_mag_symbol = Symbol(string(rv), "_magnitude")
+    choice_mag_symbol = Symbol(string(rv), "_magnitude")
+    if rv == :perceptual_noise
         choices[choice_mag_symbol] = variance
-        choices[(:rv, dot)] = generate_white_noise(variance, rv, ts, dot)
+    elseif rv == :jitter
+        [choices[(choice_mag_symbol, dot)] = variance for dot in dots]
     end
-    return choices
+    for dot in dots
+        choices[(rv, dot, :x)], choices[(rv, dot, :y)] = generate_white_noise(variance, rv, timepoints, dot)
+    end
+    dotwrap(trace, choices)
 end    
     
 
-# have to recursively search for parents here. can't just do one up and add jitter, b/c jitter of a
-# 2 up parent will be lost. 
+function make_constraints()
+    constraints = choicemap()
+    constraints[:num_dots] = 3
+    constraints[:perceptual_noise_magnitude] = .01
+    constraints[(:edge, 1, 2)] = true
+    constraints[(:edge, 1, 3)] = true
+    constraints[(:edge, 2, 3)] = false
+    constraints[(:jitter_magnitude, 1)] = .1
+    constraints[(:jitter_magnitude, 2)] = 0
+    constraints[(:jitter_magnitude, 3)] = 0
+    constraints[(:isvisible, 1)] = true
+    constraints[(:isvisible, 2)] = true
+    constraints[(:isvisible, 3)] = true
+    return constraints
+end
+
+#constraints[(:perceptual_noise, 1)] = 2
+
+
 
 function trace_to_tree(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     choicemap = get_choices(trace)
     num_dots = trace[:num_dots]
     scenegraph = MetaDiGraph(num_dots)
     for dot in 1:num_dots
-        x_pos = trace[(:x_pos, dot)] .+ trace[(:jitter, dot)]
-        y_pos = trace[(:y_pos, dot)] .+ trace[(:jitter, dot)]
+        x_pos = trace[(:x_pos, dot)] .+ trace[(:jitter, dot, :x)] 
+        y_pos = trace[(:y_pos, dot)] .+ trace[(:jitter, dot, :y)]
         for parent in 1:dot-1
             if trace[(:edge, parent, dot)]
                 add_edge!(scenegraph, parent, dot)
@@ -127,6 +148,11 @@ function trace_to_tree(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         end
         set_props!(scenegraph, dot,
                    Dict(:Position_X=>x_pos, :Position_Y=>y_pos, :MType=>string(trace[(:kernel_type, dot)])))
+    end
+    # ADD PERCEPTUAL NOISE TO EACH DOT HERE IN GRAPH
+    for dot in 1:num_dots
+        set_prop!(scenegraph, dot, :Position_X, props(scenegraph, dot)[:Position_X] + trace[(:perceptual_noise, dot, :x)])
+        set_prop!(scenegraph, dot, :Position_Y, props(scenegraph, dot)[:Position_Y] + trace[(:perceptual_noise, dot, :y)])
     end
     return scenegraph
 end    
@@ -1043,6 +1069,9 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, m
         if i == size([stationary_coords; dotmotion])[1]
             i = 1
             num_repeats += 1
+            if num_repeats == 5
+                stop_anim = true
+            end
         end
         time_node[] = i
         sleep(1/framerate)
@@ -1297,7 +1326,7 @@ timepoints = convert(Array{Float64}, range(1, stop=time_duration, length=num_pos
 param_dict = Dict(Periodic => [[3], [.5, 1], [1]],
                   UniformLinear => [[.5], [6, 12]],
                   SquaredExponential => [[2, 10], [.05]])
-ϵ = 1^-10
+ϵ = 1e-10
 kernel_types = [Periodic, SquaredExponential, UniformLinear]
 @dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
 
