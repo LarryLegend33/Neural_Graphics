@@ -1,14 +1,10 @@
-using Makie
-using AbstractPlotting
-using StatsMakie
-using MakieLayout
+using GLMakie
 using Gen
 using LinearAlgebra
 using LightGraphs
 using MetaGraphs
 using Random
-using Images
-using ShiftedArrays
+#using Images
 using ColorSchemes
 using Statistics
 using StatsBase
@@ -21,9 +17,7 @@ using Base.Threads: @spawn
 # have to kill old threads when you launch a new one, because render thread keeps running.
 # try first limiting the total number of threads.
 
-
 """ GENERATIVE CODE: These functions output dotmotion stimuli using GP-generated timeseries"""
-
 
 @gen function generate_dot_scene(ts::Array{Float64})
     num_dots = { :num_dots } ~ poisson_bounded_below(1)
@@ -41,8 +35,10 @@ using Base.Threads: @spawn
         # need a tiny bit of noise else factorization errors
         covmat_x = compute_cov_matrix_vectorized(cov_func_x, ϵ, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
-        xpos = {(:x_pos, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
-        ypos = {(:y_pos, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
+        x_bias = {(:x_bias, dot)} ~ uniform(-3, 3)
+        y_bias = {(:y_bias, dot)} ~ uniform(-3, 3)
+        xpos = {(:x_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
+        ypos = {(:y_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
         isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
     end
 end
@@ -73,24 +69,14 @@ function dotwrap(constraints::Gen.DynamicChoiceMap)
 end
                  
 function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints::Gen.DynamicChoiceMap)
-   # choices = choicemap(get_choices(trace))
     args = get_args(trace)
-    # println("here")
-    # if !isempty(constraints)
-    #     for key in keys(constraints.leaf_nodes)
-    #         choices[key] = constraints[key]
-    #     end
-    # end
     (updated_trace, w, retdiff, discard) = Gen.update(trace, args, (), constraints)
     scenegraph = trace_to_tree(updated_trace)
     render_dotmotion(updated_trace, scenegraph, true)
+#    ax = visualize_scenegraph(scenegraph, get_choices(updated_trace))
 #   @spawn render_dotmotion(updated_trace, scenegraph, true)
     #    simple_importance_sampling(tr, Dict(:num_dots => tr[:num_dots]))
     # s = Scene()
-    # for i in 1:nv(get_retval(trace)[1])
-    #     plot!(props(get_retval(trace)[1], i)[:Position_X], color=:blue)
-    #     plot!(props(get_retval(trace)[1], i)[:Position_Y], color=:red)
-    # end
     # display(s)
     return trace
 end    
@@ -110,16 +96,23 @@ function reassign_whitenoise(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}
     end
     dotwrap(trace, choices)
 end    
-    
+
+function noise_variation(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    trace = dotwrap(trace, choicemap())
+    reassign_whitenoise(trace, collect(1:2), 5.0, :perceptual_noise)
+end
+
 
 function make_constraints()
     constraints = choicemap()
-    constraints[:num_dots] = 3
+    constraints[:num_dots] = 2
+    constraints[(:kernel_type, 1)] = Linear
+    constraints[(:kernel_type, 2)] = Linear
     constraints[:perceptual_noise_magnitude] = .01
     constraints[(:edge, 1, 2)] = true
     constraints[(:edge, 1, 3)] = true
     constraints[(:edge, 2, 3)] = false
-    constraints[(:jitter_magnitude, 1)] = .1
+    constraints[(:jitter_magnitude, 1)] = .5
     constraints[(:jitter_magnitude, 2)] = 0
     constraints[(:jitter_magnitude, 3)] = 0
     constraints[(:isvisible, 1)] = true
@@ -128,17 +121,15 @@ function make_constraints()
     return constraints
 end
 
-#constraints[(:perceptual_noise, 1)] = 2
-
-
 
 function trace_to_tree(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     choicemap = get_choices(trace)
     num_dots = trace[:num_dots]
     scenegraph = MetaDiGraph(num_dots)
+    len_ts = length(trace[(:x_timeseries, 1)])
     for dot in 1:num_dots
-        x_pos = trace[(:x_pos, dot)] .+ trace[(:jitter, dot, :x)] 
-        y_pos = trace[(:y_pos, dot)] .+ trace[(:jitter, dot, :y)]
+        x_pos = trace[(:x_timeseries, dot)] .+ trace[(:jitter, dot, :x)] 
+        y_pos = trace[(:y_timeseries, dot)] .+ trace[(:jitter, dot, :y)] 
         for parent in 1:dot-1
             if trace[(:edge, parent, dot)]
                 add_edge!(scenegraph, parent, dot)
@@ -151,8 +142,12 @@ function trace_to_tree(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     end
     # ADD PERCEPTUAL NOISE TO EACH DOT HERE IN GRAPH
     for dot in 1:num_dots
-        set_prop!(scenegraph, dot, :Position_X, props(scenegraph, dot)[:Position_X] + trace[(:perceptual_noise, dot, :x)])
-        set_prop!(scenegraph, dot, :Position_Y, props(scenegraph, dot)[:Position_Y] + trace[(:perceptual_noise, dot, :y)])
+        final_xpos = props(scenegraph, dot)[:Position_X] .+
+            trace[(:perceptual_noise, dot, :x)] .+ (trace[(:x_bias, dot)] .* ones(len_ts))
+        final_ypos = props(scenegraph, dot)[:Position_Y] .+
+            trace[(:perceptual_noise, dot, :y)] .+ (trace[(:y_bias, dot)] .* ones(len_ts))
+        set_prop!(scenegraph, dot, :Position_X, final_xpos)
+        set_prop!(scenegraph, dot, :Position_Y, final_ypos)
     end
     return scenegraph
 end    
@@ -324,7 +319,7 @@ function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
     res = 1400
     stop_anim = false
     answer_scene, as_layout = layoutscene(resolution=(res, res), backgroundcolor=:black)
-    dot_menus = [LMenu(answer_scene, options = ["RandomWalk", "Periodic", "UniformLinear"]) for i in 1:num_dots]
+    dot_menus = [LMenu(answer_scene, options = ["RandomWalk", "Periodic", "Linear"]) for i in 1:num_dots]
     for (dot_id, menu) in enumerate(dot_menus)
         as_layout[dot_id, 1] = vbox!(LText(answer_scene, string("Dot ", dot_id, " Motion Type"), color=:white), menu)
     end
@@ -495,7 +490,7 @@ function bayesian_observer(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     jitter_choices = [param_dict[:jitter] for i in 1:num_dots]
     kernel_combos = collect(Iterators.product(kernel_choices...))
     jitter_combos = collect(Iterators.product(jitter_choices...))
-    possible_edges = [(i, j) for i in 1:num_dots for j in 1:num_dots if i != j]
+    possible_edges = [(i, j) for i in 1:num_dots for j in 1:num_dots if i < j]
     truth_entry = [[0,1] for i in 1:size(possible_edges)[1]]
     if !isempty(truth_entry)
         unfiltered_truthtable = [j for j in Iterators.product(truth_entry...) if sum(j) < num_dots]
@@ -729,7 +724,7 @@ function hyper_permutation_to_assignment(kernels, params)
             pdict[(:period, dot, dim)] = params[dot][2+dim^2]
         elseif kernels[dot] == RandomWalk
             pdict[(:variance, dot, dim)] = params[dot][dim]
-        elseif kernels[dot] == UniformLinear
+        elseif kernels[dot] == Linear
             pdict[(:covariance, dot, dim)] = params[dot][dim]
         end
     end
@@ -745,7 +740,7 @@ function filter_hyperparams(choices, c_graph, gt_choices, gt_graph, n, d)
             param =  [(:amplitude, choices[(:amplitude, n, d)]),
                       (:lengthscale, choices[(:lengthscale, n, d)]),
                       (:period, choices[(:period, n, d)])]
-        elseif choices[(:kernel_type, n)] == UniformLinear
+        elseif choices[(:kernel_type, n)] == Linear
             param = (:covariance, choices[(:covariance, n, d)])
         end
     else
@@ -889,20 +884,27 @@ end
 function tree_to_coords(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, tree)
 #    tree = get_retval(trace)[1]
     visible_dots = [dot for dot in 1:nv(tree) if trace[(:isvisible, dot)]]
-    dotmotion = fill(zeros(2), length(visible_dots), size(props(tree, 1)[:Position_X])[1])
+    dotmotion = fill(zeros(2), length(visible_dots), length(props(tree, 1)[:Position_X]))
+    invisible_dotmotion = fill(zeros(2), nv(tree) - length(visible_dots), length(props(tree, 1)[:Position_X]))
     if isempty(visible_dots)
-        return [], []
+        return [], [], []
     end
     vis_dot_index = 1
+    invis_dot_index = 1
     for dot in 1:nv(tree)
+        dot_data = props(tree, dot)
         if dot in visible_dots
-            dot_data = props(tree, dot)
             dotmotion[vis_dot_index, :] = [[x, y] for (x, y) in zip(dot_data[:Position_X], dot_data[:Position_Y])]
             vis_dot_index += 1
+        else
+            invisible_dotmotion[invis_dot_index, :] = [[x, y] for (x, y) in zip(dot_data[:Position_X], dot_data[:Position_Y])]
+            invis_dot_index += 1
         end
     end
     dotmotion_tuples = [[Tuple(dotmotion[i, j]) for i in 1:length(visible_dots)] for j in 1:size(dotmotion)[2]]
-    return dotmotion_tuples, dotmotion
+    invisible_dotmotion_tuples = [[Tuple(invisible_dotmotion[i, j]) for i in 1:(nv(tree)-length(visible_dots))]
+                                  for j in 1:size(invisible_dotmotion)[2]]
+    return dotmotion_tuples, invisible_dotmotion_tuples, dotmotion
 end
 
 
@@ -946,8 +948,15 @@ function xy_node_positions(paths::Array{Array, 1},
 end
 
 
-function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64})
-    outer_padding = 0
+
+
+# here add all labels and hyperparams. make this a makie layout.
+# there are only two ways to do this now. either make an independent scene then a new LScene in render_dotmotion with its
+# .scene field equal to the returned scene, or add an axis into visualize scenegraph, and manipulate it inside the function.
+# both work, but then visualize scenegraph becomes a manipulator of LAxis objects and unable to render itself. 
+
+function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64},
+                              choices::Gen.DynamicDSLChoiceMap, sg_axis::Axis)
     res = 1400
     paths = all_paths(motion_tree)
     # by the end of this loop have all connected and all unconnected paths
@@ -962,34 +971,40 @@ function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64})
     xbounds = num_paths + 1
     ybounds = longest_path + 1
     node_xs, node_ys = xy_node_positions(paths, zeros(Int, nv(motion_tree)), zeros(Int, nv(motion_tree)), 1, motion_tree, longest_path)
-    
-    # create scene without layout b/c text only works in scenes -- can't add it to LAxis.
-    scene = Scene(backgroundcolor=RGBf0(0, 0, 0), resolution=(res,res))
     for e in edges(motion_tree)
-        arrows!(scene, [node_xs[e.src]], [node_ys[e.src]],
-                .8 .* [node_xs[e.dst]-node_xs[e.src]], .8 .* [node_ys[e.dst]-node_ys[e.src]], arrowcolor=:lightgray, linecolor=:lightgray, arrowsize=.1)
+        arrows!(sg_axis, [node_xs[e.src]], [node_ys[e.src]],
+                .8 .* [node_xs[e.dst]-node_xs[e.src]], .8 .* [node_ys[e.dst]-node_ys[e.src]],
+                arrowcolor=:gray, linecolor=:gray, arrowsize=.1)
     end
-    
     for v in 1:nv(motion_tree)
         mtype = props(motion_tree, v)[:MType]
-        if mtype == "UniformLinear"
+        if mtype == "Linear"
             nodecolor = :lightgreen
         elseif mtype == "RandomWalk"
-            nodecolor = :orange
+            nodecolor = :pink
         elseif mtype == "Periodic"
             nodecolor = :skyblue
         elseif mtype == "SquaredExponential"
-            nodecolor = :pink
+            nodecolor = :orange
         end
-        scatter!(scene, [(node_xs[v], node_ys[v])], markersize=50px, color=nodecolor)
-        text!(scene, string(v), position=(node_xs[v], node_ys[v]), align= (:center, :center),
-              textsize=.2, color=:black, overdraw=true)
+        scatter!(sg_axis, [(node_xs[v], node_ys[v])], markersize=50, color=nodecolor),
+        text!(sg_axis, string(v), position=(node_xs[v], node_ys[v]), align= (:center, :center),
+              textsize=.1, color= choices[(:isvisible, v)] ? :black : :white, overdraw=true)
+        text!(sg_axis, string("s_", v, " = ", choices[(:jitter_magnitude, v)]), 
+              position=(node_xs[v] + .32, node_ys[v] + -.13), align= (:center, :center),
+              textsize=.08, color=:gray, overdraw=true)
+
+     #   plot!(choices[(:x_timeseries, v)], color=:blue)
+     #   plot!(choices[(:y_timeseries, v)], color=:red)
+
     end
-    #    limits!(scene, BBox(0, xbounds, 0, ybounds))
-    xlims!(scene, 0, xbounds)
-    ylims!(scene, 0, ybounds)
-#    display(scene)
-    return scene
+    text!(sg_axis, string("eps = ", choices[:perceptual_noise_magnitude]), 
+          position=(node_xs[1] + .1, node_ys[1] + .4), align= (:center, :center),
+          textsize=.1, color=:gray, overdraw=true)
+    xlims!(sg_axis, 0, xbounds)
+    ylims!(sg_axis, 0, ybounds)
+    sg_axis.aspect = DataAspect()
+    return sg_axis
 end
 
 
@@ -1009,57 +1024,115 @@ function find_top_n_props(n::Int,
 end    
 
 
+
+
+
 function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, motion_tree, show_scenegraph::Bool)
-    # ask which has the max of incoming edges
     bounds = 25
-    res = 1400
+    res = 1000
     outer_padding = 0
-    dotmotion, raw_dotmotion = tree_to_coords(trace, motion_tree)
+    dotmotion, invisible_dotmotion, raw_dotmotion = tree_to_coords(trace, motion_tree)
+    number_timepoints = length(trace[(:x_timeseries, 1)])
     if isempty(dotmotion)
         println("NO VISIBLE DOTS")
         return [], []
     end
-#    motion_tree = get_retval(trace)[1]
     pairwise_distances = calculate_pairwise_distance(raw_dotmotion)
     invisible_dots = [dot for dot in 1:nv(motion_tree) if !trace[(:isvisible, dot)]]
     stationary_duration = 50
     stationary_coords = [dotmotion[1] for i in 1:stationary_duration]
+    invisible_stationary_coords = [invisible_dotmotion[1] for i in 1:stationary_duration]
+    time_node = Node(1);
     f(t, coords) = coords[t]
     f_color(t) = t < stationary_duration ? :white : :black
+    f_timeseries(t, coords) = t < stationary_duration ? [coords[1]] : coords[1:t-stationary_duration+1]
     n_rows = 3
     n_cols = 2
     white = RGBf0(255,255,255)
     black = RGBf0(0,0,0)
-    scene = Scene(backgroundcolor=black, resolution=(res, res))
-    time_node = Node(1);
-    f(t, coords) = coords[t]
+    if show_scenegraph
+        dotmotion_fig = Figure(resolution=(2*res, 2*res), backgroundcolor=white, outer_padding=0)
+        scenegraph_axis = Axis(dotmotion_fig, showaxis = false, 
+                               xgridvisible = false, 
+                               ygridvisible = false, 
+                               xticksvisible = false,
+                               yticksvisible = false,
+                               xticklabelsvisible = false,
+                               yticklabelsvisible = false,
+                               # leftspinevisible= false,
+                               # rightspinevisible = false,
+                               # topspinevisible = false,
+                               # bottomspinevisible = false, 
+                               backgroundcolor = white,
+                               title = "Scene Graph")
+        scenegraph_axis.aspect = DataAspect()
+        dotmotion_fig[1, 2] = visualize_scenegraph(motion_tree, get_choices(trace), scenegraph_axis)
+        dotmotion_fig[1, end+1] = Legend(dotmotion_fig,
+                                         [MarkerElement(color=:orange, marker=:circle, strokecolor=:black),
+                                          MarkerElement(color=:skyblue, marker=:circle, strokecolor=:black),
+                                          MarkerElement(color=:lightgreen, marker=:circle, strokecolor=:black)],
+                                         ["SqExp", "Periodic", "Linear"], orientation=:vertical)
+
+        offset_axis = [Axis(dotmotion_fig,
+                            backgroundcolor = white, title=string("Offset Dot ", i)) for i in 1:nv(motion_tree)]
+        timeseries_axis = [Axis(dotmotion_fig,
+                                backgroundcolor = white, title=string("Final Timeseries Dot ", i)) for i in 1:nv(motion_tree)]
+        ts_subscene = dotmotion_fig[2, :]
+        for i in 1:nv(motion_tree)
+            ts_subscene[1, i] = offset_axis[i]
+            ts_subscene[2, i] = timeseries_axis[i]
+            cl = []
+            if props(motion_tree, i)[:MType] == "Linear"
+                cl = [:green, :lightgreen]
+            elseif props(motion_tree, i)[:MType] == "Periodic"
+                cl = [:blue, :skyblue]
+            elseif props(motion_tree, i)[:MType] == "SquaredExponential"
+                cl = [:brown, :orange]
+            end
+            lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:x_timeseries, i)]), time_node), color=cl[1])
+            lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:y_timeseries, i)]), time_node), color=cl[2])
+            lines!(timeseries_axis[i], lift(t -> f_timeseries(t, props(motion_tree, i)[:Position_X]), time_node), color=cl[1])
+            lines!(timeseries_axis[i], lift(t -> f_timeseries(t, props(motion_tree, i)[:Position_Y]), time_node), color=cl[2])
+            [xlims!(t_ax, 0, number_timepoints) for t_ax in [offset_axis; timeseries_axis]]
+            [ylims!(t_ax, -bounds, bounds) for t_ax in [offset_axis; timeseries_axis]]
+        end
+    else
+        dotmotion_fig = Figure(resolution=(res, res), backgroundcolor=black, outer_padding=0)
+    end
+    motion_axis = dotmotion_fig[1, 1] = Axis(dotmotion_fig, showaxis = false, 
+                                             xgridvisible = false, 
+                                             ygridvisible = false, 
+                                             xticksvisible = false,
+                                             yticksvisible = false,
+                                             xticklabelsvisible = false,
+                                             yticklabelsvisible = false,
+                                             leftspinevisible= false,
+                                             rightspinevisible = false,
+                                             topspinevisible = false,
+                                             bottomspinevisible = false, 
+                                             backgroundcolor = black)
     for dot in 1:nv(motion_tree)
         if !(dot in invisible_dots)
             textloc = (props(motion_tree, dot)[:Position_X][1], props(motion_tree, dot)[:Position_Y][1])
-            text!(scene, string(dot), position = (textloc[1], textloc[2] + 1), color=lift(t -> f_color(t), time_node), textsize=2)
+            text!(motion_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=lift(t -> f_color(t), time_node), textsize=2)
         end
     end
-    scatter!(scene, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=14px, color=RGBf0(255, 255, 255))
-    xlims!(scene, (-bounds, bounds))
-    ylims!(scene, (-bounds, bounds))
-    # for j in 1:nv(motion_tree)
-    #     println(trace[(:kernel_type, j)])
-    # end
-    # Uncomment if you want to visualize scenegraph side by side with stimulus
-    if show_scenegraph
-        gscene = visualize_scenegraph(motion_tree)
-        gt_scene = vbox(scene, gscene)
-        screen = display(gt_scene)
-    else
-        screen = display(scene)
+    scatter!(motion_axis, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=14px, color=RGBf0(255, 255, 255))
+    if !isempty(invisible_dots)
+        scatter!(motion_axis, lift(t -> f(t, [invisible_stationary_coords; invisible_dotmotion]), time_node),
+                 markersize=20px, color=RGBf0(0, 0, 0), strokecolor=RGBf0(50, 0, 50))
     end
+    xlims!(motion_axis, (-bounds, bounds))
+    ylims!(motion_axis, (-bounds, bounds))
+    # Uncomment if you want to visualize scenegraph side by side with stimulus
+    screen = display(dotmotion_fig)
     #    record(gt_scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
     #    for i in 1:size(dotmotion)[1]
     i = 0
     num_repeats = 0
     #    isopen(scene))
     stop_anim = false
-    on(events(scene).keyboardbuttons) do button
+    on(events(dotmotion_fig.scene).keyboardbuttons) do button
         if ispressed(button, Keyboard.enter)
             stop_anim = true
         end
@@ -1067,11 +1140,9 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, m
     while(!stop_anim)
         i += 1
         if i == size([stationary_coords; dotmotion])[1]
+            sleep(2)
             i = 1
             num_repeats += 1
-            if num_repeats == 5
-                stop_anim = true
-            end
         end
         time_node[] = i
         sleep(1/framerate)
@@ -1131,14 +1202,14 @@ end
 
 
 """Linear kernel"""
-struct UniformLinear <: PrimitiveKernel
+struct Linear <: PrimitiveKernel
     c::Float64
     σ::Float64
 end
 
-eval_cov(node::UniformLinear, t1, t2) = node.σ^2 * (t1 - node.c) * (t2 - node.c)
+eval_cov(node::Linear, t1, t2) = node.σ^2 * (t1 - node.c) * (t2 - node.c)
 
-function eval_cov_mat(node::UniformLinear, ts::Array{Float64})
+function eval_cov_mat(node::Linear, ts::Array{Float64})
     ts_minus_param = ts .- node.c
     node.σ^2 .* (ts_minus_param * ts_minus_param')
 end
@@ -1303,37 +1374,13 @@ num_position_points = time_duration * framerate
 timepoints = convert(Array{Float64}, range(1, stop=time_duration, length=num_position_points))
 
 # can't interpolate in the position based model -- then you get linear motion inside the periodic and random motion. 
-#interp_iters = round(Int64, log(2, (framerate * time_duration) / (num_position_points -1)))
-
-# param_dict = Dict(Periodic => [[5, 10], [.5, 1], [1, 2]],
-#                   RandomWalk => [collect(5:5:20)],
-#                   UniformLinear => [collect(10:5:25)],
-#                   SquaredExponential => [collect(25:50:225), [.1, .2]],
-#                   :noise => [.00001, .0001],
-#                   :jitter => [0, .01, .1])
-
-# THESE PARAMS ARE GOOD -- BUT UNIFORM DOESNT STAY IN BOUNDS OFTEN
-
-# param_dict = Dict(Periodic => [[5], [.5, 1], [1]],
-#                   UniformLinear => [[.5,1], [10]],
-#                   SquaredExponential => [[25, 50], [.1, .2]],
-#                   :noise => [.00001],
-#                   :jitter => [0, .01, .1])
-
-# kernel_types = [Periodic, SquaredExponential, UniformLinear]
-# @dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
 
 param_dict = Dict(Periodic => [[3], [.5, 1], [1]],
-                  UniformLinear => [[.5], [6, 12]],
+                  Linear => [[.5], [6, 12]],
                   SquaredExponential => [[2, 10], [.05]])
 ϵ = 1e-10
-kernel_types = [Periodic, SquaredExponential, UniformLinear]
+kernel_types = [Periodic, SquaredExponential, Linear]
 @dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
-
-
-#kernel_types = [Periodic, SquaredExponential, UniformLinear, Plus]
-#@dist choose_kernel_type(multinomial_probabilities) = kernel_types[categorical(multinomial_probabilities)]
-
 
 
 
@@ -1344,9 +1391,9 @@ kernel_types = [Periodic, SquaredExponential, UniformLinear]
         #     amplitude = {(:amplitude, dot, dim)} ~ multinomial([50/period])
         amplitude = {(:amplitude, dot, dim)} ~ multinomial(param_dict[Periodic][1])
         kernel_args = [amplitude, lengthscale, period]
-    elseif kernel_type == UniformLinear
-        lengthscale =  {(:lengthscale, dot , dim)} ~ multinomial(param_dict[UniformLinear][1])  
-        variance = {(:variance, dot, dim)} ~ multinomial(param_dict[UniformLinear][2])
+    elseif kernel_type == Linear
+        lengthscale =  {(:lengthscale, dot , dim)} ~ multinomial(param_dict[Linear][1])  
+        variance = {(:variance, dot, dim)} ~ multinomial(param_dict[Linear][2])
         kernel_args = [lengthscale, variance]
     elseif kernel_type == RandomWalk
         kernel_args = [{(:variance, dot, dim)} ~ multinomial(param_dict[RandomWalk][1])]
@@ -1380,9 +1427,9 @@ end
         #     amplitude = {(:amplitude, dot, dim)} ~ multinomial([50/period])
         amplitude = {:amplitude} ~ multinomial(param_dict[Periodic][1])
         kernel_args = [amplitude, lengthscale, period]
-    elseif kernel_type == UniformLinear
-        lengthscale =  { :lengthscale } ~ multinomial(param_dict[UniformLinear][1])  
-        variance = { :variance } ~ multinomial(param_dict[UniformLinear][2])
+    elseif kernel_type == Linear
+        lengthscale =  { :lengthscale } ~ multinomial(param_dict[Linear][1])  
+        variance = { :variance } ~ multinomial(param_dict[Linear][2])
         kernel_args = [lengthscale, variance]
     elseif kernel_type == RandomWalk
         kernel_args = [{ :variance } ~ multinomial(param_dict[RandomWalk][1])]
@@ -1393,19 +1440,11 @@ end
     return kernel_type(kernel_args...)
 end
 
-
-
-
-
 @dist gamma_bounded_below(shape, scale, bound) = gamma(shape, scale) + bound
 
 @dist poisson_bounded_below(bound) = poisson(1) + bound
 
 @dist multinomial(possibilities) = possibilities[uniform_discrete(1, length(possibilities))]
-
-@dist function z_mvnormal(ts, covmat)
-    timeseries = mvnormal(ts, covmat)
-end
 
 macro datatype(str); :($(Symbol(str))); end
 
