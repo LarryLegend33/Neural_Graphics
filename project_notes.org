@@ -2,3 +2,8 @@
 ** Editor setup: first install eglot via elpa, then eglot-jl. Had to adjust connection wait time on first call. Get language server started by eglot-jl-init, then eglot. Also simple downloads of julia-mode and julia-repl. Have to activate company-mode to get dropdown suggestions. 
 ** Downloaded julia from homebrew
 ** When starting a project, create a folder for it, then nav to it, run julia, start package manager, then activate the environment -- using "activate .". Install packages for the project directly there, which are then managed in the project.toml files that eglot can read. 
+** After updating OS to Big Sur, had to get the unshallow clone of homebrew. GLMakie, even if you tried to update it in the project manifest, was not updating to the newest version. The update to Makie collected everything from statsmakie, abstract plotting, and makielayout into one blanket GLMakie. Updated julia via homebrew first, then tried to reinstall it. Worked. Didn't have to install any additional packages, and new syntax is implemented. 
+** GenGridEnumeration is not on Pkg. Cloned it from probcomp into home directory, then used 
+   Pkg.add(Pkg.PackageSpec(; path="/Users/nightcrawler2/GenGridEnumeration")) in my pointlight model project repo. Worked w/ a using command. 
+
+
