@@ -118,11 +118,11 @@ function make_constraints()
     constraints[(:kernel_type, 1)] = Periodic
     constraints[(:kernel_type, 2)] = Linear
     constraints[(:kernel_type, 3)] = Linear
-    constraints[:perceptual_noise_magnitude] = 0.0
+    constraints[:perceptual_noise_magnitude] = 1.0
     constraints[(:edge, 1, 2)] = true
     constraints[(:edge, 1, 3)] = true
     constraints[(:edge, 2, 3)] = false
-    constraints[(:jitter_magnitude, 1)] = .01
+    constraints[(:jitter_magnitude, 1)] = .5
     constraints[(:jitter_magnitude, 2)] = 0
     constraints[(:jitter_magnitude, 3)] = 0
     constraints[(:isvisible, 1)] = true
@@ -974,9 +974,9 @@ function node_color(mtype::String, dot_jitter_or_noise::Symbol)
         nodecolor = lightorange
     end
     if dot_jitter_or_noise == :jitter
-        nodecolor = (nodecolor, .5)
+        nodecolor = (nodecolor, .7)
     elseif dot_jitter_or_noise == :perceptual_noise
-        nodecolor = (nodecolor, .2)
+        nodecolor = (nodecolor, .4)
     else
         nodecolor = (nodecolor, 1)
     end
@@ -1049,96 +1049,6 @@ function find_top_n_props(n::Int,
 end    
 
 
-function render_scenegraph_animation(trace)
-    motion_tree = trace_to_tree(trace)
-    bounds = 25
-    res = 1000
-    outer_padding = 0
-    dotmotion, invisible_dotmotion, raw_dotmotion = tree_to_coords(trace)
-    number_timepoints = length(trace[(:x_timeseries, 1)])
-    invisible_dots = [dot for dot in 1:nv(motion_tree) if !trace[(:isvisible, dot)]]
-    stationary_duration = 50
-    stationary_coords = [dotmotion[1] for i in 1:stationary_duration]
-    invisible_stationary_coords = [invisible_dotmotion[1] for i in 1:stationary_duration]
-    time_node = Node(1);
-    f(t, coords) = coords[t]
-    f_color(t) = t < stationary_duration ? :white : :black
-    white = RGBf0(255,255,255)
-    black = RGBf0(0,0,0)
-    dotmotion_fig = Figure(resolution=(res, res), backgroundcolor=black)
-    motion_axis = dotmotion_fig[1, 1] = Axis(dotmotion_fig, showaxis = false, 
-                                             xgridvisible = false, 
-                                             ygridvisible = false, 
-                                             xticksvisible = false,
-                                             yticksvisible = false,
-                                             xticklabelsvisible = false,
-                                             yticklabelsvisible = false,
-                                             leftspinevisible= false,
-                                             rightspinevisible = false,
-                                             topspinevisible = false,
-                                             bottomspinevisible = false, 
-                                             backgroundcolor = black)
-    motion_axis.aspect = DataAspect()
-    perceptual_noise_std = sqrt(trace[:perceptual_noise_magnitude])
-    for dot in 1:nv(motion_tree)
-        if !(dot in invisible_dots)
-            textloc = (props(motion_tree, dot)[:Position_X][1], props(motion_tree, dot)[:Position_Y][1])
-            text!(motion_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=lift(t -> f_color(t), time_node), textsize=2)
-            scatter!(motion_axis, lift(t -> f(t, [map(f -> [f[dot]], stationary_coords); map(f -> [f[dot]], dotmotion)]), time_node), markersize=1,
-                     markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :dot))
-            """ Jitter and noise each have their own circles """
-            jitter_std = sqrt(trace[(:jitter_magnitude, dot)])
-            scatter!(motion_axis, lift(t -> f(t, [map(f -> [f[dot]], stationary_coords); map(f -> [f[dot]], dotmotion)]), time_node), markersize=2*jitter_std,
-                     markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :jitter), )
-            scatter!(motion_axis, lift(t -> f(t, [map(f -> [f[dot]], stationary_coords); map(f -> [f[dot]], dotmotion)]), time_node), markersize=2*jitter_std + 2*perceptual_noise_std, markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :perceptual_noise))
-        else
-            scatter!(motion_axis, lift(t -> f(t, [map(f -> [f[dot]], invisible_stationary_coords);
-                                                  map(f -> [f[dot]], invisible_dotmotion)]), time_node), markersize=20px, color=:black, stroke_color=node_color(props(motion_tree, dot)[:MType]))
-        end
-    end
-
-    for e1 in 1:nv(motion_tree)
-        for e2 in (e1+1):nv(motion_tree)
-            if trace[(:edge, e1, e2)]
-                x_source = [raw_dotmotion[e1,:][1][1] .* ones(stationary_duration) ; [x[1] for x in raw_dotmotion[e1,:]]]
-                y_source = [raw_dotmotion[e1,:][1][2] .* ones(stationary_duration) ; [y[2] for y in raw_dotmotion[e1,:]]]
-                x_vec = [raw_dotmotion[e2,:][1][1] .* ones(stationary_duration) ; [x[1] for x in raw_dotmotion[e2,:]]] .- x_source
-                y_vec = [raw_dotmotion[e2,:][1][2] .* ones(stationary_duration) ; [y[2] for y in raw_dotmotion[e2,:]]] .- y_source
-                println("here")
-                arrows!(motion_axis,
-                        lift(t -> [f(t, x_source)], time_node),
-                        lift(t -> [f(t, y_source)], time_node),
-                        lift(t -> [.9*f(t, x_vec)], time_node),
-                        lift(t -> [.9*f(t, y_vec)], time_node),
-                        arrowcolor=:white, linecolor=:white, arrowsize=1)
-                println("made arrow")
-            end
-        end
-    end
-    xlims!(motion_axis, (-bounds, bounds))
-    ylims!(motion_axis, (-bounds, bounds))
-    # Uncomment if you want to visualize scenegraph side by side with stimulus
-    screen = display(dotmotion_fig)
-      i = 0
-    num_repeats = 0
-    #    isopen(scene))
-    stop_anim = false
-    on(events(dotmotion_fig.scene).keyboardbuttons) do button
-        if ispressed(button, Keyboard.enter)
-            stop_anim = true
-        end
-    end
-    while(!stop_anim)
-        i += 1
-        if i == size([stationary_coords; dotmotion])[1]
-            sleep(2)
-            i = 1
-            num_repeats += 1
-        end
-        time_node[] = i
-        sleep(1/framerate)
-    end
-end
 
 
 function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, show_scenegraph::Bool)
@@ -1160,6 +1070,7 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     time_node = Node(1);
     f(t, coords) = coords[t]
     f_color(t) = t < stationary_duration ? :white : :black
+    f_textsize(t) = t < stationary_duration ? 2 : 0
     f_timeseries(t, coords) = t < stationary_duration ? [coords[1]] : coords[1:t-stationary_duration+1]
     n_rows = 3
     n_cols = 2
@@ -1167,22 +1078,24 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     black = RGBf0(0,0,0)
     if show_scenegraph
         dotmotion_fig = Figure(resolution=(2*res, 2*res), backgroundcolor=white, outer_padding=0)
-        scenegraph_axis = Axis(dotmotion_fig, showaxis = false, 
-                               xgridvisible = false, 
-                               ygridvisible = false, 
-                               xticksvisible = false,
-                               yticksvisible = false,
-                               xticklabelsvisible = false,
-                               yticklabelsvisible = false,
-                               backgroundcolor = white,
-                               title = "Scene Graph")
-        scenegraph_axis.aspect = DataAspect()
-        dotmotion_fig[1, 2] = visualize_scenegraph(motion_tree, get_choices(trace), scenegraph_axis)
-        dotmotion_fig[1, end+1] = Legend(dotmotion_fig,
-                                         [MarkerElement(color=:orange, marker=:circle, strokecolor=:black),
-                                          MarkerElement(color=:skyblue, marker=:circle, strokecolor=:black),
-                                          MarkerElement(color=:lightgreen, marker=:circle, strokecolor=:black)],
-                                         ["SqExp", "Periodic", "Linear"], orientation=:vertical)
+
+        """ Uncomment if you want to plot static scenegraph in Panel 2"""
+        # scenegraph_axis = Axis(dotmotion_fig, showaxis = false, 
+        #                        xgridvisible = false, 
+        #                        ygridvisible = false, 
+        #                        xticksvisible = false,
+        #                        yticksvisible = false,
+        #                        xticklabelsvisible = false,
+        #                        yticklabelsvisible = false,
+        #                        backgroundcolor = white,
+        #                        title = "Scene Graph")
+        # scenegraph_axis.aspect = DataAspect()
+        # dotmotion_fig[1, 2] = visualize_scenegraph(motion_tree, get_choices(trace), scenegraph_axis)
+        dotmotion_fig[1, 3] = Legend(dotmotion_fig,
+                                     [MarkerElement(color=:orange, marker=:circle, strokecolor=:black),
+                                      MarkerElement(color=:skyblue, marker=:circle, strokecolor=:black),
+                                      MarkerElement(color=:lightgreen, marker=:circle, strokecolor=:black)],
+                                     ["SqExp", "Periodic", "Linear"], orientation=:vertical)
         offset_axis = [Axis(dotmotion_fig,
                             backgroundcolor = white, title=string("Offset Dot ", i)) for i in 1:nv(motion_tree)]
         timeseries_axis = [Axis(dotmotion_fig,
@@ -1194,21 +1107,29 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
             cl = []
             if props(motion_tree, i)[:MType] == "Linear"
                 cl = [:green, :lightgreen]
+                hp = [:lengthscale, :variance]
             elseif props(motion_tree, i)[:MType] == "Periodic"
                 cl = [:blue, :skyblue]
+                hp = [:period, :lengthscale, :amplitude]
             elseif props(motion_tree, i)[:MType] == "SquaredExponential"
                 cl = [:brown, :orange]
+                hp = [:lengthscale, :amplitude]
             end
-            lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:x_timeseries, i)]), time_node), color=cl[1])
-            lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:y_timeseries, i)]), time_node), color=cl[2])
-            lines!(timeseries_axis[i], lift(t -> f_timeseries(t, props(motion_tree, i)[:Position_X]), time_node), color=cl[1])
-            lines!(timeseries_axis[i], lift(t -> f_timeseries(t, props(motion_tree, i)[:Position_Y]), time_node), color=cl[2])
+            ofs_x = lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:x_timeseries, i)]), time_node), color=cl[1])
+            ofs_y = lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:y_timeseries, i)]), time_node), color=cl[2])
+            axislegend(offset_axis[i], [ofs_x, ofs_y], [string([string(h, "=", trace[(h, i, 1)], " ") for h in hp]...),
+                                                        string([string(h, "=", trace[(h, i, 2)], " ") for h in hp]...)], position=:lt)
+            ts_x = lines!(timeseries_axis[i], lift(t -> f_timeseries(t, props(motion_tree, i)[:Position_X]), time_node), color=cl[1])
+            ts_y = lines!(timeseries_axis[i], lift(t -> f_timeseries(t, props(motion_tree, i)[:Position_Y]), time_node), color=cl[2])
             [xlims!(t_ax, 0, number_timepoints) for t_ax in [offset_axis; timeseries_axis]]
             [ylims!(t_ax, -bounds, bounds) for t_ax in [offset_axis; timeseries_axis]]
         end
     else
         dotmotion_fig = Figure(resolution=(res, res), backgroundcolor=black, outer_padding=0)
     end
+
+    """ Panel 1 """ 
+    
     motion_axis = dotmotion_fig[1, 1] = Axis(dotmotion_fig, showaxis = false, 
                                              xgridvisible = false, 
                                              ygridvisible = false, 
@@ -1225,7 +1146,8 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     for dot in 1:nv(motion_tree)
         if !(dot in invisible_dots)
             textloc = (props(motion_tree, dot)[:Position_X][1], props(motion_tree, dot)[:Position_Y][1])
-            text!(motion_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=lift(t -> f_color(t), time_node), textsize=2)
+            text!(motion_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=white, 
+                  textsize=lift(t -> f_textsize(t), time_node))
         end
     end
     scatter!(motion_axis, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=14px, color=RGBf0(255, 255, 255))
@@ -1235,6 +1157,63 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     end
     xlims!(motion_axis, (-bounds, bounds))
     ylims!(motion_axis, (-bounds, bounds))
+
+
+    """ Panel 2 """ 
+
+     scenegraph_animation_axis = dotmotion_fig[1, 2] = Axis(dotmotion_fig, showaxis = false, 
+                                             xgridvisible = false, 
+                                             ygridvisible = false, 
+                                             xticksvisible = false,
+                                             yticksvisible = false,
+                                             xticklabelsvisible = false,
+                                             yticklabelsvisible = false,
+                                             leftspinevisible= false,
+                                             rightspinevisible = false,
+                                             topspinevisible = false,
+                                             bottomspinevisible = false, 
+                                             backgroundcolor = black)
+    scenegraph_animation_axis.aspect = DataAspect()
+    perceptual_noise_std = sqrt(trace[:perceptual_noise_magnitude])
+    for dot in 1:nv(motion_tree)
+        if !(dot in invisible_dots)
+            textloc = (props(motion_tree, dot)[:Position_X][1], props(motion_tree, dot)[:Position_Y][1])
+            text!(scenegraph_animation_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=white, textsize=lift(t-> f_textsize(t), time_node), overdraw=false)
+            scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(f -> [f[dot]], stationary_coords); map(f -> [f[dot]], dotmotion)]), time_node), markersize=.2,
+                     markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :dot), overdraw=true)
+            """ Jitter and noise each have their own circles """
+            jitter_std = sqrt(trace[(:jitter_magnitude, dot)])
+            scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(f -> [f[dot]], stationary_coords); map(f -> [f[dot]], dotmotion)]), time_node), markersize=2*jitter_std,
+                     markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :jitter), overdraw=true)
+            scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(f -> [f[dot]], stationary_coords); map(f -> [f[dot]], dotmotion)]), time_node), markersize=2*jitter_std + 2*perceptual_noise_std, markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :perceptual_noise), overdraw=true)
+        else
+            scatter!(scenegraph_animation_axis,
+                     lift(t -> f(t, [map(f -> [f[dot]], invisible_stationary_coords);
+                                     map(f -> [f[dot]], invisible_dotmotion)]), time_node), markersize=20px, color=:black,
+                     stroke_color=node_color(props(motion_tree, dot)[:MType]))
+        end
+    end
+
+    for e1 in 1:nv(motion_tree)
+        for e2 in (e1+1):nv(motion_tree)
+            if trace[(:edge, e1, e2)]
+                x_source = [raw_dotmotion[e1,:][1][1] .* ones(stationary_duration) ; [x[1] for x in raw_dotmotion[e1,:]]]
+                y_source = [raw_dotmotion[e1,:][1][2] .* ones(stationary_duration) ; [y[2] for y in raw_dotmotion[e1,:]]]
+                x_vec = [raw_dotmotion[e2,:][1][1] .* ones(stationary_duration) ; [x[1] for x in raw_dotmotion[e2,:]]] .- x_source
+                y_vec = [raw_dotmotion[e2,:][1][2] .* ones(stationary_duration) ; [y[2] for y in raw_dotmotion[e2,:]]] .- y_source
+                println("here")
+                arrows!(scenegraph_animation_axis,
+                        lift(t -> [f(t, x_source)], time_node),
+                        lift(t -> [f(t, y_source)], time_node),
+                        lift(t -> [.9*f(t, x_vec)], time_node),
+                        lift(t -> [.9*f(t, y_vec)], time_node),
+                        arrowcolor=:white, linecolor=:white, arrowsize=1)
+                println("made arrow")
+            end
+        end
+    end
+    xlims!(scenegraph_animation_axis, (-bounds, bounds))
+    ylims!(scenegraph_animation_axis, (-bounds, bounds))
     # Uncomment if you want to visualize scenegraph side by side with stimulus
     screen = display(dotmotion_fig)
     #    record(gt_scene, "stimulus.mp4", 1:size(dotmotion)[1]; framerate=60) do i
