@@ -33,7 +33,6 @@ using Base.Threads: @spawn
 
 @gen function generate_dot_scene(ts::Array{Float64})
     num_dots = { :num_dots } ~ poisson_bounded_below(1)
-    perceptual_noise_magnitude = { :perceptual_noise_magnitude } ~ multinomial(param_dict[:perceptual_noise_magnitude])
     for dot in 1:num_dots
         for parent in 1:dot-1
             add_edge = {(:edge, parent, dot)} ~ bernoulli(.3)
@@ -41,6 +40,7 @@ using Base.Threads: @spawn
         kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
         cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
         cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
+        perceptual_noise_magnitude = {(:perceptual_noise_magnitude, dot)} ~ multinomial(param_dict[:perceptual_noise_magnitude])
         noise = {*} ~ generate_white_noise(perceptual_noise_magnitude, :perceptual_noise, ts, dot)
         jitter_magnitude = {(:jitter_magnitude, dot)} ~ multinomial(param_dict[:jitter_magnitude])
         jitter = {*} ~ generate_white_noise(float(jitter_magnitude), :jitter, ts, dot)
@@ -100,8 +100,9 @@ function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraint
     (updated_trace, w, retdiff, discard) = Gen.update(trace, args, (), constraints)
     scenegraph = trace_to_tree(updated_trace)
     render_dotmotion(updated_trace, true)
+#    @spawn render_dotmotion(updated_trace, false)
 #    ax = visualize_scenegraph(scenegraph, get_choices(updated_trace))
-#   @spawn render_dotmotion(updated_trace, scenegraph, true)
+ 
     #    simple_importance_sampling(tr, Dict(:num_dots => tr[:num_dots]))
     # s = Scene()
     # display(s)
@@ -124,36 +125,67 @@ function reassign_whitenoise(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}
     dotwrap(trace, choices)
 end    
 
-function noise_variation(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    trace = dotwrap(trace, choicemap())
-    reassign_whitenoise(trace, collect(1:2), 5.0, :perceptual_noise)
-end
-
 
 function make_constraints()
     constraints = choicemap()
-    choice_dictionary = Dict(:num_dots => 3,
-                             :perceptual_noise_magnitude => 0.0,
-                             (:jitter_magnitude, 1) => 0.0,
-                             (:jitter_magnitude, 2) => 0.0,
-                             (:jitter_magnitude, 3) => 0.0,
-                             (:isvisible, 1) => true, 
-                             (:isvisible, 2) => true, 
-                             (:isvisible, 3) => true,
-                             (:x_timeseries, 1) => [50/num_position_points * i for i in 1:num_position_points],
-                             (:y_timeseries, 1) => [15 for i in 1:num_position_points],
-                             (:x_timeseries, 2) => [50/num_position_points * i for i in 1:num_position_points],
-                             (:y_timeseries, 2) => [-15 for i in 1:num_position_points],
-                             (:x_timeseries, 3) => [50/num_position_points * i for i in 1:num_position_points],
-                             (:y_timeseries, 3) => [15*sin(.25*i) for i in 1:num_position_points],
-                             (:x_init, 1) => -20, 
-                             (:y_init, 1) => 20,
-                             (:x_init, 2) => -20,
-                             (:y_init, 2) => -20,
-                             (:x_init, 3) => -20,
-                             (:y_init, 3) => 0)
+    bar_height = 15
+    ball_freq = .15
+    bar_dictionary = Dict(:num_dots => 3,
+                          (:kernel_type, 1) => Linear,
+                          (:kernel_type, 2) => Linear,
+                          (:kernel_type, 3) => Periodic, 
+                          (:perceptual_noise_magnitude, 1) => 0.25,
+                          (:perceptual_noise_magnitude, 2) => 0.25,
+                          (:perceptual_noise_magnitude, 3) => 0.0,
+                          (:jitter_magnitude, 1) => 0.0,
+                          (:jitter_magnitude, 2) => 0.0,
+                          (:jitter_magnitude, 3) => 0.0,
+                          (:isvisible, 1) => true,
+                          (:isvisible, 2) => true,
+                          (:isvisible, 3) => true,
+                          (:edge, 1, 2) => true,
+                          (:edge, 1, 3) => true,
+                          (:edge, 2, 3) => false,
+                          (:x_timeseries, 1) => [50/num_position_points * i for i in 1:num_position_points],
+                          (:y_timeseries, 1) => zeros(num_position_points),
+                     #    (:x_timeseries, 2) => [50/num_position_points * i for i in 1:num_position_points],
+                          #   (:y_timeseries, 2) => [-15 for i in 1:num_position_points],
+                          (:x_timeseries, 2) => zeros(num_position_points),
+                          (:y_timeseries, 2) => zeros(num_position_points),
+                      #   (:x_timeseries, 3) => [50/num_position_points * i for i in 1:num_position_points],
+                          (:x_timeseries, 3) => zeros(num_position_points),
+                          (:y_timeseries, 3) => [bar_height*sin(ball_freq*i) for i in 0:num_position_points-1],
+                          (:x_init, 1) => -20, 
+                          (:y_init, 1) => bar_height,
+                          (:x_init, 2) => -20, 
+                          (:y_init, 2) => -1*bar_height,
+                          (:x_init, 3) => -20,
+                          (:y_init, 3) => 0)
+
+    wheel_dictionary = (:num_dots => 2,
+                        (:kernel_type, 1) => Linear,
+                        (:kernel_type, 2) => Periodic,
+                        (:perceptual_noise_magnitude, 1) => 0.0,
+                        (:perceptual_noise_magnitude, 2) => 5.0,
+                        (:jitter_magnitude, 1) => 0.0,
+                        (:jitter_magnitude, 2) => 0.0,
+                        (:isvisible, 1) => true, 
+                        (:isvisible, 2) => true,
+                        (:edge, 1, 2) => true, 
+                        (:x_timeseries, 1) => [50/num_position_points * i for i in 1:num_position_points],
+                        (:y_timeseries, 1) => zeros(num_position_points),
+                        (:x_timeseries, 2) => [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
+                        (:y_timeseries, 2) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+                        # note this is not 0 indexed. your first point will be sin(.25)
+                        (:x_init, 1) => -18, 
+                        (:y_init, 1) => 0,
+                        (:x_init, 2) => -23,
+                        (:y_init, 2) => 0)
 #                             (:edge, 1, 2) => false)
-    constraints = choicemap([Tuple(d) for d in choice_dictionary]...)
+    constraints = choicemap([Tuple(d) for d in wheel_dictionary]...)
+
+
+    # 
 
                              
  #   constraints[(:kernel_type, 1)] = Linear
@@ -189,14 +221,15 @@ function trace_to_tree(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
         set_props!(scenegraph, dot,
                    Dict(:Position_X=>x_pos, :Position_Y=>y_pos, :MType=>string(trace[(:kernel_type, dot)])))
     end
-#    ADD PERCEPTUAL NOISE TO EACH DOT HERE IN GRAPH
+    #    ADD PERCEPTUAL NOISE TO EACH DOT HERE IN GRAPH
+    # before noise adding, this is normal. 
     for dot in 1:num_dots
         noisy_xpos = props(scenegraph, dot)[:Position_X] .+
             trace[(:perceptual_noise, dot, :x)]
-        noisy_xpos .+= trace[(:x_init, dot)] - noisy_xpos[1]
+        noisy_xpos .+= (trace[(:x_init, dot)] - noisy_xpos[1])
         noisy_ypos = props(scenegraph, dot)[:Position_Y] .+
             trace[(:perceptual_noise, dot, :y)]
-        noisy_ypos .+= trace[(:y_init, dot)] - noisy_ypos[1]
+        noisy_ypos .+= (trace[(:y_init, dot)] - noisy_ypos[1])
         set_prop!(scenegraph, dot, :Position_X, noisy_xpos)
         set_prop!(scenegraph, dot, :Position_Y, noisy_ypos)
     end
@@ -937,7 +970,7 @@ function tree_to_coords(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     dotmotion = fill(zeros(2), length(visible_dots), length(props(tree, 1)[:Position_X]))
     invisible_dotmotion = fill(zeros(2), nv(tree) - length(visible_dots), length(props(tree, 1)[:Position_X]))
     if isempty(visible_dots)
-        return [], [], []
+        return [], [], [], []
     end
     vis_dot_index = 1
     invis_dot_index = 1
@@ -955,7 +988,8 @@ function tree_to_coords(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     dotmotion_tuples = [[Tuple(dotmotion[i, j]) for i in 1:length(visible_dots)] for j in 1:size(dotmotion)[2]]
     invisible_dotmotion_tuples = [[Tuple(invisible_dotmotion[i, j]) for i in 1:(nv(tree)-length(visible_dots))]
                                   for j in 1:size(invisible_dotmotion)[2]]
-    return dotmotion_tuples, invisible_dotmotion_tuples, raw_dotmotion
+    raw_dot_tuples = [[Tuple(raw_dotmotion[i, j]) for i in 1:nv(tree)] for j in 1:size(raw_dotmotion)[2]]
+    return dotmotion_tuples, invisible_dotmotion_tuples, raw_dotmotion, raw_dot_tuples
 end
 
 
@@ -1013,11 +1047,11 @@ function node_color(mtype::String, dot_jitter_or_noise::Symbol)
         nodecolor = lightorange
     end
     if dot_jitter_or_noise == :jitter
-        nodecolor = (nodecolor, .7)
+        nodecolor = (nodecolor, .6)
     elseif dot_jitter_or_noise == :perceptual_noise
-        nodecolor = (nodecolor, .4)
+        nodecolor = (nodecolor, .3)
     else
-        nodecolor = (nodecolor, 1)
+        nodecolor = (nodecolor, 1.0)
     end
     return nodecolor
 end    
@@ -1095,7 +1129,7 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     bounds = 25
     res = 1000
     outer_padding = 0
-    dotmotion, invisible_dotmotion, raw_dotmotion = tree_to_coords(trace)
+    dotmotion, invisible_dotmotion, raw_dotmotion, raw_dot_tuples = tree_to_coords(trace)
     number_timepoints = length(trace[(:x_timeseries, 1)])
     if isempty(dotmotion)
         println("NO VISIBLE DOTS")
@@ -1106,6 +1140,7 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     stationary_duration = 50
     stationary_coords = [dotmotion[1] for i in 1:stationary_duration]
     invisible_stationary_coords = [invisible_dotmotion[1] for i in 1:stationary_duration]
+    raw_stationary_coords = [raw_dot_tuples[1] for i in 1:stationary_duration]
     time_node = Node(1);
     f(t, coords) = coords[t]
     f_color(t) = t < stationary_duration ? :white : :black
@@ -1164,7 +1199,7 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
             [ylims!(t_ax, -bounds, bounds) for t_ax in [offset_axis; timeseries_axis]]
         end
     else
-        dotmotion_fig = Figure(resolution=(res, res), backgroundcolor=black, outer_padding=0)
+        dotmotion_fig = Figure(resolution=(2*res, res), backgroundcolor=black, outer_padding=0)
     end
 
     """ Panel 1 """ 
@@ -1209,41 +1244,31 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
                                              bottomspinevisible = false, 
                                              backgroundcolor = black)
     scenegraph_animation_axis.aspect = DataAspect()
-    perceptual_noise_std = sqrt(trace[:perceptual_noise_magnitude])
-
-    # this seems wrong -- i think its missing an invisible dot axis
-
-
-    # can't use tuple arrays b/c each dot has a different jitter.
-    # problem is its trying to access one row of stationary coords at index 4 for a 3 dot pattern. can't figure out where
-
-
+    # can't use tuple arrays dotmotion and invisible_dotmotion b/c each dot has a different jitter.
     visdotind = 0
     invisdotind = 0
-    # clearly in the making of the map  you access the 4th element of a 3 element tuple if there are 3 dots, 5th if there are 4, etc. 
+    # clearly in the making of the map  you access the 4th element of a 3 element tuple if there are 3 dots, 5th if there are 4, etc.
+    # REASON IS THE VISDOTIND AND INVISDOTIND VARIALBES GET MUTATED INSIDE THE PLOT.
+
+    marker_size = 1
     for dot in 1:nv(motion_tree)
         jitter_std = sqrt(trace[(:jitter_magnitude, dot)])
+        perceptual_noise_std = sqrt(trace[(:perceptual_noise_magnitude, dot)])
+        scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords); map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size + 2*jitter_std,
+                 markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :jitter), overdraw=true)
+        scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords); map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size + 2*perceptual_noise_std,
+                 markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :perceptual_noise), overdraw=true)
+        textloc = (props(motion_tree, dot)[:Position_X][1]+.5, props(motion_tree, dot)[:Position_Y][1])
+        text!(scenegraph_animation_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=white, textsize=lift(t-> f_textsize(t), time_node), overdraw=false)
         if !(dot in invisible_dots)
-            visdotind += 1
-            textloc = (props(motion_tree, dot)[:Position_X][1], props(motion_tree, dot)[:Position_Y][1])
-            text!(scenegraph_animation_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=white, textsize=lift(t-> f_textsize(t), time_node), overdraw=false)
-            scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[visdotind]], stationary_coords); map(λ -> [λ[visdotind]], dotmotion)]), time_node), markersize=.2,
+            scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords); map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size,
                      markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :dot), overdraw=true)
             """ Jitter and noise each have their own circles """
-            scatter!(scenegraph_animation_axis, lift(
-                t -> f(t, [map(λ -> [λ[visdotind]], stationary_coords); map(λ -> [λ[visdotind]], dotmotion)]), time_node), markersize=2*jitter_std,
-                     markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :jitter), overdraw=true)
-            scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[visdotind]], stationary_coords); map(λ -> [λ[visdotind]], dotmotion)]), time_node), markersize=2*jitter_std + 2*perceptual_noise_std, markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :perceptual_noise), overdraw=true)
         else
-            invisdotind += 1
             scatter!(scenegraph_animation_axis,
-                     lift(t -> f(t, [map(λ -> [λ[invisdotind]], invisible_stationary_coords);
-                                     map(λ -> [λ[invisdotind]], invisible_dotmotion)]), time_node), markersize=20px, color=:black,
-                     stroke_color=node_color(props(motion_tree, dot)[:MType], :dot))
-            scatter!(scenegraph_animation_axis, lift(
-                t -> f(t, [map(λ -> [λ[invisdotind]], invisible_stationary_coords); map(λ -> [λ[invisdotind]], invisible_dotmotion)]), time_node), markersize=2*jitter_std,
-                     markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :jitter), overdraw=true)
-            scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[invisdotind]], invisible_stationary_coords); map(λ -> [λ[invisdotind]], invisible_dotmotion)]), time_node), markersize=2*jitter_std + 2*perceptual_noise_std, markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :perceptual_noise), overdraw=true)
+                     lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords);
+                                     map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size*10, color=RGBf0(0,0,0),
+                     stroke_color=node_color(props(motion_tree, dot)[:MType], :dot)[1], strokewidth=.1)
         end
     end
 
@@ -1254,14 +1279,12 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
                 y_source = [raw_dotmotion[e1,:][1][2] .* ones(stationary_duration) ; [y[2] for y in raw_dotmotion[e1,:]]]
                 x_vec = [raw_dotmotion[e2,:][1][1] .* ones(stationary_duration) ; [x[1] for x in raw_dotmotion[e2,:]]] .- x_source
                 y_vec = [raw_dotmotion[e2,:][1][2] .* ones(stationary_duration) ; [y[2] for y in raw_dotmotion[e2,:]]] .- y_source
-                println("here")
                 arrows!(scenegraph_animation_axis,
                         lift(t -> [f(t, x_source)], time_node),
                         lift(t -> [f(t, y_source)], time_node),
                         lift(t -> [.9*f(t, x_vec)], time_node),
                         lift(t -> [.9*f(t, y_vec)], time_node),
                         arrowcolor=:white, linecolor=:white, arrowsize=1)
-                println("made arrow")
             end
         end
     end
