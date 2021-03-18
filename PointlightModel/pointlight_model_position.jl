@@ -49,19 +49,19 @@ using Base.Threads: @spawn
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
         # if you use offsets from previous dots instead of biases to timeseries, only the
         # inheriting dots will ever be displaced from the center. 
-        x_bias = {(:x_init, dot)} ~ uniform(-20, 20)
-        y_bias = {(:y_init, dot)} ~ uniform(-20, 20)
-        xpos = {(:x_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
-        ypos = {(:y_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
+        x_bias = {(:x_bias, dot)} ~ uniform(-20, 20)
+        y_bias = {(:y_bias, dot)} ~ uniform(-20, 20)
+        xpos = {(:x_timeseries, dot)} ~ mvnormal(x_bias*ones(length(ts)), covmat_x)
+        ypos = {(:y_timeseries, dot)} ~ mvnormal(y_bias*zeros(length(ts)), covmat_y)
         isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
     end
 end
 
 
 @gen function generate_white_noise(variance::Float64, rv::Symbol, ts::Array{Float64}, dot::Int64)
-    covmat = compute_cov_matrix_vectorized(RandomWalk(variance), ϵ, ts)
-    white_noise_x = {(rv, dot, :x)} ~ mvnormal(zeros(length(ts)), covmat)
-    white_noise_y = {(rv, dot, :y)} ~ mvnormal(zeros(length(ts)), covmat)
+    covmat = compute_cov_matrix_vectorized(RandomWalk(variance), ϵ, ts[2:end])
+    white_noise_x = {(rv, dot, :x)} ~ mvnormal(zeros(length(ts)-1), covmat)
+    white_noise_y = {(rv, dot, :y)} ~ mvnormal(zeros(length(ts)-1), covmat)
     return white_noise_x, white_noise_y
 end
 
@@ -99,7 +99,7 @@ function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraint
     args = get_args(trace)
     (updated_trace, w, retdiff, discard) = Gen.update(trace, args, (), constraints)
     scenegraph = trace_to_tree(updated_trace)
-    render_dotmotion(updated_trace, true)
+    render_dotmotion(updated_trace, false)
 #    @spawn render_dotmotion(updated_trace, false)
 #    ax = visualize_scenegraph(scenegraph, get_choices(updated_trace))
  
@@ -134,8 +134,8 @@ function make_constraints()
                           (:kernel_type, 1) => Linear,
                           (:kernel_type, 2) => Linear,
                           (:kernel_type, 3) => Periodic, 
-                          (:perceptual_noise_magnitude, 1) => 0.25,
-                          (:perceptual_noise_magnitude, 2) => 0.25,
+                          (:perceptual_noise_magnitude, 1) => 0.0,
+                          (:perceptual_noise_magnitude, 2) => 0.0,
                           (:perceptual_noise_magnitude, 3) => 0.0,
                           (:jitter_magnitude, 1) => 0.0,
                           (:jitter_magnitude, 2) => 0.0,
@@ -146,21 +146,12 @@ function make_constraints()
                           (:edge, 1, 2) => true,
                           (:edge, 1, 3) => true,
                           (:edge, 2, 3) => false,
-                          (:x_timeseries, 1) => [50/num_position_points * i for i in 1:num_position_points],
-                          (:y_timeseries, 1) => zeros(num_position_points),
-                     #    (:x_timeseries, 2) => [50/num_position_points * i for i in 1:num_position_points],
-                          #   (:y_timeseries, 2) => [-15 for i in 1:num_position_points],
-                          (:x_timeseries, 2) => zeros(num_position_points),
-                          (:y_timeseries, 2) => zeros(num_position_points),
-                      #   (:x_timeseries, 3) => [50/num_position_points * i for i in 1:num_position_points],
-                          (:x_timeseries, 3) => zeros(num_position_points),
-                          (:y_timeseries, 3) => [bar_height*sin(ball_freq*i) for i in 0:num_position_points-1],
-                          (:x_init, 1) => -20, 
-                          (:y_init, 1) => bar_height,
-                          (:x_init, 2) => -20, 
-                          (:y_init, 2) => -1*bar_height,
-                          (:x_init, 3) => -20,
-                          (:y_init, 3) => 0)
+                          (:x_timeseries, 1) => [(50/num_position_points * i) - 20 for i in 1:num_position_points],
+                          (:y_timeseries, 1) => bar_height*ones(num_position_points),
+                          (:x_timeseries, 2) => -20*ones(num_position_points),
+                          (:y_timeseries, 2) => -bar_height*ones(num_position_points),
+                          (:x_timeseries, 3) => -20*ones(num_position_points),
+                          (:y_timeseries, 3) => [bar_height*sin(ball_freq*i) for i in 0:num_position_points-1])
 
     wheel_dictionary = (:num_dots => 2,
                         (:kernel_type, 1) => Linear,
@@ -181,24 +172,7 @@ function make_constraints()
                         (:y_init, 1) => 0,
                         (:x_init, 2) => -23,
                         (:y_init, 2) => 0)
-#                             (:edge, 1, 2) => false)
-    constraints = choicemap([Tuple(d) for d in wheel_dictionary]...)
-
-
-    # 
-
-                             
- #   constraints[(:kernel_type, 1)] = Linear
- #   constraints[(:kernel_type, 2)] = Periodic
- #   constraints[(:lengthscale, 2, 1)] = 1
- #   constraints[(:lengthscale, 2, 2)] = 1
- #   constraints[(:variance, 1, 1)] = 6
- #   constraints[(:variance, 1, 2)] = 6
-#    constraints[(:kernel_type, 3)] = Linear
-
- #   constraints[(:edge, 1, 2)] = true
- #   constraints[(:edge, 1, 3)] = true
-  #  constraints[(:edge, 2, 3)] = false
+    constraints = choicemap([Tuple(d) for d in bar_dictionary]...)
     return constraints
 end
 
@@ -207,29 +181,28 @@ function trace_to_tree(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     choicemap = get_choices(trace)
     num_dots = trace[:num_dots]
     scenegraph = MetaDiGraph(num_dots)
-    len_ts = length(trace[(:x_timeseries, 1)])
     for dot in 1:num_dots
-        x_pos = trace[(:x_timeseries, dot)] .+ trace[(:jitter, dot, :x)] 
-        y_pos = trace[(:y_timeseries, dot)] .+ trace[(:jitter, dot, :y)] 
+        x_pos = copy(trace[(:x_timeseries, dot)])
+        x_pos[2:end] .+= trace[(:jitter, dot, :x)]
+        y_pos = copy(trace[(:y_timeseries, dot)])
+        y_pos[2:end] .+= trace[(:jitter, dot, :y)]
         for parent in 1:dot-1
             if trace[(:edge, parent, dot)]
                 add_edge!(scenegraph, parent, dot)
-                x_pos .+= props(scenegraph, parent)[:Position_X]
-                y_pos .+= props(scenegraph, parent)[:Position_Y]
+                x_pos[2:end] += cumsum(diff(props(scenegraph, parent)[:Position_X]))
+                y_pos[2:end] += cumsum(diff(props(scenegraph, parent)[:Position_Y]))
             end
         end
         set_props!(scenegraph, dot,
                    Dict(:Position_X=>x_pos, :Position_Y=>y_pos, :MType=>string(trace[(:kernel_type, dot)])))
     end
-    #    ADD PERCEPTUAL NOISE TO EACH DOT HERE IN GRAPH
-    # before noise adding, this is normal. 
+
+    # Add perceptual noise 
     for dot in 1:num_dots
-        noisy_xpos = props(scenegraph, dot)[:Position_X] .+
-            trace[(:perceptual_noise, dot, :x)]
-        noisy_xpos .+= (trace[(:x_init, dot)] - noisy_xpos[1])
-        noisy_ypos = props(scenegraph, dot)[:Position_Y] .+
-            trace[(:perceptual_noise, dot, :y)]
-        noisy_ypos .+= (trace[(:y_init, dot)] - noisy_ypos[1])
+        noisy_xpos = props(scenegraph, dot)[:Position_X]
+        noisy_xpos[2:end] += trace[(:perceptual_noise, dot, :x)]
+        noisy_ypos = props(scenegraph, dot)[:Position_Y]
+        noisy_ypos[2:end] += trace[(:perceptual_noise, dot, :y)]
         set_prop!(scenegraph, dot, :Position_X, noisy_xpos)
         set_prop!(scenegraph, dot, :Position_Y, noisy_ypos)
     end
