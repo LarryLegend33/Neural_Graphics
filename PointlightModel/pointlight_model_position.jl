@@ -33,28 +33,60 @@ using Base.Threads: @spawn
 
 @gen function generate_dot_scene(ts::Array{Float64})
     num_dots = { :num_dots } ~ poisson_bounded_below(1)
+    motion_graph = MetaGraph(num_dots)
+    edge_prob = .3
     for dot in 1:num_dots
+        isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
         for parent in 1:dot-1
-            add_edge = {(:edge, parent, dot)} ~ bernoulli(.3)
+            add_edge = {(:edge, parent, dot)} ~ bernoulli(edge_prob)
+            if add_edge
+                add_edge!(motion_graph, parent, dot)
+                edge_prob = 0
+            end
         end
         kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
         cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
         cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
+        covmat_x = compute_cov_matrix_vectorized(cov_func_x, ϵ, ts)
+        covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
+        x_bias = {(:x_bias, dot)} ~ uniform(-20, 20)
+        y_bias = {(:y_bias, dot)} ~ uniform(-20, 20)
+        x_timeseries = {(:x_timeseries, dot)} ~ mvnormal(x_bias*ones(length(ts)), covmat_x)
+        y_timeseries = {(:y_timeseries, dot)} ~ mvnormal(y_bias*ones(length(ts)), covmat_y)
         perceptual_noise_magnitude = {(:perceptual_noise_magnitude, dot)} ~ multinomial(param_dict[:perceptual_noise_magnitude])
         noise = {*} ~ generate_white_noise(perceptual_noise_magnitude, :perceptual_noise, ts, dot)
         jitter_magnitude = {(:jitter_magnitude, dot)} ~ multinomial(param_dict[:jitter_magnitude])
         jitter = {*} ~ generate_white_noise(float(jitter_magnitude), :jitter, ts, dot)
-        # need a tiny bit of noise else factorization errors
-        covmat_x = compute_cov_matrix_vectorized(cov_func_x, ϵ, ts)
-        covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
-        # if you use offsets from previous dots instead of biases to timeseries, only the
-        # inheriting dots will ever be displaced from the center. 
-        x_bias = {(:x_bias, dot)} ~ uniform(-20, 20)
-        y_bias = {(:y_bias, dot)} ~ uniform(-20, 20)
-        xpos = {(:x_timeseries, dot)} ~ mvnormal(x_bias*ones(length(ts)), covmat_x)
-        ypos = {(:y_timeseries, dot)} ~ mvnormal(y_bias*zeros(length(ts)), covmat_y)
-        isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
+        dot_dict = Dict(:jitter => jitter,
+                        :x_timeseries => x_timeseries,
+                        :y_timeseries => y_timeseries,
+                        :perceptual_noise => noise,
+                        :isvisible => isvisible,
+                        :MType => string(kernel_type))
+        set_props!(motion_graph, dot, dot_dict)
+        output_covmat = compute_cov_matrix_vectorized(RandomWalk(0), ϵ, ts)
+        parent_dot = inneighbors(motion_graph, dot)
+        if !isempty(parent_dot)
+            parent_pos_x = props(motion_graph, parent_dot[1])[:x_timeseries]
+            parent_pos_x[2:end] += props(motion_graph, parent_dot[1])[:jitter][1]
+            parent_pos_y = props(motion_graph, parent_dot[1])[:y_timeseries]
+            parent_pos_y[2:end] += props(motion_graph, parent_dot[1])[:jitter][2]
+            parent_velocity_x = diff(parent_pos_x)
+            parent_velocity_y = diff(parent_pos_y)
+        else
+            parent_velocity_x = zeros(length(ts)-1)
+            parent_velocity_y = zeros(length(ts)-1)
+        end
+        x_timeseries[2:end] += jitter[1]
+        x_timeseries[2:end] += cumsum(parent_velocity_x)
+        x_timeseries[2:end] += noise[1]
+        y_timeseries[2:end] += jitter[2]
+        y_timeseries[2:end] += cumsum(parent_velocity_y)
+        y_timeseries[2:end] += noise[2]
+        x_observable = {(:x_observable, dot)} ~ mvnormal(x_timeseries, output_covmat)
+        y_observable = {(:y_observable, dot)} ~ mvnormal(y_timeseries, output_covmat)
     end
+    return motion_graph
 end
 
 
@@ -64,18 +96,6 @@ end
     white_noise_y = {(rv, dot, :y)} ~ mvnormal(zeros(length(ts)-1), covmat)
     return white_noise_x, white_noise_y
 end
-
-# @gen function disconnect_graph(current_trace, sensed_sg)
-# end    
-
-# @gen function visible_dot_proposal(current_trace, sensed_sg)
-#     # idea here is to take the current scene trace and propose scenegraph alterations
-#     # one is instead of taking a two dot pattern and subtracting one from the other and adding the
-#     # 
-    
-    
-# end    
-    
 
 
 
@@ -110,12 +130,13 @@ function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraint
 end    
 
 
+# now that you have working generative code should think about which helper functions to keep here
 function reassign_whitenoise(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
                              dots::Array{Int64, 1}, variance::Float64, rv::Symbol)
     choices = choicemap()
     choice_mag_symbol = Symbol(string(rv), "_magnitude")
     if rv == :perceptual_noise
-        choices[choice_mag_symbol] = variance
+        choices[(choice_mag_symbol, dot)] = variance
     elseif rv == :jitter
         [choices[(choice_mag_symbol, dot)] = variance for dot in dots]
     end
@@ -146,7 +167,7 @@ function make_constraints()
                           (:edge, 1, 2) => true,
                           (:edge, 1, 3) => true,
                           (:edge, 2, 3) => false,
-                          (:x_timeseries, 1) => [(50/num_position_points * i) - 20 for i in 1:num_position_points],
+                          (:x_timeseries, 1) => [(50/num_position_points * i) - 20 for i in 0:num_position_points-1],
                           (:y_timeseries, 1) => bar_height*ones(num_position_points),
                           (:x_timeseries, 2) => -20*ones(num_position_points),
                           (:y_timeseries, 2) => -bar_height*ones(num_position_points),
@@ -157,22 +178,28 @@ function make_constraints()
                         (:kernel_type, 1) => Linear,
                         (:kernel_type, 2) => Periodic,
                         (:perceptual_noise_magnitude, 1) => 0.0,
-                        (:perceptual_noise_magnitude, 2) => 5.0,
+                        (:perceptual_noise_magnitude, 2) => 0.0,
                         (:jitter_magnitude, 1) => 0.0,
                         (:jitter_magnitude, 2) => 0.0,
                         (:isvisible, 1) => true, 
                         (:isvisible, 2) => true,
                         (:edge, 1, 2) => true, 
-                        (:x_timeseries, 1) => [50/num_position_points * i for i in 1:num_position_points],
+                        (:x_timeseries, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
                         (:y_timeseries, 1) => zeros(num_position_points),
-                        (:x_timeseries, 2) => [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
-                        (:y_timeseries, 2) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
-                        # note this is not 0 indexed. your first point will be sin(.25)
-                        (:x_init, 1) => -18, 
-                        (:y_init, 1) => 0,
-                        (:x_init, 2) => -23,
-                        (:y_init, 2) => 0)
-    constraints = choicemap([Tuple(d) for d in bar_dictionary]...)
+                        (:x_timeseries, 2) => [-5*cos(ball_freq*i) - 18 for i in 0:num_position_points-1],
+                        (:y_timeseries, 2) => [5*sin(ball_freq*i) for i in 0:num_position_points-1])
+    
+
+    freestyle = (:num_dots => 2,
+                 (:perceptual_noise_magnitude, 1) => 0.0,
+                 (:perceptual_noise_magnitude, 2) => 0.0,
+                 (:jitter_magnitude, 1) => 0.0,
+                 (:jitter_magnitude, 2) => 0.0,
+                 (:isvisible, 1) => true, 
+                 (:isvisible, 2) => true)
+
+
+    constraints = choicemap([Tuple(d) for d in freestyle]...)
     return constraints
 end
 
@@ -657,7 +684,7 @@ function visualize_importance_sampling(trace::Gen.DynamicDSLTrace{DynamicDSLFunc
     plot_inference_results(top_samples, probabilities)
 end
 
-    
+
 function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
                        constraints)
     trace_choices = get_choices(trace)
@@ -670,10 +697,8 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
     num_resamples = 30
     for i in 1:num_dots
         if trace[(:isvisible, i)]
-            observations[(:x_timeseries, i)] = trace[(:x_timeseries, i)]
-            observations[(:y_timeseries, i)] = trace[(:y_timeseries, i)]
-            observations[(:x_init, i)] = trace[(:x_init, i)]
-            observations[(:y_init, i)] = trace[(:y_init, i)]
+            observations[(:x_observable, i)] = trace[(:x_observable, i)]
+            observations[(:y_observable, i)] = trace[(:y_observable, i)]
         end
     end
     [observations[constraint] = constraints[constraint] for constraint in keys(constraints)]
@@ -689,6 +714,41 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
     end
     return all_samples, all_graphs
 end
+
+
+
+    
+# function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
+#                        constraints)
+#     trace_choices = get_choices(trace)
+#     args = get_args(trace)
+#     observations = Gen.choicemap()
+#     all_samples = []
+#     all_graphs = []
+#     num_dots = trace[:num_dots]
+#     num_particles = (num_dots ^ 2) * 100
+#     num_resamples = 30
+#     for i in 1:num_dots
+#         if trace[(:isvisible, i)]
+#             observations[(:x_timeseries, i)] = trace[(:x_timeseries, i)]
+#             observations[(:y_timeseries, i)] = trace[(:y_timeseries, i)]
+#             observations[(:x_init, i)] = trace[(:x_init, i)]
+#             observations[(:y_init, i)] = trace[(:y_init, i)]
+#         end
+#     end
+#     [observations[constraint] = constraints[constraint] for constraint in keys(constraints)]
+#     for i in 1:num_resamples
+#         (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, num_particles)
+#         tr_graph = trace_to_tree(tr)
+#         for i in 1:tr[:num_dots]
+#             rem_prop!(tr_graph, i, :Position_X)
+#             rem_prop!(tr_graph, i, :Position_Y)
+#         end    
+#         push!(all_samples, tr)
+#         push!(all_graphs, tr_graph)
+#     end
+#     return all_samples, all_graphs
+# end
 
 
 function top_imp_results(all_graphs)
@@ -1522,6 +1582,10 @@ param_dict = Dict(Periodic => [[3], [.5, 1], [1]],
                   :perceptual_noise_magnitude => [0, .01, .1, 1])
 
 ϵ = 1e-10
+# need a tiny bit of noise in mvnormal else factorization errors. this is also noted in Gaussian Process book. 
+# if you use offsets from previous dots instead of biases to timeseries, only the
+# inheriting dots will ever be displaced from the center. 
+
 kernel_types = [Periodic, SquaredExponential, Linear]
 @dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
 
@@ -1588,6 +1652,7 @@ end
 @dist poisson_bounded_below(bound) = poisson(1) + bound
 
 @dist multinomial(possibilities) = possibilities[uniform_discrete(1, length(possibilities))]
+
 
 macro datatype(str); :($(Symbol(str))); end
 
