@@ -31,6 +31,10 @@ using Base.Threads: @spawn
 # here go back to actually starting at an x position, and drawing positions in reference to the init coord.
 # this way, you are actually perceiving velocities relative to the init point. 
 
+# note that a Gen.update will only change the trace and score it. The retval will not
+# change. still have to call trace_to_tree on an altered trace to get a visualized outcome. 
+
+
 @gen function generate_dot_scene(ts::Array{Float64})
     num_dots = { :num_dots } ~ poisson_bounded_below(1)
     motion_graph = MetaGraph(num_dots)
@@ -67,9 +71,9 @@ using Base.Threads: @spawn
         output_covmat = compute_cov_matrix_vectorized(RandomWalk(0), ϵ, ts)
         parent_dot = inneighbors(motion_graph, dot)
         if !isempty(parent_dot)
-            parent_pos_x = props(motion_graph, parent_dot[1])[:x_timeseries]
+            parent_pos_x = deepcopy(props(motion_graph, parent_dot[1])[:x_timeseries])
             parent_pos_x[2:end] += props(motion_graph, parent_dot[1])[:jitter][1]
-            parent_pos_y = props(motion_graph, parent_dot[1])[:y_timeseries]
+            parent_pos_y = deepcopy(props(motion_graph, parent_dot[1])[:y_timeseries])
             parent_pos_y[2:end] += props(motion_graph, parent_dot[1])[:jitter][2]
             parent_velocity_x = diff(parent_pos_x)
             parent_velocity_y = diff(parent_pos_y)
@@ -77,17 +81,26 @@ using Base.Threads: @spawn
             parent_velocity_x = zeros(length(ts)-1)
             parent_velocity_y = zeros(length(ts)-1)
         end
-        x_timeseries[2:end] += jitter[1]
-        x_timeseries[2:end] += cumsum(parent_velocity_x)
-        x_timeseries[2:end] += noise[1]
-        y_timeseries[2:end] += jitter[2]
-        y_timeseries[2:end] += cumsum(parent_velocity_y)
-        y_timeseries[2:end] += noise[2]
-        x_observable = {(:x_observable, dot)} ~ mvnormal(x_timeseries, output_covmat)
-        y_observable = {(:y_observable, dot)} ~ mvnormal(y_timeseries, output_covmat)
+        x_obs = deepcopy(x_timeseries)
+        y_obs = deepcopy(y_timeseries)
+        x_obs[2:end] += jitter[1]
+        x_obs[2:end] += cumsum(parent_velocity_x)
+        x_obs[2:end] += noise[1]
+        y_obs[2:end] += jitter[2]
+        y_obs[2:end] += cumsum(parent_velocity_y)
+        y_obs[2:end] += noise[2]
+        x_observable = {(:x_observable, dot)} ~ mvnormal(x_obs, output_covmat)
+        y_observable = {(:y_observable, dot)} ~ mvnormal(y_obs, output_covmat)
     end
     return motion_graph
 end
+
+# note the mvnormal draw does NOTHING to the trace. the x_timeseries and x_observable are identical.
+
+# OK YOUR NEW INFRASTRUCTURE WILL USE UPDATE AND GENERATE. YOUR GENERATE CALLS WILL REMOVE THE OBSERVABLE
+# DRAWS FROM THE CHOICEMAP, AND ALSO THE DRAWS OF WHATEVER YOU ARE REPLACING. YOUR UPDATE CALLS WILL
+# SIMPLY REPLACE THE VALUES. THEN YOU WILL ALWAYS PLOT X_OBSERVABLE. GET RID OF TRACE TO TREE, AND ANY TREE REQUIRING CALLS
+# GENERATE WILL ALSO GIVE BACK UPDATED TREES. UPDATE WILL NOT (ONLY FOR THE CHANGED VARIABLE). 
 
 
 @gen function generate_white_noise(variance::Float64, rv::Symbol, ts::Array{Float64}, dot::Int64)
@@ -122,8 +135,6 @@ function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraint
     render_dotmotion(updated_trace, false)
 #    @spawn render_dotmotion(updated_trace, false)
 #    ax = visualize_scenegraph(scenegraph, get_choices(updated_trace))
- 
-    #    simple_importance_sampling(tr, Dict(:num_dots => tr[:num_dots]))
     # s = Scene()
     # display(s)
     return trace
@@ -206,30 +217,27 @@ end
 
 function trace_to_tree(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     choicemap = get_choices(trace)
-    num_dots = trace[:num_dots]
-    scenegraph = MetaDiGraph(num_dots)
-    for dot in 1:num_dots
-        x_pos = copy(trace[(:x_timeseries, dot)])
-        x_pos[2:end] .+= trace[(:jitter, dot, :x)]
-        y_pos = copy(trace[(:y_timeseries, dot)])
-        y_pos[2:end] .+= trace[(:jitter, dot, :y)]
+    scenegraph = get_retval(trace)
+    for dot in 1:nv(scenegraph)
+        x_pos = deepcopy(props(scenegraph, dot)[:x_timeseries])
+        x_pos[2:end] .+= props(scenegraph, dot)[:jitter][1]
+        y_pos = deepcopy(props(scenegraph, dot)[:y_timeseries])
+        y_pos[2:end] .+= props(scenegraph, dot)[:jitter][2]
         for parent in 1:dot-1
             if trace[(:edge, parent, dot)]
-                add_edge!(scenegraph, parent, dot)
                 x_pos[2:end] += cumsum(diff(props(scenegraph, parent)[:Position_X]))
                 y_pos[2:end] += cumsum(diff(props(scenegraph, parent)[:Position_Y]))
             end
         end
-        set_props!(scenegraph, dot,
-                   Dict(:Position_X=>x_pos, :Position_Y=>y_pos, :MType=>string(trace[(:kernel_type, dot)])))
+        set_prop!(scenegraph, dot, :Position_X, x_pos)
+        set_prop!(scenegraph, dot, :Position_Y, y_pos)
     end
-
-    # Add perceptual noise 
-    for dot in 1:num_dots
+ #   Add perceptual noise 
+    for dot in 1:nv(scenegraph)
         noisy_xpos = props(scenegraph, dot)[:Position_X]
-        noisy_xpos[2:end] += trace[(:perceptual_noise, dot, :x)]
+        noisy_xpos[2:end] += props(scenegraph, dot)[:perceptual_noise][1]
         noisy_ypos = props(scenegraph, dot)[:Position_Y]
-        noisy_ypos[2:end] += trace[(:perceptual_noise, dot, :y)]
+        noisy_ypos[2:end] += props(scenegraph, dot)[:perceptual_noise][2]
         set_prop!(scenegraph, dot, :Position_X, noisy_xpos)
         set_prop!(scenegraph, dot, :Position_Y, noisy_ypos)
     end
@@ -996,33 +1004,24 @@ end
 """ These functions are for visualizing scenegraphs and animating dotmotion using Makie """
 
 
-function tree_to_coords(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    tree = trace_to_tree(trace)
-    visible_dots = [dot for dot in 1:nv(tree) if trace[(:isvisible, dot)]]
-    raw_dotmotion = fill(zeros(2), nv(tree), length(props(tree, 1)[:Position_X]))
-    dotmotion = fill(zeros(2), length(visible_dots), length(props(tree, 1)[:Position_X]))
-    invisible_dotmotion = fill(zeros(2), nv(tree) - length(visible_dots), length(props(tree, 1)[:Position_X]))
+function trace_to_coords(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    visible_dots = [dot for dot in 1:trace[:num_dots] if trace[(:isvisible, dot)]]
+    raw_dotmotion = fill(zeros(2), trace[:num_dots], length(trace[(:x_observable, 1)]))
+    visible_dotmotion = fill(zeros(2), length(visible_dots), length(trace[(:x_observable, 1)]))
     if isempty(visible_dots)
         return [], [], [], []
     end
     vis_dot_index = 1
-    invis_dot_index = 1
-    for dot in 1:nv(tree)
-        dot_data = props(tree, dot)
-        raw_dotmotion[dot, :] = [[x, y] for (x, y) in zip(dot_data[:Position_X], dot_data[:Position_Y])]
+    for dot in 1:trace[:num_dots]
+        raw_dotmotion[dot, :] = [[x, y] for (x, y) in zip(trace[(:x_observable, dot)], trace[(:y_observable, dot)])]
         if dot in visible_dots
-            dotmotion[vis_dot_index, :] = [[x, y] for (x, y) in zip(dot_data[:Position_X], dot_data[:Position_Y])]
+            visible_dotmotion[vis_dot_index, :] = raw_dotmotion[dot,:]
             vis_dot_index += 1
-        else
-            invisible_dotmotion[invis_dot_index, :] = [[x, y] for (x, y) in zip(dot_data[:Position_X], dot_data[:Position_Y])]
-            invis_dot_index += 1
         end
     end
-    dotmotion_tuples = [[Tuple(dotmotion[i, j]) for i in 1:length(visible_dots)] for j in 1:size(dotmotion)[2]]
-    invisible_dotmotion_tuples = [[Tuple(invisible_dotmotion[i, j]) for i in 1:(nv(tree)-length(visible_dots))]
-                                  for j in 1:size(invisible_dotmotion)[2]]
-    raw_dot_tuples = [[Tuple(raw_dotmotion[i, j]) for i in 1:nv(tree)] for j in 1:size(raw_dotmotion)[2]]
-    return dotmotion_tuples, invisible_dotmotion_tuples, raw_dotmotion, raw_dot_tuples
+    visible_dotmotion_tuples = [[Tuple(visible_dotmotion[i, j]) for i in 1:length(visible_dots)] for j in 1:size(visible_dotmotion)[2]]
+    raw_dot_tuples = [[Tuple(raw_dotmotion[i, j]) for i in 1:trace[:num_dots]] for j in 1:size(raw_dotmotion)[2]]
+    return visible_dotmotion_tuples, raw_dotmotion, raw_dot_tuples
 end
 
 
@@ -1155,24 +1154,46 @@ function find_top_n_props(n::Int,
 end    
 
 
+function render_test()
+    # Great these are all the same. 
+    constraints = choicemap()
+    constraints[:num_dots] = 1
+    (tr, score) = Gen.generate(generate_dot_scene, (timepoints,), constraints)
+    f, a, s = lines(tr[(:x_observable, 1)], color=:blue)
+    tree = trace_to_tree(tr)
+    lines!(a, props(tree, 1)[:Position_X], color=:green)
+    direct_trace_viz = copy(tr[(:x_timeseries, 1)])
+    direct_trace_viz[2:end] += tr[(:jitter, 1, :x)]
+    direct_trace_viz[2:end] += tr[(:perceptual_noise, 1, :x)]
+    direct_trace_viz[2:end] += cumsum(zeros(length(direct_trace_viz)-1))
+    lines!(a, direct_trace_viz, color=:orange)
+    motion_graph = get_retval(tr)
+    xt = props(motion_graph, 1)[:x_timeseries]
+    xt[2:end] += props(motion_graph, 1)[:jitter][1]
+    xt[2:end] += props(motion_graph, 1)[:perceptual_noise][1]
+    lines!(a, xt, color=:black)
+    display(f)
+    return tr
+end    
 
+
+# split the rendering so all the information is in the metagraph
 
 function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, show_scenegraph::Bool)
-    motion_tree = trace_to_tree(trace)
+  #  motion_tree = get_retval(trace)
     bounds = 25
     res = 1000
     outer_padding = 0
-    dotmotion, invisible_dotmotion, raw_dotmotion, raw_dot_tuples = tree_to_coords(trace)
+    dotmotion, raw_dotmotion, raw_dot_tuples = trace_to_coords(trace)
     number_timepoints = length(trace[(:x_timeseries, 1)])
     if isempty(dotmotion)
         println("NO VISIBLE DOTS")
         return [], []
     end
+    visible_dots = [trace[(:isvibile, dot)] for dot in 1:trace[:num_dots]]
     pairwise_distances = calculate_pairwise_distance(raw_dotmotion)
-    invisible_dots = [dot for dot in 1:nv(motion_tree) if !trace[(:isvisible, dot)]]
     stationary_duration = 50
     stationary_coords = [dotmotion[1] for i in 1:stationary_duration]
-    invisible_stationary_coords = [invisible_dotmotion[1] for i in 1:stationary_duration]
     raw_stationary_coords = [raw_dot_tuples[1] for i in 1:stationary_duration]
     time_node = Node(1);
     f(t, coords) = coords[t]
@@ -1204,21 +1225,22 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
                                       MarkerElement(color=:lightgreen, marker=:circle, strokecolor=:black)],
                                      ["SqExp", "Periodic", "Linear"], orientation=:vertical)
         offset_axis = [Axis(dotmotion_fig,
-                            backgroundcolor = white, title=string("Offset Dot ", i)) for i in 1:nv(motion_tree)]
+                            backgroundcolor = white, title=string("Offset Dot ", i)) for i in 1:trace[:num_dots]]
         timeseries_axis = [Axis(dotmotion_fig,
-                                backgroundcolor = white, title=string("Final Timeseries Dot ", i)) for i in 1:nv(motion_tree)]
+                                backgroundcolor = white, title=string("Final Timeseries Dot ", i)) for i in 1:trace[:num_dots]]
         ts_subscene = dotmotion_fig[2:3, :]
-        for i in 1:nv(motion_tree)
+        for i in 1:trace[:num_dots]
             ts_subscene[i, 1] = offset_axis[i]
             ts_subscene[i, 2] = timeseries_axis[i]
             cl = []
-            if props(motion_tree, i)[:MType] == "Linear"
+            motion_type = string(trace[(:kernel_tpye, i)])
+            if motion_type == "Linear"
                 cl = [:green, :lightgreen]
                 hp = [:lengthscale, :variance]
-            elseif props(motion_tree, i)[:MType] == "Periodic"
+            elseif motion_type == "Periodic"
                 cl = [:blue, :skyblue]
                 hp = [:period, :lengthscale, :amplitude]
-            elseif props(motion_tree, i)[:MType] == "SquaredExponential"
+            elseif motion_type == "SquaredExponential"
                 cl = [:brown, :orange]
                 hp = [:lengthscale, :amplitude]
             end
@@ -1226,8 +1248,8 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
             ofs_y = lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:y_timeseries, i)]), time_node), color=cl[2])
             axislegend(offset_axis[i], [ofs_x, ofs_y], [string([string(h, "=", trace[(h, i, 1)], " ") for h in hp]...),
                                                         string([string(h, "=", trace[(h, i, 2)], " ") for h in hp]...)], position=:lt)
-            ts_x = lines!(timeseries_axis[i], lift(t -> f_timeseries(t, props(motion_tree, i)[:Position_X]), time_node), color=cl[1])
-            ts_y = lines!(timeseries_axis[i], lift(t -> f_timeseries(t, props(motion_tree, i)[:Position_Y]), time_node), color=cl[2])
+            ts_x = lines!(timeseries_axis[i], lift(t -> f_timeseries(t, trace[(:x_observable, i)]), time_node), color=cl[1])
+            ts_y = lines!(timeseries_axis[i], lift(t -> f_timeseries(t, trace[(:y_observable, i)]), time_node), color=cl[2])
             [xlims!(t_ax, 0, number_timepoints) for t_ax in [offset_axis; timeseries_axis]]
             [ylims!(t_ax, -bounds, bounds) for t_ax in [offset_axis; timeseries_axis]]
         end
@@ -1250,9 +1272,9 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
                                              bottomspinevisible = false, 
                                              backgroundcolor = black)
     motion_axis.aspect = DataAspect()
-    for dot in 1:nv(motion_tree)
-        if !(dot in invisible_dots)
-            textloc = (props(motion_tree, dot)[:Position_X][1], props(motion_tree, dot)[:Position_Y][1])
+    for dot in 1:trace[:num_dots]
+        if dot in visible_dots
+            textloc = (trace[(:x_observable, dot)][1], trace[(:y_observable, dot)][1])
             text!(motion_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=white, 
                   textsize=lift(t -> f_textsize(t), time_node))
         end
@@ -1284,7 +1306,7 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     # REASON IS THE VISDOTIND AND INVISDOTIND VARIALBES GET MUTATED INSIDE THE PLOT.
 
     marker_size = 1
-    for dot in 1:nv(motion_tree)
+    for dot in 1:trace[:num_dots]
         jitter_std = sqrt(trace[(:jitter_magnitude, dot)])
         perceptual_noise_std = sqrt(trace[(:perceptual_noise_magnitude, dot)])
         scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords); map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size + 2*jitter_std,
