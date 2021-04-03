@@ -32,13 +32,13 @@ using Base.Threads: @spawn
 # this way, you are actually perceiving velocities relative to the init point. 
 
 # note that a Gen.update will only change the trace and score it. The retval will not
-# change. still have to call trace_to_tree on an altered trace to get a visualized outcome. 
-
 
 @gen function generate_dot_scene(ts::Array{Float64})
     num_dots = { :num_dots } ~ poisson_bounded_below(1)
-    motion_graph = MetaGraph(num_dots)
+    motion_graph = MetaDiGraph(num_dots)
     edge_prob = .3
+    # permute ID here so people can't use that information
+    # different directed versions of an undirected graph
     for dot in 1:num_dots
         isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
         for parent in 1:dot-1
@@ -65,7 +65,7 @@ using Base.Threads: @spawn
                         :x_timeseries => x_timeseries,
                         :y_timeseries => y_timeseries,
                         :perceptual_noise => noise,
-                        :isvisible => isvisible,
+                        :isvisible => isvisible, 
                         :MType => string(kernel_type))
         set_props!(motion_graph, dot, dot_dict)
         output_covmat = compute_cov_matrix_vectorized(RandomWalk(0), ϵ, ts)
@@ -95,7 +95,14 @@ using Base.Threads: @spawn
     return motion_graph
 end
 
-# note the mvnormal draw does NOTHING to the trace. the x_timeseries and x_observable are identical.
+# suppose you want to make a proposal to twiddle perceptual noise on a dot. you can't just do it
+# b/c you have to make the corresponding change to x_observable. still possible if you write
+# reversible jump. you may have an extremely low prob of acceptance b/c of the narrow window of x_obs. oh you have to assure that x_obs and y_obs remain the same and have to construct it using changes or twiddles in other variables that build them. make some combination of changes that results in the same value of x_obs.
+
+# calling Gen.update when you're not changing the x_observable is going to
+# comparisons would no longer be meaningful -- huge penalties from the way x_observable is constructed. 
+
+# note the final mvnormal draw does nothing. the x_timeseries and x_observable are identical.
 
 # OK YOUR NEW INFRASTRUCTURE WILL USE UPDATE AND GENERATE. YOUR GENERATE CALLS WILL REMOVE THE OBSERVABLE
 # DRAWS FROM THE CHOICEMAP, AND ALSO THE DRAWS OF WHATEVER YOU ARE REPLACING. YOUR UPDATE CALLS WILL
@@ -131,7 +138,6 @@ end
 function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints::Gen.DynamicChoiceMap)
     args = get_args(trace)
     (updated_trace, w, retdiff, discard) = Gen.update(trace, args, (), constraints)
-    scenegraph = trace_to_tree(updated_trace)
     render_dotmotion(updated_trace, false)
 #    @spawn render_dotmotion(updated_trace, false)
 #    ax = visualize_scenegraph(scenegraph, get_choices(updated_trace))
@@ -141,21 +147,11 @@ function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraint
 end    
 
 
-# now that you have working generative code should think about which helper functions to keep here
-function reassign_whitenoise(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
-                             dots::Array{Int64, 1}, variance::Float64, rv::Symbol)
-    choices = choicemap()
-    choice_mag_symbol = Symbol(string(rv), "_magnitude")
-    if rv == :perceptual_noise
-        choices[(choice_mag_symbol, dot)] = variance
-    elseif rv == :jitter
-        [choices[(choice_mag_symbol, dot)] = variance for dot in dots]
-    end
-    for dot in dots
-        choices[(rv, dot, :x)], choices[(rv, dot, :y)] = generate_white_noise(variance, rv, timepoints, dot)
-    end
-    dotwrap(trace, choices)
-end    
+# this is a key helper function. by executing dotwrap(make_constraints()) or dotwrap(trace, make_constraints()), 
+
+# for what we want (a change in the x_observable w/ noise constraint changes), want to input the original trace. 
+# extract the choicemap, then remove its x_observable. loop through constraints and replace the original choicemap's values
+# with that of the constraints using choices[addr] = val. call Gen.generate on the new choicemap, which yields a new x_observable. 
 
 
 function make_constraints()
@@ -213,38 +209,6 @@ function make_constraints()
     constraints = choicemap([Tuple(d) for d in freestyle]...)
     return constraints
 end
-
-
-function trace_to_tree(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    choicemap = get_choices(trace)
-    scenegraph = get_retval(trace)
-    for dot in 1:nv(scenegraph)
-        x_pos = deepcopy(props(scenegraph, dot)[:x_timeseries])
-        x_pos[2:end] .+= props(scenegraph, dot)[:jitter][1]
-        y_pos = deepcopy(props(scenegraph, dot)[:y_timeseries])
-        y_pos[2:end] .+= props(scenegraph, dot)[:jitter][2]
-        for parent in 1:dot-1
-            if trace[(:edge, parent, dot)]
-                x_pos[2:end] += cumsum(diff(props(scenegraph, parent)[:Position_X]))
-                y_pos[2:end] += cumsum(diff(props(scenegraph, parent)[:Position_Y]))
-            end
-        end
-        set_prop!(scenegraph, dot, :Position_X, x_pos)
-        set_prop!(scenegraph, dot, :Position_Y, y_pos)
-    end
- #   Add perceptual noise 
-    for dot in 1:nv(scenegraph)
-        noisy_xpos = props(scenegraph, dot)[:Position_X]
-        noisy_xpos[2:end] += props(scenegraph, dot)[:perceptual_noise][1]
-        noisy_ypos = props(scenegraph, dot)[:Position_Y]
-        noisy_ypos[2:end] += props(scenegraph, dot)[:perceptual_noise][2]
-        set_prop!(scenegraph, dot, :Position_X, noisy_xpos)
-        set_prop!(scenegraph, dot, :Position_Y, noisy_ypos)
-    end
-    return scenegraph
-end    
-
-
 
 
 
@@ -668,8 +632,6 @@ end
 
 
 
-
-
 function calculate_pairwise_distance(dotmotion_tuples)
     # each value in dotmotion_tuples is of form ((x1, y1), (x2, y2)) for each dot i to N.
     pairwise_distances = []
@@ -689,7 +651,7 @@ and the offsets won't be observable in a true sense -- only the position of the 
 function visualize_importance_sampling(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints)
     all_importance_samples, all_is_graphs = imp_inference(trace, constraints)
     top_samples, probabilities = top_imp_results(all_is_graphs)
-    plot_inference_results(top_samples, probabilities)
+  #  plot_inference_results(top_samples, probabilities)
 end
 
 
@@ -712,11 +674,14 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
     [observations[constraint] = constraints[constraint] for constraint in keys(constraints)]
     for i in 1:num_resamples
         (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, num_particles)
-        tr_graph = trace_to_tree(tr)
+        tr_graph = get_retval(tr)
         for i in 1:tr[:num_dots]
-            rem_prop!(tr_graph, i, :Position_X)
-            rem_prop!(tr_graph, i, :Position_Y)
-        end    
+            for ky in keys(props(tr_graph, i))
+                if !(ky in [:MType, :isvisible])
+                    rem_prop!(tr_graph, i, ky)
+                end
+            end
+        end
         push!(all_samples, tr)
         push!(all_graphs, tr_graph)
     end
@@ -724,47 +689,11 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
 end
 
 
-
-    
-# function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
-#                        constraints)
-#     trace_choices = get_choices(trace)
-#     args = get_args(trace)
-#     observations = Gen.choicemap()
-#     all_samples = []
-#     all_graphs = []
-#     num_dots = trace[:num_dots]
-#     num_particles = (num_dots ^ 2) * 100
-#     num_resamples = 30
-#     for i in 1:num_dots
-#         if trace[(:isvisible, i)]
-#             observations[(:x_timeseries, i)] = trace[(:x_timeseries, i)]
-#             observations[(:y_timeseries, i)] = trace[(:y_timeseries, i)]
-#             observations[(:x_init, i)] = trace[(:x_init, i)]
-#             observations[(:y_init, i)] = trace[(:y_init, i)]
-#         end
-#     end
-#     [observations[constraint] = constraints[constraint] for constraint in keys(constraints)]
-#     for i in 1:num_resamples
-#         (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, num_particles)
-#         tr_graph = trace_to_tree(tr)
-#         for i in 1:tr[:num_dots]
-#             rem_prop!(tr_graph, i, :Position_X)
-#             rem_prop!(tr_graph, i, :Position_Y)
-#         end    
-#         push!(all_samples, tr)
-#         push!(all_graphs, tr_graph)
-#     end
-#     return all_samples, all_graphs
-# end
-
-
 function top_imp_results(all_graphs)
     # want the top graphs and probabilities
     top_graphs, probabilities = find_top_metagraphs(all_graphs, [])
     top_n = min(3, length(top_graphs))
-    viz_graphs = [visualize_scenegraph(tg) for tg in top_graphs[1:top_n]]
-    return viz_graphs, probabilities[1:top_n]
+    return top_graphs[1:top_n], probabilities[1:top_n]
 end
 
 
@@ -781,17 +710,36 @@ function find_top_metagraphs(graphlist, unique_graphs)
 end
 
 
-function plot_inference_results(rendered_graphs, probabilities)
+# here, you'll have to construct a length top_graphs by 2 Figure.
+# add a barplot onto the bottom row, and across the top add Axis objects that you
+# can pass to visualize_scenegraph with the trace. 
+
+function plot_inference_results(top_graphs, probabilities)
     scene, layout = layoutscene(resolution=(300, 300), backgroundcolor=RGBf0(0, 0, 0))
     white = RGBf0(255,255,255)
     black = RGBf0(0,0,0)
     gray = RGBf0(100, 100, 100)
-    axes = LAxis(scene, backgroundcolor=black, ylabelcolor=white, xticklabelcolor=black, yticklabelcolor=white, 
-                 xtickcolor=white, ytickcolor=white, xgridcolor=black, ygridcolor=gray,
-                 xticklabelrotation = pi/2,  xticklabelalign = (:top, :top), yticklabelalign = (:top, :top))
-    layout[1, 1] = axes
+    res = 500
+    infres_fig = Figure(resolution=(3*res, 2*res), backgroundcolor=white, outer_padding=0)
+
+    scenegraph_axes = [Axis(infres_fig, showaxis = false, 
+                            xgridvisible = false, 
+                            ygridvisible = false, 
+                            xticksvisible = false,
+                            yticksvisible = false,
+                            xticklabelsvisible = false,
+                            yticklabelsvisible = false,
+                            backgroundcolor = white,
+                            topspinevisible = false,
+                            bottomspinevisible = false,
+                            rightspinevisible = false,
+                            leftspinevisible = false) for g in top_graphs]
+    [ax.aspect = DataAspect() for ax in scenegraph_axes]
+    infres_fig[1, 1:3] = scenegraph_axes
+    vizgraphs = [visualize_scenegraph(g, ax) for (g, ax) in zip(top_graphs, scenegraph_axes)]
+    bar_axis = Axis(infres_fig, backgroundcolor=white)
+    infres_fig[2,:] = bar_axis
     barwidth = (.2 / 3) * length(probabilities)
-    scene_graph_scene = vbox(rendered_graphs...)
     if length(probabilities) == 1
         bar_x = [.45]
         xaxlims = BBox(0, 1, 0, 1)
@@ -802,30 +750,20 @@ function plot_inference_results(rendered_graphs, probabilities)
         bar_x = [.35, 1.45, 2.55]
         xaxlims = BBox(0, 3, 0, 1)
     end
-    bp = barplot!(axes, bar_x, convert(Array{Float64, 1}, probabilities),
-                  color=:white,
-                  backgroundcolor=:black, width=barwidth)
-
-    axes.ylabel = "Posterior Probability"
-    limits!(axes, xaxlims)
-    final_scene = hbox(scene, 
-                       scene_graph_scene)
-    screen = display(final_scene)
+    bp = barplot!(bar_axis, bar_x, convert(Array{Float64, 1}, probabilities),
+                  color=:gray,
+                  backgroundcolor=:white, width=barwidth)
+    bar_axis.ylabel = "Posterior Probability"
+    limits!(bar_axis, xaxlims)
+    screen = display(infres_fig)
     stop_anim = false
-    on(events(final_scene).keyboardbuttons) do button
+    on(events(infres_fig.scene).keyboardbuttons) do button
         if ispressed(button, Keyboard.enter)
             stop_anim = true
         end
     end
-    # on(events(answer_scene).keyboardbuttons) do button
-    #     if ispressed(button, Keyboard.enter)
-    #         stop_anim = true
-    #     end
-    # end
-
-    # first arg passed to timedwait has to be a function
     query_enter() = stop_anim
-    # will either stop when you press enter or when 30 seconds have passed. 
+    # will either stop when you press enter or when 200 seconds have passed. 
     timedwait(query_enter, 200.0)
     # uncomment if you want to block until the window is closed
     #  wait(screen)
@@ -1094,7 +1032,7 @@ end
 # both work, but then visualize scenegraph becomes a manipulator of LAxis objects and unable to render itself. 
 
 function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64},
-                              choices::Gen.DynamicDSLChoiceMap, sg_axis::Axis)
+                              sg_axis::Axis)
     res = 1400
     paths = all_paths(motion_tree)
     # by the end of this loop have all connected and all unconnected paths
@@ -1119,18 +1057,18 @@ function visualize_scenegraph(motion_tree::MetaDiGraph{Int64, Float64},
         nodecolor = node_color(mtype, :dot)
         scatter!(sg_axis, [(node_xs[v], node_ys[v])], markersize=50, color=nodecolor),
         text!(sg_axis, string(v), position=(node_xs[v], node_ys[v]), align= (:center, :center),
-              textsize=.1, color= choices[(:isvisible, v)] ? :black : :white, overdraw=true)
-        text!(sg_axis, string("s_", v, " = ", choices[(:jitter_magnitude, v)]), 
-              position=(node_xs[v] + .32, node_ys[v] + -.13), align= (:center, :center),
-              textsize=.08, color=:gray, overdraw=true)
-
+              textsize=.1, color= props(motion_tree, v)[:isvisible] ? :black : :white, overdraw=true)
+# Commented Regions Show the Noise and Jitter on the Graph         
+#        text!(sg_axis, string("s_", v, " = ", choices[(:jitter_magnitude, v)]), 
+ #             position=(node_xs[v] + .32, node_ys[v] + -.13), align= (:center, :center),
+  #            textsize=.08, color=:gray, overdraw=true)
      #   plot!(choices[(:x_timeseries, v)], color=:blue)
      #   plot!(choices[(:y_timeseries, v)], color=:red)
 
     end
-    text!(sg_axis, string("eps = ", choices[:perceptual_noise_magnitude]), 
-          position=(node_xs[1] + .1, node_ys[1] + .4), align= (:center, :center),
-          textsize=.1, color=:gray, overdraw=true)
+  #  text!(sg_axis, string("eps = ", choices[:perceptual_noise_magnitude]), 
+   #       position=(node_xs[1] + .1, node_ys[1] + .4), align= (:center, :center),
+    #      textsize=.1, color=:gray, overdraw=true)
     xlims!(sg_axis, 0, xbounds)
     ylims!(sg_axis, 0, ybounds)
     sg_axis.aspect = DataAspect()
@@ -1154,31 +1092,6 @@ function find_top_n_props(n::Int,
 end    
 
 
-function render_test()
-    # Great these are all the same. 
-    constraints = choicemap()
-    constraints[:num_dots] = 1
-    (tr, score) = Gen.generate(generate_dot_scene, (timepoints,), constraints)
-    f, a, s = lines(tr[(:x_observable, 1)], color=:blue)
-    tree = trace_to_tree(tr)
-    lines!(a, props(tree, 1)[:Position_X], color=:green)
-    direct_trace_viz = copy(tr[(:x_timeseries, 1)])
-    direct_trace_viz[2:end] += tr[(:jitter, 1, :x)]
-    direct_trace_viz[2:end] += tr[(:perceptual_noise, 1, :x)]
-    direct_trace_viz[2:end] += cumsum(zeros(length(direct_trace_viz)-1))
-    lines!(a, direct_trace_viz, color=:orange)
-    motion_graph = get_retval(tr)
-    xt = props(motion_graph, 1)[:x_timeseries]
-    xt[2:end] += props(motion_graph, 1)[:jitter][1]
-    xt[2:end] += props(motion_graph, 1)[:perceptual_noise][1]
-    lines!(a, xt, color=:black)
-    display(f)
-    return tr
-end    
-
-
-# split the rendering so all the information is in the metagraph
-
 function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, show_scenegraph::Bool)
   #  motion_tree = get_retval(trace)
     bounds = 25
@@ -1190,7 +1103,7 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
         println("NO VISIBLE DOTS")
         return [], []
     end
-    visible_dots = [trace[(:isvibile, dot)] for dot in 1:trace[:num_dots]]
+    visible_dots = [dot for dot in 1:trace[:num_dots] if trace[(:isvisible, dot)]]
     pairwise_distances = calculate_pairwise_distance(raw_dotmotion)
     stationary_duration = 50
     stationary_coords = [dotmotion[1] for i in 1:stationary_duration]
@@ -1272,12 +1185,10 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
                                              bottomspinevisible = false, 
                                              backgroundcolor = black)
     motion_axis.aspect = DataAspect()
-    for dot in 1:trace[:num_dots]
-        if dot in visible_dots
-            textloc = (trace[(:x_observable, dot)][1], trace[(:y_observable, dot)][1])
-            text!(motion_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=white, 
-                  textsize=lift(t -> f_textsize(t), time_node))
-        end
+    for dot in visible_dots
+        textloc = (trace[(:x_observable, dot)][1], trace[(:y_observable, dot)][1])
+        text!(motion_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=white, 
+              textsize=lift(t -> f_textsize(t), time_node))
     end
     scatter!(motion_axis, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=14px, color=RGBf0(255, 255, 255))
     xlims!(motion_axis, (-bounds, bounds))
@@ -1310,25 +1221,25 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
         jitter_std = sqrt(trace[(:jitter_magnitude, dot)])
         perceptual_noise_std = sqrt(trace[(:perceptual_noise_magnitude, dot)])
         scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords); map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size + 2*jitter_std,
-                 markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :jitter), overdraw=true)
+                 markerspace=SceneSpace, color=node_color(string(trace[(:kernel_type, dot)]), :jitter), overdraw=true)
         scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords); map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size + 2*perceptual_noise_std,
-                 markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :perceptual_noise), overdraw=true)
-        textloc = (props(motion_tree, dot)[:Position_X][1]+.5, props(motion_tree, dot)[:Position_Y][1])
+                 markerspace=SceneSpace, color=node_color(string(trace[(:kernel_type, dot)]), :perceptual_noise), overdraw=true)
+        textloc = (trace[(:x_observable, dot)][1]+.5, trace[(:y_observable, dot)][1])
         text!(scenegraph_animation_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=white, textsize=lift(t-> f_textsize(t), time_node), overdraw=false)
-        if !(dot in invisible_dots)
+        if dot in visible_dots
             scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords); map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size,
-                     markerspace=SceneSpace, color=node_color(props(motion_tree, dot)[:MType], :dot), overdraw=true)
+                     markerspace=SceneSpace, color=node_color(string(trace[(:kernel_type, dot)]), :dot), overdraw=true)
             """ Jitter and noise each have their own circles """
         else
             scatter!(scenegraph_animation_axis,
                      lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords);
                                      map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size*10, color=RGBf0(0,0,0),
-                     stroke_color=node_color(props(motion_tree, dot)[:MType], :dot)[1], strokewidth=.1)
+                     stroke_color=node_color(string(trace[(:kernel_type, dot)]), :dot)[1], strokewidth=.1)
         end
     end
 
-    for e1 in 1:nv(motion_tree)
-        for e2 in (e1+1):nv(motion_tree)
+    for e1 in 1:trace[:num_dots]
+        for e2 in (e1+1):trace[:num_dots]
             if trace[(:edge, e1, e2)]
                 x_source = [raw_dotmotion[e1,:][1][1] .* ones(stationary_duration) ; [x[1] for x in raw_dotmotion[e1,:]]]
                 y_source = [raw_dotmotion[e1,:][1][2] .* ones(stationary_duration) ; [y[2] for y in raw_dotmotion[e1,:]]]
