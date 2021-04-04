@@ -32,13 +32,12 @@ using Base.Threads: @spawn
 # this way, you are actually perceiving velocities relative to the init point. 
 
 # note that a Gen.update will only change the trace and score it. The retval will not
+# edge permutation code is in pointlight_model_velocity if you want to allow it back in. (populate_edges)
 
 @gen function generate_dot_scene(ts::Array{Float64})
-    num_dots = { :num_dots } ~ poisson_bounded_below(1)
+    num_dots = { :num_dots } ~ geometric_nonzero(.5)
     motion_graph = MetaDiGraph(num_dots)
     edge_prob = .3
-    # permute ID here so people can't use that information
-    # different directed versions of an undirected graph
     for dot in 1:num_dots
         isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
         for parent in 1:dot-1
@@ -48,9 +47,7 @@ using Base.Threads: @spawn
                 edge_prob = 0
             end
         end
-        kernel_type = {(:kernel_type, dot)} ~ choose_kernel_type()
-        cov_func_x = {*} ~ covariance_prior(kernel_type, dot, 1)
-        cov_func_y = {*} ~ covariance_prior(kernel_type, dot, 2)
+        cov_func_x, cov_func_y = { (:cf_tree, dot) } ~ covfunc_prior([.3, .3, .3, .1], dot)
         covmat_x = compute_cov_matrix_vectorized(cov_func_x, ϵ, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
         x_bias = {(:x_bias, dot)} ~ uniform(-20, 20)
@@ -65,8 +62,8 @@ using Base.Threads: @spawn
                         :x_timeseries => x_timeseries,
                         :y_timeseries => y_timeseries,
                         :perceptual_noise => noise,
-                        :isvisible => isvisible, 
-                        :MType => string(kernel_type))
+                        :isvisible => isvisible,
+                        :MType => mtype_extractor(cov_func_x))
         set_props!(motion_graph, dot, dot_dict)
         output_covmat = compute_cov_matrix_vectorized(RandomWalk(0), ϵ, ts)
         parent_dot = inneighbors(motion_graph, dot)
@@ -108,6 +105,7 @@ end
 # DRAWS FROM THE CHOICEMAP, AND ALSO THE DRAWS OF WHATEVER YOU ARE REPLACING. YOUR UPDATE CALLS WILL
 # SIMPLY REPLACE THE VALUES. THEN YOU WILL ALWAYS PLOT X_OBSERVABLE. GET RID OF TRACE TO TREE, AND ANY TREE REQUIRING CALLS
 # GENERATE WILL ALSO GIVE BACK UPDATED TREES. UPDATE WILL NOT (ONLY FOR THE CHANGED VARIABLE). 
+
 
 
 @gen function generate_white_noise(variance::Float64, rv::Symbol, ts::Array{Float64}, dot::Int64)
@@ -210,6 +208,15 @@ function make_constraints()
     return constraints
 end
 
+
+function mtype_extractor(node::Kernel)
+    if typeof(node) != Plus
+        return string(typeof(node))
+    else
+        return string(
+        sort([mtype_extractor(node.left), mtype_extractor(node.right)])...)
+    end
+end
 
 
 
@@ -1005,16 +1012,39 @@ end
 
 function node_color(mtype::String, dot_jitter_or_noise::Symbol)
     skyblue = RGBf0(154, 203, 255) / 255
+    darkcyan = RGBf0(0, 139, 139) / 255
     lightgreen = RGBf0(144, 238, 144) / 255
     lightorange = RGBf0(252, 210,153) / 255
+    dark_orange = RGBf0(80, 33,0) / 255
+    yellow = RGBf0(255, 243,109) / 255
+    red = RGBf0(255, 243,109) / 255
+    magenta = RGBf0(255,128,255) / 255
+    dark_green = RGBf0(34,139,34) / 255
+    dark_blue = RGBf0(0, 40, 80) / 255
+    brown = RGBf0(152, 118, 84) / 255
+    gray = RGBf0(130, 130, 130) / 255
     if mtype == "Linear"
         nodecolor = lightgreen
-    elseif mtype == "RandomWalk"
-        nodecolor = :pink
     elseif mtype == "Periodic"
         nodecolor = skyblue
     elseif mtype == "SquaredExponential"
         nodecolor = lightorange
+    elseif mtype == "LinearPeriodic"
+        nodecolor = darkcyan
+    elseif mtype == "LinearSquaredExponential"
+        nodecolor = yellow
+    elseif mtype == "LinearLinear"
+        nodecolor = dark_green
+    elseif mtype == "LinearPeriodic"
+        nodecolor = darkcyan
+    elseif mtype == "PeriodicSquaredExponential"
+        nodecolor = gray
+    elseif mtype == "PeriodicPeriodic"
+        nodecolor = dark_blue
+    elseif mtype == "SquaredExponentialSquaredExponential"
+        nodecolor = dark_orange
+    else
+        nodecolor = :white
     end
     if dot_jitter_or_noise == :jitter
         nodecolor = (nodecolor, .6)
@@ -1218,23 +1248,24 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
 
     marker_size = 1
     for dot in 1:trace[:num_dots]
+        node_color_input = mtype_extractor(trace[(:cf_tree, dot)][1])
         jitter_std = sqrt(trace[(:jitter_magnitude, dot)])
         perceptual_noise_std = sqrt(trace[(:perceptual_noise_magnitude, dot)])
         scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords); map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size + 2*jitter_std,
-                 markerspace=SceneSpace, color=node_color(string(trace[(:kernel_type, dot)]), :jitter), overdraw=true)
+                 markerspace=SceneSpace, color=node_color(node_color_input, :jitter), overdraw=true)
         scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords); map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size + 2*perceptual_noise_std,
-                 markerspace=SceneSpace, color=node_color(string(trace[(:kernel_type, dot)]), :perceptual_noise), overdraw=true)
+                 markerspace=SceneSpace, color=node_color(node_color_input, :perceptual_noise), overdraw=true)
         textloc = (trace[(:x_observable, dot)][1]+.5, trace[(:y_observable, dot)][1])
         text!(scenegraph_animation_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=white, textsize=lift(t-> f_textsize(t), time_node), overdraw=false)
         if dot in visible_dots
             scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords); map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size,
-                     markerspace=SceneSpace, color=node_color(string(trace[(:kernel_type, dot)]), :dot), overdraw=true)
+                     markerspace=SceneSpace, color=node_color(node_color_input, :dot), overdraw=true)
             """ Jitter and noise each have their own circles """
         else
             scatter!(scenegraph_animation_axis,
                      lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords);
                                      map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size*10, color=RGBf0(0,0,0),
-                     stroke_color=node_color(string(trace[(:kernel_type, dot)]), :dot)[1], strokewidth=.1)
+                     stroke_color=node_color(node_color_input, :dot)[1], strokewidth=.1)
         end
     end
 
@@ -1519,8 +1550,10 @@ param_dict = Dict(Periodic => [[3], [.5, 1], [1]],
 # if you use offsets from previous dots instead of biases to timeseries, only the
 # inheriting dots will ever be displaced from the center. 
 
-kernel_types = [Periodic, SquaredExponential, Linear]
+#kernel_types = [Periodic, SquaredExponential, Linear]
+kernel_types = [Periodic, SquaredExponential, Linear, Plus]
 @dist choose_kernel_type() = kernel_types[categorical([1/3, 1/3, 1/3])]
+@dist choose_kernel_type(mn_probs) = kernel_types[categorical(mn_probs)]
 
 
 
@@ -1554,35 +1587,36 @@ end
 #
 
 
-@gen function covfunc_prior(mn_probs)
-    # Choose a type of kernel
-    kernel_type ~ choose_kernel_type(mn_probs)
-   # If this is a composite node, recursively generate subtrees. But you want to reduce the prob of a Plus the more time you create a Plus. 
+@gen function covfunc_prior(mn_probs, dot)
+    kernel_type = { :kernel_type } ~ choose_kernel_type(mn_probs)
+    println(kernel_type)
     if in(kernel_type, [Plus, Times])
-        return kernel_type({:left} ~ covfunc_prior(mn_probs), {:right} ~ covfunc_prior(mn_probs))
+        left = { :left } ~ covfunc_prior(mn_probs, dot)
+        right = { :right } ~ covfunc_prior(mn_probs, dot)
+        return kernel_type(left[1], right[1]), kernel_type(left[2], right[2])
     end
     if kernel_type == Periodic
-        lengthscale = { :lengthscale } ~ multinomial(param_dict[Periodic][2])
-        period = { :period } ~ multinomial(param_dict[Periodic][3])
-        #     amplitude = {(:amplitude, dot, dim)} ~ multinomial([50/period])
-        amplitude = {:amplitude} ~ multinomial(param_dict[Periodic][1])
-        kernel_args = [amplitude, lengthscale, period]
+        amplitude =[{(:amplitude, i)} ~ multinomial(param_dict[Periodic][1]) for i in [:x, :y]]
+        lengthscale = [{(:lengthscale, i)} ~ multinomial(param_dict[Periodic][2]) for i in [:x, :y]]
+        period = [{(:period, i)} ~ multinomial(param_dict[Periodic][3]) for i in [:x, :y]]
+        kernel_args_x, kernel_args_y = zip(amplitude, lengthscale, period)
     elseif kernel_type == Linear
-        lengthscale =  { :lengthscale } ~ multinomial(param_dict[Linear][1])  
-        variance = { :variance } ~ multinomial(param_dict[Linear][2])
-        kernel_args = [lengthscale, variance]
-    elseif kernel_type == RandomWalk
-        kernel_args = [{ :variance } ~ multinomial(param_dict[RandomWalk][1])]
+        lengthscale =  [{(:lengthscale, i)} ~ multinomial(param_dict[Linear][1]) for i in [:x, :y]]
+        variance = [{(:variance, i)} ~ multinomial(param_dict[Linear][2]) for i in [:x, :y]]
+        kernel_args_x, kernel_args_y = zip(lengthscale, variance)
     elseif kernel_type == SquaredExponential
-        kernel_args = [{ :amplitude } ~ multinomial(param_dict[SquaredExponential][1]),
-                       { :lengthscale } ~ multinomial(param_dict[SquaredExponential][2])]        
+        amplitude = [{(:amplitude, i)} ~ multinomial(param_dict[SquaredExponential][1]) for i in [:x, :y]]
+        lengthscale = [{(:lengthscale, i)} ~ multinomial(param_dict[SquaredExponential][2]) for i in [:x, :y]]
+        kernel_args_x, kernel_args_y = zip(amplitude, lengthscale)
     end
-    return kernel_type(kernel_args...)
-end
+    return kernel_type(kernel_args_x...), kernel_type(kernel_args_y...)
+end    
 
 @dist gamma_bounded_below(shape, scale, bound) = gamma(shape, scale) + bound
 
 @dist poisson_bounded_below(bound) = poisson(1) + bound
+
+@dist geometric_nonzero(prob) = geometric(prob) + 1
 
 @dist multinomial(possibilities) = possibilities[uniform_discrete(1, length(possibilities))]
 
