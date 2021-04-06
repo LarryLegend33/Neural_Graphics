@@ -48,15 +48,11 @@ using SpecialFunctions: loggamma
     dot_order = {*} ~ populate_edges(motion_graph, candidate_edges)
     for dot in dot_order
         isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
-        cov_func_x, cov_func_y = { (:cf_tree, dot) } ~ covfunc_prior([.25, .25, .25, .25], dot)
+        cov_func_x, cov_func_y = { (:cf_tree, dot) } ~ covfunc_prior([.5/3, .5/3, .5/3, .5], dot, 0)
         covmat_x = compute_cov_matrix_vectorized(cov_func_x, ϵ, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
-        # x_bias = {(:x_bias, dot)} ~ uniform(-20, 20)
-        # y_bias = {(:y_bias, dot)} ~ uniform(-20, 20)
-        # x_timeseries = {(:x_timeseries, dot)} ~ mvnormal(x_bias*ones(length(ts)), covmat_x)
-        # y_timeseries = {(:y_timeseries, dot)} ~ mvnormal(y_bias*ones(length(ts)), covmat_y)
-        start_x = {(:start_x, dot)} ~ uniform(-20, 20)
-        start_y = {(:start_y, dot)} ~ uniform(-20, 20)
+        start_x = {(:start_x, dot)} ~ uniform(-25, 25)
+        start_y = {(:start_y, dot)} ~ uniform(-25, 25)
         x_timeseries = {(:x_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
         y_timeseries = {(:y_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
         perceptual_noise_magnitude = {(:perceptual_noise_magnitude, dot)} ~ multinomial(param_dict[:perceptual_noise_magnitude])
@@ -71,48 +67,14 @@ using SpecialFunctions: loggamma
                         :MType => mtype_extractor(cov_func_x))
         set_props!(motion_graph, dot, dot_dict)
         output_covmat = compute_cov_matrix_vectorized(RandomWalk(0), ϵ, ts)
-        parent_dot = inneighbors(motion_graph, dot)
-        if !isempty(parent_dot)
-            parent_pos_x = deepcopy(props(motion_graph, parent_dot[1])[:x_timeseries])
-            parent_pos_x[2:end] += props(motion_graph, parent_dot[1])[:jitter][1]
-            parent_pos_y = deepcopy(props(motion_graph, parent_dot[1])[:y_timeseries])
-            parent_pos_y[2:end] += props(motion_graph, parent_dot[1])[:jitter][2]
-            parent_velocity_x = diff(parent_pos_x)
-            parent_velocity_y = diff(parent_pos_y)
-        else
-            parent_velocity_x = zeros(length(ts)-1)
-            parent_velocity_y = zeros(length(ts)-1)
-        end
-        x_obs = deepcopy(x_timeseries)
-        y_obs = deepcopy(y_timeseries)
-        x_obs[2:end] += jitter[1]
-        x_obs[2:end] += cumsum(parent_velocity_x)
-        x_obs[2:end] += noise[1]
-        y_obs[2:end] += jitter[2]
-        y_obs[2:end] += cumsum(parent_velocity_y)
-        y_obs[2:end] += noise[2]
-        x_obs .+= (start_x - x_obs[1])
-        y_obs .+= (start_y - y_obs[1])
+        parent_velocity_x, parent_velocity_y = get_parent_velocity(motion_graph, dot, ts)
+        x_obs, y_obs = create_observable(x_timeseries, y_timeseries, jitter, noise, start_x, start_y,
+                                         parent_velocity_x, parent_velocity_y)
         x_observable = {(:x_observable, dot)} ~ mvnormal(x_obs, output_covmat)
         y_observable = {(:y_observable, dot)} ~ mvnormal(y_obs, output_covmat)
     end
     return motion_graph
 end
-
-# suppose you want to make a proposal to twiddle perceptual noise on a dot. you can't just do it
-# b/c you have to make the corresponding change to x_observable. still possible if you write
-# reversible jump. you may have an extremely low prob of acceptance b/c of the narrow window of x_obs. oh you have to assure that x_obs and y_obs remain the same and have to construct it using changes or twiddles in other variables that build them. make some combination of changes that results in the same value of x_obs.
-
-# calling Gen.update when you're not changing the x_observable is going to
-# comparisons would no longer be meaningful -- huge penalties from the way x_observable is constructed. 
-
-# note the final mvnormal draw does nothing. the x_timeseries and x_observable are identical.
-
-# OK YOUR NEW INFRASTRUCTURE WILL USE UPDATE AND GENERATE. YOUR GENERATE CALLS WILL REMOVE THE OBSERVABLE
-# DRAWS FROM THE CHOICEMAP, AND ALSO THE DRAWS OF WHATEVER YOU ARE REPLACING. YOUR UPDATE CALLS WILL
-# SIMPLY REPLACE THE VALUES. THEN YOU WILL ALWAYS PLOT X_OBSERVABLE. GET RID OF TRACE TO TREE, AND ANY TREE REQUIRING CALLS
-# GENERATE WILL ALSO GIVE BACK UPDATED TREES. UPDATE WILL NOT (ONLY FOR THE CHANGED VARIABLE). 
-
 
 
 @gen function generate_white_noise(variance::Float64, rv::Symbol, ts::Array{Float64}, dot::Int64)
@@ -150,7 +112,42 @@ end
 end
 
 
+function create_observable(x_timeseries, y_timeseries, jitter, noise, start_x, start_y,
+                           parent_velocity_x, parent_velocity_y)
+    x_obs = deepcopy(x_timeseries)
+    y_obs = deepcopy(y_timeseries)
+    x_obs[2:end] += jitter[1]
+    x_obs[2:end] += cumsum(parent_velocity_x)
+    x_obs[2:end] += noise[1]
+    y_obs[2:end] += jitter[2]
+    y_obs[2:end] += cumsum(parent_velocity_y)
+    y_obs[2:end] += noise[2]
+    x_obs .+= (start_x - x_obs[1])
+    y_obs .+= (start_y - y_obs[1])
+    return x_obs, y_obs
+end
+
+
+function get_parent_velocity(motion_graph, dot, ts)
+    parent_dot = inneighbors(motion_graph, dot)
+    if !isempty(parent_dot)
+        parent_pos_x = deepcopy(props(motion_graph, parent_dot[1])[:x_timeseries])
+        parent_pos_x[2:end] += props(motion_graph, parent_dot[1])[:jitter][1]
+        parent_pos_y = deepcopy(props(motion_graph, parent_dot[1])[:y_timeseries])
+        parent_pos_y[2:end] += props(motion_graph, parent_dot[1])[:jitter][2]
+        parent_velocity_x = diff(parent_pos_x)
+        parent_velocity_y = diff(parent_pos_y)
+    else
+        parent_velocity_x = zeros(length(ts)-1)
+        parent_velocity_y = zeros(length(ts)-1)
+    end
+    return parent_velocity_x, parent_velocity_y
+end
+
 # proposal will be count the amount of observable variables in the choicemap. constrain the number of dots to a tight distribution on it.
+
+""" PROPOSALS AND INFERENCE WRAPPERS W PLOTTING METHODS """ 
+
 
 @gen function dotnum_and_type_proposal(current_trace)
     observed_dot_ids = []
@@ -167,13 +164,13 @@ end
     end
     num_dots = { :num_dots } ~ poisson_bounded_below(.5, length(observed_dot_ids))
     [{(:isvisible, i)} ~ bernoulli(0) for i in 1:num_dots if !in(i, observed_dot_ids)]
-    for dot in num_dots
-        {(:cf_tree, dot)} ~ covfunc_prior([.4, 0.0, .2, .4], dot)
-    end
+    # for dot in num_dots
+    #     {(:cf_tree, dot)} ~ covfunc_prior([.4, 0.0, .2, .4], dot, 0)
+    # end
     return 
 end    
 
-""" These functions wrap model runs, model constraints, display, and inference to evaluate inference accuracy """ 
+""" THESE FUNCTIONS WRAP SAMPLING RENDERING AND INFERENCE """
 
 # draw from prior
 
@@ -250,9 +247,16 @@ function make_constraints()
     #                     (:x_timeseries, 2) => [-5*cos(ball_freq*i) - 18 for i in 0:num_position_points-1],
     #                     (:y_timeseries, 2) => [5*sin(ball_freq*i) for i in 0:num_position_points-1])
 
-    wheel_dictionary = ((:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
+    wheel_dictionary = Dict((:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
                         (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+                        (:start_x, 1) => -23,
+                        (:start_y, 1) => 0,
+                        (:perceptual_noise_magnitude, 1, :x) => 0.0,
+                        (:perceptual_noise_magnitude, 1, :y) => 0.0,
+                        (:jitter_magnitude, 1, :x) => 0.0,
+                        (:jitter_magnitude, 1, :y) => 0.0,
                         (:isvisible, 1) => true)
+
 
 
     
@@ -271,320 +275,13 @@ function make_constraints()
 end
 
 
+dot_obs = Dict(
+    (:perceptual_noise_magnitude, 1, :x) => 0.0,
+    (:perceptual_noise_magnitude, 1, :y) => 0.0,
+    (:jitter_magnitude, 1, :x) => 0.0,
+    (:jitter_magnitude, 1, :y) => 0.0,
+    (:isvisible, 1) => true)
 
-
-""" These functions are for creating, administering, and analyzing human data """
-
-
-function assign_task_filename(num_dots::Int, directory::String)
-    task_filenames = readdir(directory)
-    taskfile_index = 1
-    while(true)
-        file_id = string("tasktrace", num_dots, taskfile_index, ".bson")
-        if !(file_id in task_filenames)
-            return file_id
-        else
-            taskfile_index += 1
-        end
-    end
-end
-
-
-function find_samples_for_task(num_dots::Int, add_to_current_samples::Bool)
-    human_task_directory = "/Users/nightcrawler2/humantest"
-    if !add_to_current_samples
-        for filename in readdir(human_task_directory)
-            try
-                if filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
-                    rm(string(human_task_directory, "/", filename))
-                end
-            catch
-            end
-        end
-    end
-    while(true)
-        trace, args = dotsample(num_dots)
-        render_dotmotion(trace, true)
-        println("keep trace?")
-        ans1 = readline()
-        if ans1 != "y"
-            continue
-        end
-        inf_results = animate_inference(trace)
-        analyze_and_plot_inference(inf_results[1:4]...)
-        println("keep trace?")
-        ans2 = readline()
-        if ans2 == "y"
-            trace_file_id = assign_task_filename(num_dots, human_task_directory)
-            trace_args, trace_choices = get_args(trace), get_choices(trace)
-            @save string(human_task_directory,"/", trace_file_id) trace_args trace_choices
-            println("grab more traces?")
-            moretraces = readline()
-            if moretraces == "n"
-                break
-            end
-        end
-    end
-end
-
-
-function filter_samples_for_task(num_dots::Int)
-    human_task_directory = "/Users/nightcrawler2/humantest"
-    for filename in readdir(human_task_directory)
-        try
-            taskfile = filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
-            if !taskfile
-                #loops if string is long enough (i.e. another tasktrace file) but not num_dots
-                continue
-            end
-        catch
-            #loops if string too short (i.e. a subject file)
-            continue
-        end
-        println(filename)
-        @load string(human_task_directory, "/", filename) trace_args trace_choices
-        (trace, w) = Gen.generate(generate_dotmotion, trace_args, trace_choices)
-        render_dotmotion(trace, true)
-        println("keep trace?")
-        ans1 = readline()
-        if ans1 == "n"
-            rm(string(human_task_directory, "/", filename))
-            continue
-        end
-        inf_results = animate_inference(trace)
-        analyze_and_plot_inference(inf_results[1:4]...)
-        println("keep trace?")
-        ans2 = readline()
-        if ans2 == "n"
-            rm(string(human_task_directory, "/", filename))
-            continue
-        end
-    end
-end    
-
-function make_human_task(dotrange)
-    human_task_directory = "/Users/nightcrawler2/humantest"
-    human_task_order = []
-    for filename in readdir(human_task_directory)
-        for num_dots in dotrange
-            try
-                if filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
-                    push!(human_task_order, filename)
-                end
-            catch
-            end
-        end
-    end
-    human_task_order = shuffle(human_task_order)
-    @save string(human_task_directory, "/human_task_order.bson") human_task_order
-end
-
-
-function run_human_experiment()
-    println("Subject ID: ")
-    subject_id = readline()
-    num_training_trials = 0
-    partition = convert(Int, num_training_trials/3)
-    training_dot_numbers = [ones(partition); 2*ones(partition);
-                            3*ones(partition)]
-    num_trials = 1
-    human_task_directory = "/Users/nightcrawler2/humantest/"
-    subject_directory = string(human_task_directory, subject_id)
-    try
-        mkdir(subject_directory)
-    catch
-    end
-    biomotion_results = []
-    confidence_results = []
-    pw_dist_results = []
-    repeats_results = []
-    for training_trial in 1:num_training_trials
-        num_dots = convert(Int, training_dot_numbers[training_trial])
-        trace, args = dotsample(num_dots)
-        pw_dist, num_repeats = render_dotmotion(trace, true)
-        a_scene, confidence, biomotion = answer_portal(training_trial, subject_directory, num_dots)
-    end
-    @load string(human_task_directory, "human_task_order.bson") human_task_order 
-    for (trial_n, trace_id) in enumerate(human_task_order)
-        @load string(human_task_directory, "/", trace_id) trace_args trace_choices
-        (trace, w) = Gen.generate(generate_dotmotion, trace_args, trace_choices)
-        num_dots = nv(get_retval(trace)[1])
-        pw_dist, num_repeats = render_dotmotion(trace, false)
-#        inf_results = animate_inference(trace)
-#        analyze_and_plot_inference(inf_results[1:4]...)
-        # GIVES YOU SCENEGRAPH. 
-# UNCOMMENT IF YOU WANT TO SHOW THE GROUND TRUTH AFTER THE FIRST PASS         
-#        pw_dist, num_repeats = render_stim_only(trace, true)
-        answer_graph, confidence, biomotion = answer_portal(trial_n, subject_directory, num_dots)
-        savegraph(string(subject_directory, "/answers", trial_n, ".mg"), answer_graph)
-        push!(biomotion_results, biomotion)
-        push!(confidence_results, confidence)
-        push!(pw_dist_results, pw_dist)
-        push!(repeats_results, num_repeats)
-    end
-    @save string(subject_directory, "/biomotion.bson") biomotion_results
-    @save string(subject_directory, "/confidence.bson") confidence_results
-    @save string(subject_directory, "/repeats.bson") repeats_results
-    @save string(subject_directory, "/pw_dist.bson") pw_dist_results
-end    
-
-
-
-function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
-    answer_graph = MetaDiGraph(num_dots)
-    res = 1400
-    stop_anim = false
-    answer_scene, as_layout = layoutscene(resolution=(res, res), backgroundcolor=:black)
-    dot_menus = [LMenu(answer_scene, options = ["RandomWalk", "Periodic", "Linear"]) for i in 1:num_dots]
-    for (dot_id, menu) in enumerate(dot_menus)
-        as_layout[dot_id, 1] = vbox!(LText(answer_scene, string("Dot ", dot_id, " Motion Type"), color=:white), menu)
-    end
-    tog_indices = [(dot1, dot2) for dot1 in 1:num_dots for dot2 in 1:num_dots if dot1 != dot2]
-    toggles = [LToggle(answer_scene, buttoncolor=:black, active=false) for ti in tog_indices]
-    toglabels = [LText(answer_scene, lift(x -> x ? string(dot1, " inherits motion of ", dot2) : string(dot1, " inherits motion of ", dot2),
-                                                          toggles[i].active), color=:white) for (i, (dot1, dot2)) in enumerate(tog_indices)]
-    for tog_index in 1:length(tog_indices)
-        as_layout[num_dots+tog_index, 1] = hbox!(toggles[tog_index], toglabels[tog_index])
-    end
-    sliders = [LSlider(answer_scene, range=0:1:100, startvalue=50) for i in 1:2]
-    confidence = as_layout[num_dots+length(tog_indices) + 1, 1] = vbox!(LText(answer_scene, "Confidence Level", color=:white),
-                                                                        sliders[1])
-    biomotion = as_layout[num_dots+length(tog_indices) + 2, 1] = vbox!(LText(answer_scene, "Biomotion Scale", color=:white),
-                                                                       sliders[2])
-    screen = display(answer_scene)
-    stop_anim = false
-    on(events(answer_scene).keyboardbuttons) do button
-        if ispressed(button, Keyboard.enter)
-            stop_anim = true
-        end
-    end
-    for dot in 1:num_dots
-        on(dot_menus[dot].selection) do s
-            set_props!(answer_graph, dot, Dict(:MType=> s))
-        end
-    end
-    for (tswitch, tog_inds) in enumerate(tog_indices)
-        on(toggles[tswitch].active) do gt
-            if gt == true
-                add_edge!(answer_graph, tog_inds[2], tog_inds[1])
-            else
-                rem_edge!(answer_graph, tog_inds[2], tog_inds[1])
-            end
-        end
-    end
-
-    # on(events(answer_scene).keyboardbuttons) do button
-    #     if ispressed(button, Keyboard.enter)
-    #         stop_anim = true
-    #     end
-    # end
-
-    # first arg passed to timedwait has to be a function
-    query_enter() = stop_anim
-    # will either stop when you press enter or when 30 seconds have passed. 
-    timedwait(query_enter, 30.0)
-#    vs = visualize_scenegraph(answer_graph)
-  #  display(vs)
-   # wait(Timer(callback, 5, interval=0))
-    return answer_graph, sliders[1].value[], sliders[2].value[]
-end    
-                      
-
-
-
-function score_human_performance(subjects::Array{String, 1}, reinfer_traces)
-    human_task_directory = "/Users/nightcrawler2/humantest/"
-    final_human_experiment = []
-    @load string(human_task_directory, "human_task_order.bson") human_task_order
-    for trace_id in human_task_order
-        @load string(human_task_directory, "/", trace_id) trace_args trace_choices
-        (trace, w) = Gen.generate(generate_dotmotion, trace_args, trace_choices)
-        push!(final_human_experiment, trace)
-    end
-    if reinfer_traces
-        inf_results_importance_w_hyper = [animate_inference(trace) for trace in final_human_experiment]
-        inf_results_enumeration = [bayesian_observer(trace)[2] for trace in final_human_experiment]
-        inf_results_enumeration_args_and_choices = [[get_args(ir), get_choices(ir)] for ir in inf_results_enumeration]
-        @save string(human_task_directory, "inference_results_imp.bson") inf_results_importance_w_hyper
-        @save string(human_task_directory, "inference_results_enum.bson") inf_results_enumeration_args_and_choices
-    else
-        @load string(human_task_directory, "inference_results_imp.bson") inf_results_importance_w_hyper
-        @load string(human_task_directory, "inference_results_enum.bson") inf_results_enumeration_args_and_choices
-        inf_results_enumeration = [Gen.generate(generate_dotmotion, tr[1], tr[2])[1] for tr in inf_results_enumeration_args_and_choices]
-    end
-    inf_results_importance = [inf_res[1:4] for inf_res in inf_results_importance_w_hyper]        
-    hyperparams = [hyperparameter_inference(inf_res[end], trace)
-                   for (inf_res, trace) in zip(inf_results_importance_w_hyper, final_human_experiment)]
-    # have to make sure the hyperparam and gt answers are in equivalent form so they can be compared.
-    # dont need the full results here. just need the top graph. 
-    all_subject_results = []
-    for subject in subjects
-        directory = string(human_task_directory, subject)
-        @load string(directory, "/biomotion.bson") biomotion_results
-        @load string(directory, "/confidence.bson") confidence_results
-        @load string(directory, "/repeats.bson") repeats_results
-        @load string(directory, "/pw_dist.bson") pw_dist_results
-        trial_results = Dict(:subject => subject,
-                             :human_truth_match => [],
-                             :truth_importance_match => [],
-                             :truth_enum_match => [],
-                             :human_importance_match => [],
-                             :human_enum_match => [])
-        for (tr, trace)  in enumerate(final_human_experiment)
-            answer_graph = loadgraph(string(directory, "/answers", tr, ".mg"), MGFormat())
-            # run inference here on the saved traces
-            top_importance_hit = analyze_inference_results(inf_results_importance[tr]...)[1][1]
-            top_enumeration_hit = get_retval(inf_results_enumeration[tr])[1]
-            push!(trial_results[:human_truth_match], compare_scenegraphs(answer_graph, get_retval(trace)[1]))
-            push!(trial_results[:human_importance_match], compare_scenegraphs(answer_graph, top_importance_hit))
-            push!(trial_results[:human_enum_match], compare_scenegraphs(answer_graph, top_enumeration_hit))
-            push!(trial_results[:truth_enum_match], compare_scenegraphs(get_retval(trace)[1], top_enumeration_hit))
-            push!(trial_results[:truth_importance_match], compare_scenegraphs(get_retval(trace)[1], top_importance_hit))
-        end
-        push!(all_subject_results, trial_results)
-    end
-    return all_subject_results
-end
-
-function plot_subject_performance(subject_results_dict)
-    scene = Scene()
-    collect_human_scores = [map(x-> float(all(x)), dict[:human_truth_match]) for dict in subject_results_dict]
-    collect_imp_scores = [map(x-> float(all(x)), dict[:truth_importance_match]) for dict in subject_results_dict]
-    collect_enum_scores = [map(x-> float(all(x)), dict[:truth_enum_match]) for dict in subject_results_dict]
-    human_scores_by_trial = [collect(z) for z in zip(collect_human_scores...)]
-    imp_scores_by_trial = [collect(z) for z in zip(collect_imp_scores...)]
-    enum_scores_by_trial = [collect(z) for z in zip(collect_enum_scores...)]
-#    println(collect_human_scores)
- #   println(collect_imp_scores)
-    println(collect_enum_scores)
-    # boxplot works where the first array is a set of groups and the second array are the values assigned to the groups:
-    # i.e.  [1,2, 1], [4,5,5] will have 4 and 5 in group 1 and 5 in group2
-    trial_indices = [ind*ones(length(sc)) for (ind, sc) in enumerate(human_scores_by_trial)]
-    println(trial_indices)
-    boxplot_entries = [vcat(trial_indices...), vcat(human_scores_by_trial...)]
-    # THIS IS IF YOU WANT A BOXPLOT FOR EACH TRIAL FOR EACH CONDITION. 
-    boxplot!(scene, boxplot_entries..., width=.1)
-    boxplot!(scene, .1 .+ boxplot_entries[1], boxplot_entries[2], width=.1, color=:lightblue)
-    ylims!(scene, 0, 2)
-    display(scene)
-    return human_scores_by_trial, imp_scores_by_trial, enum_scores_by_trial
-end    
-
-        
-function compare_scenegraphs(mg1::MetaDiGraph{Int64, Float64},
-                             mg2::MetaDiGraph{Int64, Float64})
-    # for a systemic analysis, want
-    # 1) correct vs incorrect graph
-    # 2) correct vs incorrect motion types
-    # 3) graph inversions (i.e. correct grouping, wrong direction)
-    # 4) motion inversions (
-    # 5) half correct / one third correct motion patterns
-    
-    motion_types_correct = [props(mg1, dot)[:MType] == props(mg2, dot)[:MType] for dot in 1:nv(mg1)]
-    scenegraph_correct = mg1.graph == mg2.graph
-    scenegraph_inverted = mg1.graph == reverse(mg2.graph)
-    return all(motion_types_correct), scenegraph_correct
-end    
    
 
 # make this able to take various lenghts of ts and update with SMC
@@ -708,17 +405,48 @@ end
 and the offsets won't be observable in a true sense -- only the position of the observed dots """
 
 
-function visualize_importance_sampling(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints)
-    all_importance_samples, all_is_graphs = imp_inference(trace, constraints)
-    top_samples, probabilities = top_imp_results(all_is_graphs)
+function visualize_importance_sampling_results(all_importance_samples)
+    top_samples, probabilities = top_imp_results(all_importance_samples)
     plot_inference_results(top_samples, probabilities)
     return all_importance_samples
 end
 
+function animate_imp_inference(all_importance_samples, groundtruth_trace)
+    num_dots = groundtruth_trace[:num_dots]
+    res = 700
+    ts = get_args(groundtruth_trace)[1]
+    inference_anim_fig = Figure(resolution=(num_dots*res, res), backgroundcolor=:white, outer_padding=0)
+    dotmotion_axis =  [Axis(inference_anim_fig, showaxis = false, 
+                            xgridvisible = false, 
+                            ygridvisible = false, 
+                            xticksvisible = false,
+                            yticksvisible = false,
+                            xticklabelsvisible = false,
+                            yticklabelsvisible = false,
+                            leftspinevisible= false,
+                            rightspinevisible = false,
+                            topspinevisible = false,
+                            bottomspinevisible = false) for i in 1:num_dots]
+    [inference_anim_fig[i, 1] = dm for (i, dm) in enumerate(dotmotion_axis)]
+    display(inference_anim_fig)
+    for dot in 1:num_dots
+        lines!(dotmotion_axis[dot], groundtruth_trace[(:x_observable, dot)], groundtruth_trace[(:y_observable, dot)], color=:red)
+        for trace in all_importance_samples
+            m_graph = get_retval(trace)
+            jitter = (trace[(:jitter, dot, :x)], trace[(:jitter, dot, :y)])
+            noise = (trace[(:perceptual_noise, dot, :x)], trace[(:perceptual_noise, dot, :y)])
+            start_x = trace[(:start_x, dot)]
+            start_y = trace[(:start_y, dot)]
+            x_timeseries = trace[(:x_timeseries, dot)]
+            y_timeseries = trace[(:y_timeseries, dot)]
+            pvel_x, pvel_y = get_parent_velocity(m_graph, dot, ts)
+            x_obs, y_obs = create_observable(x_timeseries, y_timeseries, jitter, noise, start_x, start_y, pvel_x, pvel_y)
+            lines!(dotmotion_axis[dot], x_obs, y_obs, color=:gray)
+            sleep(.3)
+        end
+    end
 
-
-
-
+end
 
 function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
                        observed_data)
@@ -728,7 +456,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
     all_samples = []
     all_graphs = []
     num_dots = trace[:num_dots]
-    num_particles = (num_dots ^ 2) * 100
+    num_particles = 300
     num_resamples = 30
     for i in 1:num_dots
         if trace[(:isvisible, i)]
@@ -739,26 +467,31 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
         end
     end
     [observations[constraint] = observed_data[constraint] for constraint in keys(observed_data)]
+    
+
+    
     for i in 1:num_resamples
         (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, dotnum_and_type_proposal, (trace,), num_particles)
        # (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, num_particles)
-        tr_graph = get_retval(tr)
-        for i in 1:tr[:num_dots]
-            for ky in keys(props(tr_graph, i))
-                if !(ky in [:MType, :isvisible])
-                    rem_prop!(tr_graph, i, ky)
-                end
-            end
-        end
         push!(all_samples, tr)
-        push!(all_graphs, tr_graph)
     end
-    return all_samples, all_graphs
+    return all_samples
 end
 
 
-function top_imp_results(all_graphs)
+function top_imp_results(all_samples)
     # want the top graphs and probabilities
+    all_graphs = []
+    for g in [deepcopy(get_retval(tr)) for tr in all_samples]
+        for i in 1:nv(g)
+            for ky in keys(props(g, i))
+                if !(ky in [:MType, :isvisible])
+                    rem_prop!(g, i, ky)
+                end
+            end
+        end
+        push!(all_graphs, g)
+    end
     top_graphs, probabilities = find_top_metagraphs(all_graphs, [])
     top_n = min(3, length(top_graphs))
     return top_graphs[1:top_n], probabilities[1:top_n]
@@ -1593,11 +1326,19 @@ timepoints = convert(Array{Float64}, range(1, stop=time_duration, length=num_pos
 
 # can't interpolate in the position based model -- then you get linear motion inside the periodic and random motion. 
 
-param_dict = Dict(Periodic => [[3], [.5, 1], [1]],
-                  Linear => [[.5], [6, 12]],
-                  SquaredExponential => [[2, 10], [.05]],
+# param_dict = Dict(Periodic => [[3], [.5, 1], [1]],
+#                   Linear => [[.5], [6, 12]],
+#                   SquaredExponential => [[2, 10], [.05]],
+#                   :jitter_magnitude => [0, .01, .1, 1], 
+#                   :perceptual_noise_magnitude => [0, .01, .1, 1])
+
+
+param_dict = Dict(Periodic => [collect(1:10), collect(.25:.25:2), collect(.5:.25:4)],
+                  Linear => [[.5], collect(0:20)],
+                  SquaredExponential => [collect(1:20), collect(.05:.05:.5)],
                   :jitter_magnitude => [0, .01, .1, 1], 
                   :perceptual_noise_magnitude => [0, .01, .1, 1])
+
 ϵ = 1e-6
 # need a tiny bit of noise in mvnormal else factorization errors. this is also noted in Gaussian Process book. 
 # if you use offsets from previous dots instead of biases to timeseries, only the
@@ -1640,11 +1381,19 @@ end
 #
 
 
-@gen function covfunc_prior(mn_probs, dot)
+# Eliminate SqExp from the possibilities in the proposal.
+# make the pluscounter 1 to start in the proposal. 
+
+@gen function covfunc_prior(mn_probs, dot, pluscounter)
+    if pluscounter == 2
+#        mn_probs[1:3] .+= mn_probs[4] / 3
+        mn_probs[4] = 0
+    end
     kernel_type = { :kernel_type } ~ choose_kernel_type(mn_probs)
     if in(kernel_type, [Plus, Times])
-        left = { :left } ~ covfunc_prior(mn_probs, dot)
-        right = { :right } ~ covfunc_prior(mn_probs, dot)
+        pluscounter += 1
+        left = { :left } ~ covfunc_prior(mn_probs, dot, pluscounter)
+        right = { :right } ~ covfunc_prior(mn_probs, dot, pluscounter)
         return kernel_type(left[1], right[1]), kernel_type(left[2], right[2])
     end
     if kernel_type == Periodic
@@ -1709,5 +1458,333 @@ Gen.logpdf_grad(::RandomPartialPermutation, n, k) = (nothing, nothing, nothing)
 # screen to capture the dynamics, and increase the bounds with it. 
 
 # thinking a custom proposal could be zero mean on the mvnormal draw. kick anything out that doesn't have it. 
-                                          
 
+
+
+""" These functions are for creating, administering, and analyzing human data """
+
+
+function assign_task_filename(num_dots::Int, directory::String)
+    task_filenames = readdir(directory)
+    taskfile_index = 1
+    while(true)
+        file_id = string("tasktrace", num_dots, taskfile_index, ".bson")
+        if !(file_id in task_filenames)
+            return file_id
+        else
+            taskfile_index += 1
+        end
+    end
+end
+
+
+function find_samples_for_task(num_dots::Int, add_to_current_samples::Bool)
+    human_task_directory = "/Users/nightcrawler2/humantest"
+    if !add_to_current_samples
+        for filename in readdir(human_task_directory)
+            try
+                if filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
+                    rm(string(human_task_directory, "/", filename))
+                end
+            catch
+            end
+        end
+    end
+    while(true)
+        trace, args = dotsample(num_dots)
+        render_dotmotion(trace, true)
+        println("keep trace?")
+        ans1 = readline()
+        if ans1 != "y"
+            continue
+        end
+        inf_results = animate_inference(trace)
+        analyze_and_plot_inference(inf_results[1:4]...)
+        println("keep trace?")
+        ans2 = readline()
+        if ans2 == "y"
+            trace_file_id = assign_task_filename(num_dots, human_task_directory)
+            trace_args, trace_choices = get_args(trace), get_choices(trace)
+            @save string(human_task_directory,"/", trace_file_id) trace_args trace_choices
+            println("grab more traces?")
+            moretraces = readline()
+            if moretraces == "n"
+                break
+            end
+        end
+    end
+end
+
+
+function filter_samples_for_task(num_dots::Int)
+    human_task_directory = "/Users/nightcrawler2/humantest"
+    for filename in readdir(human_task_directory)
+        try
+            taskfile = filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
+            if !taskfile
+                #loops if string is long enough (i.e. another tasktrace file) but not num_dots
+                continue
+            end
+        catch
+            #loops if string too short (i.e. a subject file)
+            continue
+        end
+        println(filename)
+        @load string(human_task_directory, "/", filename) trace_args trace_choices
+        (trace, w) = Gen.generate(generate_dotmotion, trace_args, trace_choices)
+        render_dotmotion(trace, true)
+        println("keep trace?")
+        ans1 = readline()
+        if ans1 == "n"
+            rm(string(human_task_directory, "/", filename))
+            continue
+        end
+        inf_results = animate_inference(trace)
+        analyze_and_plot_inference(inf_results[1:4]...)
+        println("keep trace?")
+        ans2 = readline()
+        if ans2 == "n"
+            rm(string(human_task_directory, "/", filename))
+            continue
+        end
+    end
+end    
+
+function make_human_task(dotrange)
+    human_task_directory = "/Users/nightcrawler2/humantest"
+    human_task_order = []
+    for filename in readdir(human_task_directory)
+        for num_dots in dotrange
+            try
+                if filename[1:length("tasktrace")+1] == string("tasktrace", num_dots)
+                    push!(human_task_order, filename)
+                end
+            catch
+            end
+        end
+    end
+    human_task_order = shuffle(human_task_order)
+    @save string(human_task_directory, "/human_task_order.bson") human_task_order
+end
+
+
+function run_human_experiment()
+    println("Subject ID: ")
+    subject_id = readline()
+    num_training_trials = 0
+    partition = convert(Int, num_training_trials/3)
+    training_dot_numbers = [ones(partition); 2*ones(partition);
+                            3*ones(partition)]
+    num_trials = 1
+    human_task_directory = "/Users/nightcrawler2/humantest/"
+    subject_directory = string(human_task_directory, subject_id)
+    try
+        mkdir(subject_directory)
+    catch
+    end
+    biomotion_results = []
+    confidence_results = []
+    pw_dist_results = []
+    repeats_results = []
+    for training_trial in 1:num_training_trials
+        num_dots = convert(Int, training_dot_numbers[training_trial])
+        trace, args = dotsample(num_dots)
+        pw_dist, num_repeats = render_dotmotion(trace, true)
+        a_scene, confidence, biomotion = answer_portal(training_trial, subject_directory, num_dots)
+    end
+    @load string(human_task_directory, "human_task_order.bson") human_task_order 
+    for (trial_n, trace_id) in enumerate(human_task_order)
+        @load string(human_task_directory, "/", trace_id) trace_args trace_choices
+        (trace, w) = Gen.generate(generate_dotmotion, trace_args, trace_choices)
+        num_dots = nv(get_retval(trace)[1])
+        pw_dist, num_repeats = render_dotmotion(trace, false)
+#        inf_results = animate_inference(trace)
+#        analyze_and_plot_inference(inf_results[1:4]...)
+        # GIVES YOU SCENEGRAPH. 
+# UNCOMMENT IF YOU WANT TO SHOW THE GROUND TRUTH AFTER THE FIRST PASS         
+#        pw_dist, num_repeats = render_stim_only(trace, true)
+        answer_graph, confidence, biomotion = answer_portal(trial_n, subject_directory, num_dots)
+        savegraph(string(subject_directory, "/answers", trial_n, ".mg"), answer_graph)
+        push!(biomotion_results, biomotion)
+        push!(confidence_results, confidence)
+        push!(pw_dist_results, pw_dist)
+        push!(repeats_results, num_repeats)
+    end
+    @save string(subject_directory, "/biomotion.bson") biomotion_results
+    @save string(subject_directory, "/confidence.bson") confidence_results
+    @save string(subject_directory, "/repeats.bson") repeats_results
+    @save string(subject_directory, "/pw_dist.bson") pw_dist_results
+end    
+
+
+
+function answer_portal(trial_ID::Int, directory::String, num_dots::Int)
+    answer_graph = MetaDiGraph(num_dots)
+    res = 1400
+    stop_anim = false
+    answer_scene, as_layout = layoutscene(resolution=(res, res), backgroundcolor=:black)
+    dot_menus = [LMenu(answer_scene, options = ["RandomWalk", "Periodic", "Linear"]) for i in 1:num_dots]
+    for (dot_id, menu) in enumerate(dot_menus)
+        as_layout[dot_id, 1] = vbox!(LText(answer_scene, string("Dot ", dot_id, " Motion Type"), color=:white), menu)
+    end
+    tog_indices = [(dot1, dot2) for dot1 in 1:num_dots for dot2 in 1:num_dots if dot1 != dot2]
+    toggles = [LToggle(answer_scene, buttoncolor=:black, active=false) for ti in tog_indices]
+    toglabels = [LText(answer_scene, lift(x -> x ? string(dot1, " inherits motion of ", dot2) : string(dot1, " inherits motion of ", dot2),
+                                                          toggles[i].active), color=:white) for (i, (dot1, dot2)) in enumerate(tog_indices)]
+    for tog_index in 1:length(tog_indices)
+        as_layout[num_dots+tog_index, 1] = hbox!(toggles[tog_index], toglabels[tog_index])
+    end
+    sliders = [LSlider(answer_scene, range=0:1:100, startvalue=50) for i in 1:2]
+    confidence = as_layout[num_dots+length(tog_indices) + 1, 1] = vbox!(LText(answer_scene, "Confidence Level", color=:white),
+                                                                        sliders[1])
+    biomotion = as_layout[num_dots+length(tog_indices) + 2, 1] = vbox!(LText(answer_scene, "Biomotion Scale", color=:white),
+                                                                       sliders[2])
+    screen = display(answer_scene)
+    stop_anim = false
+    on(events(answer_scene).keyboardbuttons) do button
+        if ispressed(button, Keyboard.enter)
+            stop_anim = true
+        end
+    end
+    for dot in 1:num_dots
+        on(dot_menus[dot].selection) do s
+            set_props!(answer_graph, dot, Dict(:MType=> s))
+        end
+    end
+    for (tswitch, tog_inds) in enumerate(tog_indices)
+        on(toggles[tswitch].active) do gt
+            if gt == true
+                add_edge!(answer_graph, tog_inds[2], tog_inds[1])
+            else
+                rem_edge!(answer_graph, tog_inds[2], tog_inds[1])
+            end
+        end
+    end
+
+    # on(events(answer_scene).keyboardbuttons) do button
+    #     if ispressed(button, Keyboard.enter)
+    #         stop_anim = true
+    #     end
+    # end
+
+    # first arg passed to timedwait has to be a function
+    query_enter() = stop_anim
+    # will either stop when you press enter or when 30 seconds have passed. 
+    timedwait(query_enter, 30.0)
+#    vs = visualize_scenegraph(answer_graph)
+  #  display(vs)
+   # wait(Timer(callback, 5, interval=0))
+    return answer_graph, sliders[1].value[], sliders[2].value[]
+end    
+                      
+
+
+
+function score_human_performance(subjects::Array{String, 1}, reinfer_traces)
+    human_task_directory = "/Users/nightcrawler2/humantest/"
+    final_human_experiment = []
+    @load string(human_task_directory, "human_task_order.bson") human_task_order
+    for trace_id in human_task_order
+        @load string(human_task_directory, "/", trace_id) trace_args trace_choices
+        (trace, w) = Gen.generate(generate_dotmotion, trace_args, trace_choices)
+        push!(final_human_experiment, trace)
+    end
+    if reinfer_traces
+        inf_results_importance_w_hyper = [animate_inference(trace) for trace in final_human_experiment]
+        inf_results_enumeration = [bayesian_observer(trace)[2] for trace in final_human_experiment]
+        inf_results_enumeration_args_and_choices = [[get_args(ir), get_choices(ir)] for ir in inf_results_enumeration]
+        @save string(human_task_directory, "inference_results_imp.bson") inf_results_importance_w_hyper
+        @save string(human_task_directory, "inference_results_enum.bson") inf_results_enumeration_args_and_choices
+    else
+        @load string(human_task_directory, "inference_results_imp.bson") inf_results_importance_w_hyper
+        @load string(human_task_directory, "inference_results_enum.bson") inf_results_enumeration_args_and_choices
+        inf_results_enumeration = [Gen.generate(generate_dotmotion, tr[1], tr[2])[1] for tr in inf_results_enumeration_args_and_choices]
+    end
+    inf_results_importance = [inf_res[1:4] for inf_res in inf_results_importance_w_hyper]        
+    hyperparams = [hyperparameter_inference(inf_res[end], trace)
+                   for (inf_res, trace) in zip(inf_results_importance_w_hyper, final_human_experiment)]
+    # have to make sure the hyperparam and gt answers are in equivalent form so they can be compared.
+    # dont need the full results here. just need the top graph. 
+    all_subject_results = []
+    for subject in subjects
+        directory = string(human_task_directory, subject)
+        @load string(directory, "/biomotion.bson") biomotion_results
+        @load string(directory, "/confidence.bson") confidence_results
+        @load string(directory, "/repeats.bson") repeats_results
+        @load string(directory, "/pw_dist.bson") pw_dist_results
+        trial_results = Dict(:subject => subject,
+                             :human_truth_match => [],
+                             :truth_importance_match => [],
+                             :truth_enum_match => [],
+                             :human_importance_match => [],
+                             :human_enum_match => [])
+        for (tr, trace)  in enumerate(final_human_experiment)
+            answer_graph = loadgraph(string(directory, "/answers", tr, ".mg"), MGFormat())
+            # run inference here on the saved traces
+            top_importance_hit = analyze_inference_results(inf_results_importance[tr]...)[1][1]
+            top_enumeration_hit = get_retval(inf_results_enumeration[tr])[1]
+            push!(trial_results[:human_truth_match], compare_scenegraphs(answer_graph, get_retval(trace)[1]))
+            push!(trial_results[:human_importance_match], compare_scenegraphs(answer_graph, top_importance_hit))
+            push!(trial_results[:human_enum_match], compare_scenegraphs(answer_graph, top_enumeration_hit))
+            push!(trial_results[:truth_enum_match], compare_scenegraphs(get_retval(trace)[1], top_enumeration_hit))
+            push!(trial_results[:truth_importance_match], compare_scenegraphs(get_retval(trace)[1], top_importance_hit))
+        end
+        push!(all_subject_results, trial_results)
+    end
+    return all_subject_results
+end
+
+function plot_subject_performance(subject_results_dict)
+    scene = Scene()
+    collect_human_scores = [map(x-> float(all(x)), dict[:human_truth_match]) for dict in subject_results_dict]
+    collect_imp_scores = [map(x-> float(all(x)), dict[:truth_importance_match]) for dict in subject_results_dict]
+    collect_enum_scores = [map(x-> float(all(x)), dict[:truth_enum_match]) for dict in subject_results_dict]
+    human_scores_by_trial = [collect(z) for z in zip(collect_human_scores...)]
+    imp_scores_by_trial = [collect(z) for z in zip(collect_imp_scores...)]
+    enum_scores_by_trial = [collect(z) for z in zip(collect_enum_scores...)]
+#    println(collect_human_scores)
+ #   println(collect_imp_scores)
+    println(collect_enum_scores)
+    # boxplot works where the first array is a set of groups and the second array are the values assigned to the groups:
+    # i.e.  [1,2, 1], [4,5,5] will have 4 and 5 in group 1 and 5 in group2
+    trial_indices = [ind*ones(length(sc)) for (ind, sc) in enumerate(human_scores_by_trial)]
+    println(trial_indices)
+    boxplot_entries = [vcat(trial_indices...), vcat(human_scores_by_trial...)]
+    # THIS IS IF YOU WANT A BOXPLOT FOR EACH TRIAL FOR EACH CONDITION. 
+    boxplot!(scene, boxplot_entries..., width=.1)
+    boxplot!(scene, .1 .+ boxplot_entries[1], boxplot_entries[2], width=.1, color=:lightblue)
+    ylims!(scene, 0, 2)
+    display(scene)
+    return human_scores_by_trial, imp_scores_by_trial, enum_scores_by_trial
+end    
+
+        
+function compare_scenegraphs(mg1::MetaDiGraph{Int64, Float64},
+                             mg2::MetaDiGraph{Int64, Float64})
+    # for a systemic analysis, want
+    # 1) correct vs incorrect graph
+    # 2) correct vs incorrect motion types
+    # 3) graph inversions (i.e. correct grouping, wrong direction)
+    # 4) motion inversions (
+    # 5) half correct / one third correct motion patterns
+    
+    motion_types_correct = [props(mg1, dot)[:MType] == props(mg2, dot)[:MType] for dot in 1:nv(mg1)]
+    scenegraph_correct = mg1.graph == mg2.graph
+    scenegraph_inverted = mg1.graph == reverse(mg2.graph)
+    return all(motion_types_correct), scenegraph_correct
+end    
+
+
+# suppose you want to make a proposal to twiddle perceptual noise on a dot. you can't just do it
+# b/c you have to make the corresponding change to x_observable. still possible if you write
+# reversible jump. you may have an extremely low prob of acceptance b/c of the narrow window of x_obs. oh you have to assure that x_obs and y_obs remain the same and have to construct it using changes or twiddles in other variables that build them. make some combination of changes that results in the same value of x_obs.
+
+# calling Gen.update when you're not changing the x_observable is going to
+# comparisons would no longer be meaningful -- huge penalties from the way x_observable is constructed. 
+
+# note the final mvnormal draw does nothing. the x_timeseries and x_observable are identical.
+
+# OK YOUR NEW INFRASTRUCTURE WILL USE UPDATE AND GENERATE. YOUR GENERATE CALLS WILL REMOVE THE OBSERVABLE
+# DRAWS FROM THE CHOICEMAP, AND ALSO THE DRAWS OF WHATEVER YOU ARE REPLACING. YOUR UPDATE CALLS WILL
+# SIMPLY REPLACE THE VALUES. THEN YOU WILL ALWAYS PLOT X_OBSERVABLE. GET RID OF TRACE TO TREE, AND ANY TREE REQUIRING CALLS
+# GENERATE WILL ALSO GIVE BACK UPDATED TREES. UPDATE WILL NOT (ONLY FOR THE CHANGED VARIABLE). 
