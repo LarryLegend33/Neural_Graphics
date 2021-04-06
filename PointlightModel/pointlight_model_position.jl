@@ -14,6 +14,7 @@ using CurricularAnalytics
 using BSON: @save, @load
 using MappedArrays
 using Base.Threads: @spawn
+using SpecialFunctions: loggamma
 
 
 # have to kill old threads when you launch a new one, because render thread keeps running.
@@ -34,18 +35,16 @@ using Base.Threads: @spawn
         #     end
         # end
 
-
+# Assign invisibility at the end. Any nodes with no children can't be invisible. 
 
 """ GENERATIVE CODE: These functions output dotmotion stimuli using GP-generated timeseries"""
 
 @gen function generate_dot_scene(ts::Array{Float64})
-    #  num_dots = { :num_dots } ~ geometric_nonzero(.5)
-    num_dots = { :num_dots } ~ multinomial([1, 2, 3])
+    num_dots = { :num_dots } ~ poisson_bounded_below(1, 1)
     motion_graph = MetaDiGraph(num_dots)
-    edge_prob = .3
-    candidate_edges = [(n1, n2) for n1 in 1:num_dots for n2 in 1:num_dots if n1!=n2]
-    # if you are going to go back to this way, have to use a perceptual order unless you
-    # want to normalize the bernoulli draws to the amount of dots
+    dperm1 = { :dp1 } ~ randomPartialPermutation(num_dots, num_dots)
+    dperm2 = { :dp2 } ~ randomPartialPermutation(num_dots, num_dots)
+    candidate_edges = [(n1, n2) for n1 in dperm1 for n2 in dperm2 if n1!=n2]
     dot_order = {*} ~ populate_edges(motion_graph, candidate_edges)
     for dot in dot_order
         isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
@@ -144,6 +143,26 @@ end
     {*} ~ populate_edges(motion_graph, candidate_pairs[2:end])
 end
 
+
+# proposal will be count the amount of observable variables in the choicemap. constrain the number of dots to a tight distribution on it.
+
+@gen function dotnum_and_type_proposal(current_trace)
+    observed_dot_ids = []
+    # have to go through this w/out restricting on num dots, and make
+    observed_dot = 0
+    while(true)
+        try
+            current_trace[(:x_observable, observed_dot+1)]
+            observed_dot += 1
+            push!(observed_dot_ids, observed_dot)
+        catch
+            break
+        end
+    end
+    num_dots = { :num_dots } ~ poisson_bounded_below(.5, length(observed_dot_ids))
+    [{(:isvisible, i)} ~ bernoulli(0) for i in 1:num_dots if !in(i, observed_dot_ids)]
+end    
+
 """ These functions wrap model runs, model constraints, display, and inference to evaluate inference accuracy """ 
 
 # draw from prior
@@ -222,33 +241,25 @@ function make_constraints()
     #                     (:y_timeseries, 2) => [5*sin(ball_freq*i) for i in 0:num_position_points-1])
 
     wheel_dictionary = ((:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
-                        (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1])
+                        (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+                        (:isvisible, 1) => true)
 
 
     
 
-    freestyle = (:num_dots => 2,
+    freestyle = (:num_dots => 1,
                  (:perceptual_noise_magnitude, 1) => 0.0,
-                 (:perceptual_noise_magnitude, 2) => 0.0,
+#                 (:perceptual_noise_magnitude, 2) => 0.0,
                  (:jitter_magnitude, 1) => 0.0,
-                 (:jitter_magnitude, 2) => 0.0,
-                 (:isvisible, 1) => true, 
-                 (:isvisible, 2) => true)
+ #                (:jitter_magnitude, 2) => 0.0,
+                 (:isvisible, 1) => true)
+  #               (:isvisible, 2) => true)
 
 
     constraints = choicemap([Tuple(d) for d in wheel_dictionary]...)
     return constraints
 end
 
-
-function mtype_extractor(node::Kernel)
-    if typeof(node) != Plus
-        return string(typeof(node))
-    else
-        return string(
-        sort([mtype_extractor(node.left), mtype_extractor(node.right)])...)
-    end
-end
 
 
 
@@ -695,8 +706,12 @@ function visualize_importance_sampling(trace::Gen.DynamicDSLTrace{DynamicDSLFunc
 end
 
 
+
+
+
+
 function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
-                       constraints)
+                       observed_data)
     trace_choices = get_choices(trace)
     args = get_args(trace)
     observations = Gen.choicemap()
@@ -711,9 +726,10 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
             observations[(:y_observable, i)] = trace[(:y_observable, i)]
         end
     end
-    [observations[constraint] = constraints[constraint] for constraint in keys(constraints)]
+    [observations[constraint] = observed_data[constraint] for constraint in keys(observed_data)]
     for i in 1:num_resamples
-        (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, num_particles)
+        (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, dotnum_and_type_proposal, (trace,), num_particles)
+       # (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, num_particles)
         tr_graph = get_retval(tr)
         for i in 1:tr[:num_dots]
             for ky in keys(props(tr_graph, i))
@@ -1545,16 +1561,14 @@ function predict_pos(covariance_fn::Kernel, noise::Float64,
 end
 
 
-function all_dot_permutations(num_dots)
-    all_ranges = [1:num_dots for i in 1:num_dots]
-    all_permutations = [i for i in Iterators.product(all_ranges...) if length(unique(i)) == num_dots]
-    return collect(all_permutations)
-end    
-
-function return_dot_distribution(num_dots)
-    d_permut = all_dot_permutations(num_dots)
-    @dist dot_permutations() = d_permut[categorical([1/length(d_permut) for i in 1:length(d_permut)])]
-end    
+function mtype_extractor(node::Kernel)
+    if typeof(node) != Plus
+        return string(typeof(node))
+    else
+        return string(
+        sort([mtype_extractor(node.left), mtype_extractor(node.right)])...)
+    end
+end
 
 
 
@@ -1640,16 +1654,42 @@ end
 
 @dist gamma_bounded_below(shape, scale, bound) = gamma(shape, scale) + bound
 
-@dist poisson_bounded_below(bound) = poisson(1) + bound
+@dist poisson_bounded_below(rate, bound) = poisson(rate) + bound
 
-@dist geometric_nonzero(prob) = geometric(prob) + 1
+@dist geometric_bounded_below(prob, bound) = geometric(prob) + bound
 
 @dist multinomial(possibilities) = possibilities[uniform_discrete(1, length(possibilities))]
 
 
 macro datatype(str); :($(Symbol(str))); end
 
+"""
+Length-`k` "random partial permutation" of the integers 1 through `n`
+inclusive.
+That is, a uniformly random sequence of `k` distinct integers between 1 and `n`
+inclusive.
+"""
+struct RandomPartialPermutation <: Gen.Distribution{Vector{Int64}} end
+const randomPartialPermutation = RandomPartialPermutation()
+(::RandomPartialPermutation)(n, k) = Gen.random(randomPartialPermutation, n, k)
 
+# Note: if `n` is huge and `k` is small, an implementation that doesn't
+# materialize `collect(1:n)` would be preferable.
+function Gen.random(::RandomPartialPermutation, n::Integer, k::Integer)
+  return StatsBase.sample(1:n, k; replace=false)
+end
+
+function Gen.logpdf(::RandomPartialPermutation, pperm::Vector{Int64},
+                    n::Integer, k::Integer)
+  @assert length(pperm) == k
+  @assert k <= n
+  # Number of possible values for `pperm` is n! * (n-k)!
+  return -(loggamma(n + 1) - loggamma(n - k + 1))
+end
+
+Gen.has_output_grad(::RandomPartialPermutation) = false
+Gen.has_argument_grads(::RandomPartialPermutation) = (false, false)
+Gen.logpdf_grad(::RandomPartialPermutation, n, k) = (nothing, nothing, nothing)
 # Note that periodic motion can't accelerate linearly. This is clearly a primitive.
 # Eventually want to use a 0 to 50 scale w a mid prior on position. then you can
 # wrap the coords when the dot leaves so it comes back on the other side.
