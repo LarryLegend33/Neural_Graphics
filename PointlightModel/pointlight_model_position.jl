@@ -51,10 +51,14 @@ using SpecialFunctions: loggamma
         cov_func_x, cov_func_y = { (:cf_tree, dot) } ~ covfunc_prior([.25, .25, .25, .25], dot)
         covmat_x = compute_cov_matrix_vectorized(cov_func_x, ϵ, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
-        x_bias = {(:x_bias, dot)} ~ uniform(-20, 20)
-        y_bias = {(:y_bias, dot)} ~ uniform(-20, 20)
-        x_timeseries = {(:x_timeseries, dot)} ~ mvnormal(x_bias*ones(length(ts)), covmat_x)
-        y_timeseries = {(:y_timeseries, dot)} ~ mvnormal(y_bias*ones(length(ts)), covmat_y)
+        # x_bias = {(:x_bias, dot)} ~ uniform(-20, 20)
+        # y_bias = {(:y_bias, dot)} ~ uniform(-20, 20)
+        # x_timeseries = {(:x_timeseries, dot)} ~ mvnormal(x_bias*ones(length(ts)), covmat_x)
+        # y_timeseries = {(:y_timeseries, dot)} ~ mvnormal(y_bias*ones(length(ts)), covmat_y)
+        start_x = {(:start_x, dot)} ~ uniform(-20, 20)
+        start_y = {(:start_y, dot)} ~ uniform(-20, 20)
+        x_timeseries = {(:x_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
+        y_timeseries = {(:y_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
         perceptual_noise_magnitude = {(:perceptual_noise_magnitude, dot)} ~ multinomial(param_dict[:perceptual_noise_magnitude])
         noise = {*} ~ generate_white_noise(perceptual_noise_magnitude, :perceptual_noise, ts, dot)
         jitter_magnitude = {(:jitter_magnitude, dot)} ~ multinomial(param_dict[:jitter_magnitude])
@@ -87,6 +91,8 @@ using SpecialFunctions: loggamma
         y_obs[2:end] += jitter[2]
         y_obs[2:end] += cumsum(parent_velocity_y)
         y_obs[2:end] += noise[2]
+        x_obs .+= (start_x - x_obs[1])
+        y_obs .+= (start_y - y_obs[1])
         x_observable = {(:x_observable, dot)} ~ mvnormal(x_obs, output_covmat)
         y_observable = {(:y_observable, dot)} ~ mvnormal(y_obs, output_covmat)
     end
@@ -161,6 +167,10 @@ end
     end
     num_dots = { :num_dots } ~ poisson_bounded_below(.5, length(observed_dot_ids))
     [{(:isvisible, i)} ~ bernoulli(0) for i in 1:num_dots if !in(i, observed_dot_ids)]
+    for dot in num_dots
+        {(:cf_tree, dot)} ~ covfunc_prior([.4, 0.0, .2, .4], dot)
+    end
+    return 
 end    
 
 """ These functions wrap model runs, model constraints, display, and inference to evaluate inference accuracy """ 
@@ -722,6 +732,8 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
     num_resamples = 30
     for i in 1:num_dots
         if trace[(:isvisible, i)]
+            observations[(:start_x, i)] = trace[(:start_x, i)]
+            observations[(:start_y, i)] = trace[(:start_y, i)]
             observations[(:x_observable, i)] = trace[(:x_observable, i)]
             observations[(:y_observable, i)] = trace[(:y_observable, i)]
         end
