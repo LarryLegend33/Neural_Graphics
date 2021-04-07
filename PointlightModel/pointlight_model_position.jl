@@ -35,7 +35,15 @@ using SpecialFunctions: loggamma
         #     end
         # end
 
-# Assign invisibility at the end. Any nodes with no children can't be invisible. 
+# Assign invisibility at the end. Any nodes with no children can't be invisible.
+
+# Main problem is the periodic kernel is less constrained than linear. Linear will basically fit, while
+# the periodic kernel is much more powerful and can generate more variable motion patterns.
+# counting the peak to peak amplitude and using heuristics to get period may be helpful.
+# Make sure tomorrow that you know how period translates to amount of repeats...this wasn't completely clear before. 
+
+
+
 
 """ GENERATIVE CODE: These functions output dotmotion stimuli using GP-generated timeseries"""
 
@@ -48,7 +56,7 @@ using SpecialFunctions: loggamma
     dot_order = {*} ~ populate_edges(motion_graph, candidate_edges)
     for dot in dot_order
         isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
-        cov_func_x, cov_func_y = { (:cf_tree, dot) } ~ covfunc_prior([.5/3, .5/3, .5/3, .5], dot, 0)
+        cov_func_x, cov_func_y = { (:cf_tree, dot) } ~ covfunc_prior([.5/2, 0.0, .5/2, .5], dot, 0)
         covmat_x = compute_cov_matrix_vectorized(cov_func_x, ϵ, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
         start_x = {(:start_x, dot)} ~ uniform(-25, 25)
@@ -275,12 +283,17 @@ function make_constraints()
 end
 
 
+
+
 dot_obs = Dict(
-    (:perceptual_noise_magnitude, 1, :x) => 0.0,
-    (:perceptual_noise_magnitude, 1, :y) => 0.0,
-    (:jitter_magnitude, 1, :x) => 0.0,
-    (:jitter_magnitude, 1, :y) => 0.0,
-    (:isvisible, 1) => true)
+    (:perceptual_noise_magnitude, 1) => 0.0,
+    (:perceptual_noise_magnitude, 1) => 0.0,
+    (:jitter_magnitude, 1) => 0.0,
+    (:jitter_magnitude, 1) => 0.0,
+    (:isvisible, 1) => true,
+    (:amplitude, 1, :y) => 5.0,
+    (:amplitude, 1, :x) => 5.0)
+
 
    
 
@@ -456,8 +469,8 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
     all_samples = []
     all_graphs = []
     num_dots = trace[:num_dots]
-    num_particles = 300
-    num_resamples = 30
+    num_particles = 10000
+    #    num_resamples = 30
     for i in 1:num_dots
         if trace[(:isvisible, i)]
             observations[(:start_x, i)] = trace[(:start_x, i)]
@@ -467,15 +480,21 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
         end
     end
     [observations[constraint] = observed_data[constraint] for constraint in keys(observed_data)]
+    (traces, weights, lml_est) = Gen.importance_sampling(generate_dot_scene, args, observations, dotnum_and_type_proposal, (trace,), num_particles)
     
-
+    # for i in 1:num_resamples
+    #     (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, dotnum_and_type_proposal, (trace,), num_particles)
+    #    # (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, num_particles)
+    #     push!(all_samples, tr)
+    # end
     
-    for i in 1:num_resamples
-        (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, dotnum_and_type_proposal, (trace,), num_particles)
-       # (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, num_particles)
-        push!(all_samples, tr)
-    end
-    return all_samples
+#    total_score = Gen.logsumexp(convert(Array{Float64, 1}, weights))
+ #   trace_probabilities = [exp(w - total_score) for w in weights]
+  #  println(sort(trace_probabilities)[1:200])
+    all_samples_ordered = reverse(traces[sortperm(weights)])
+#    all_weights_ordered = reverse(weights[sortperm(trace_probabilities)])
+ #   println(all_weights_ordered[1:50])
+    return all_samples_ordered
 end
 
 
@@ -1386,7 +1405,8 @@ end
 
 @gen function covfunc_prior(mn_probs, dot, pluscounter)
     if pluscounter == 2
-#        mn_probs[1:3] .+= mn_probs[4] / 3
+        mn_probs[1] += mn_probs[4] / 2
+        mn_probs[3] += mn_probs[4] / 2
         mn_probs[4] = 0
     end
     kernel_type = { :kernel_type } ~ choose_kernel_type(mn_probs)
