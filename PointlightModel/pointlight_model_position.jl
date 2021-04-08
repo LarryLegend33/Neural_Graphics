@@ -42,6 +42,21 @@ using SpecialFunctions: loggamma
 # counting the peak to peak amplitude and using heuristics to get period may be helpful.
 # Make sure tomorrow that you know how period translates to amount of repeats...this wasn't completely clear before. 
 
+# get_submap gets cf_tree's choices, but not sure how to set them.
+# get_selected filters a choicemap.
+# try set_submap!(choices, addr, submap), where submap is just a map, and addr is the title of the map.
+# i think its fine to use these as observed even in the case where it goes in another direction.
+# you can even set the left and right params; set kernel type inside the cf_tree
+
+
+# 3 THINGS: PROVE THAT X ADDING IN THE CONTEXT OF AN X_INIT IS THE SAME AS DIFF ADDING.
+# CONSIDER PROPOSING TO THE MVNORMAL DRAW BY GIVING NEW ARGS.
+# CONSIDER PROPOSING DIRECTLY TO THE KERNEL_TYPE VARIABLE FOR A GIVEN DOT USING A
+# UNIFORM OVER KERNEL TYPES THAT ARE NOT LINEAR OR ARE LINEAR.
+# NOTE THAT NOISE WILL DISRUPT EVERYTHING. THATS THE WHOLE POINT.
+# NOISE WILL SCREW UP HEURISTICS, MAKE TIMESERIES CONSTRAINING DIFFICULT BECAUSE CORRELATIONS WILL
+# ARISE FROM NOISE, ETC. JITTER MAY ALSO HELP! SHARING MORE VELOCITY WILL BE BETTER.
+# PROPOSING THE DIRECT TIMESERIES OF CHILD NODES I DONT THINK HURTS...
 
 
 
@@ -61,6 +76,10 @@ using SpecialFunctions: loggamma
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
         start_x = {(:start_x, dot)} ~ uniform(-25, 25)
         start_y = {(:start_y, dot)} ~ uniform(-25, 25)
+
+        # ask about this in Gen slack. you have an mvnormal.
+        # you ahve the observations of the first 30 values,
+        # want to condition on this in importance sampling 
         x_timeseries = {(:x_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
         y_timeseries = {(:y_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
         perceptual_noise_magnitude = {(:perceptual_noise_magnitude, dot)} ~ multinomial(param_dict[:perceptual_noise_magnitude])
@@ -213,6 +232,12 @@ end
 # with that of the constraints using choices[addr] = val. call Gen.generate on the new choicemap, which yields a new x_observable. 
 
 
+
+# Form of custom proposal. Lets manipulate the cov function first.
+# Can make a set of particles for this. Per particle, draw a few samples instead of
+# just one. This will cover a few phases of the periodic wave. 
+
+
 function make_constraints()
     constraints = choicemap()
     bar_height = 15
@@ -290,9 +315,10 @@ dot_obs = Dict(
     (:perceptual_noise_magnitude, 1) => 0.0,
     (:jitter_magnitude, 1) => 0.0,
     (:jitter_magnitude, 1) => 0.0,
-    (:isvisible, 1) => true,
-    (:amplitude, 1, :y) => 5.0,
-    (:amplitude, 1, :x) => 5.0)
+    (:isvisible, 1) => true)
+
+# get_submap will work here, but need observations to be indexed, not choicemap. 
+# you'll have cf_func
 
 
    
@@ -1159,19 +1185,6 @@ function eval_cov_mat(node::RandomWalk, ts::Array{Float64})
 end
 
     
-"""Constant Kernel"""
-struct Constant <: PrimitiveKernel
-    param::Float64
-end
-
-eval_cov(node::Constant, t1, t2) = node.param
-
-
-function eval_cov_mat(node::Constant, ts::Array{Float64})
-    n = length(ts)
-    fill(node.param, (n, n))
-end
-
 
 """Linear kernel"""
 struct Linear <: PrimitiveKernel
@@ -1351,8 +1364,31 @@ timepoints = convert(Array{Float64}, range(1, stop=time_duration, length=num_pos
 #                   :jitter_magnitude => [0, .01, .1, 1], 
 #                   :perceptual_noise_magnitude => [0, .01, .1, 1])
 
+# periodic is amp, length, period
 
-param_dict = Dict(Periodic => [collect(1:10), collect(.25:.25:2), collect(.5:.25:4)],
+# HAVE TO ASSESS THE MEANING OF THESE PARAMS TO MAKE GOOD PROPOSALS
+
+# .5 went exactly every 15 frames
+# 1.25 every ~40 frames (probably 38)
+#1.5 every 45 frames. nice.
+# amplitude basically translates directly. normal on the peak to peak is probably a good choice. 
+# lengthscale is on the same scale as period. .5 is probably 15 frames worth of covariance. 
+
+
+function test_param_set(mn_probs)
+    cf_x, cv_y = covfunc_prior(mn_probs, 1, 0)
+    covmat_x = compute_cov_matrix_vectorized(cf_x, ϵ, timepoints)
+    println(cf_x)
+    draws = [mvnormal(zeros(length(timepoints)), covmat_x) for i in 1:30]
+    fig, ax = lines(draws[1])
+    for d in draws[2:end]
+        lines!(ax, d)
+    end
+    display(fig)
+    return covmat_x
+end
+
+param_dict = Dict(Periodic => [collect(1:10), collect(.5:.5:2), collect(.5:.25:2)],
                   Linear => [[.5], collect(0:20)],
                   SquaredExponential => [collect(1:20), collect(.05:.05:.5)],
                   :jitter_magnitude => [0, .01, .1, 1], 
@@ -1422,7 +1458,7 @@ end
         period = [{(:period, i)} ~ multinomial(param_dict[Periodic][3]) for i in [:x, :y]]
         kernel_args_x, kernel_args_y = zip(amplitude, lengthscale, period)
     elseif kernel_type == Linear
-        lengthscale =  [{(:lengthscale, i)} ~ multinomial(param_dict[Linear][1]) for i in [:x, :y]]
+        lengthscale =  [{(:offset, i)} ~ multinomial(param_dict[Linear][1]) for i in [:x, :y]]
         variance = [{(:variance, i)} ~ multinomial(param_dict[Linear][2]) for i in [:x, :y]]
         kernel_args_x, kernel_args_y = zip(lengthscale, variance)
     elseif kernel_type == SquaredExponential
