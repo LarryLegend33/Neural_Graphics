@@ -289,14 +289,18 @@ function make_constraints()
     #                     (:y_timeseries, 2) => [5*sin(ball_freq*i) for i in 0:num_position_points-1])
 
     wheel_dictionary = Dict((:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
-                        (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
-                        (:start_x, 1) => -23,
-                        (:start_y, 1) => 0,
-                        (:perceptual_noise_magnitude, 1, :x) => 0.0,
-                        (:perceptual_noise_magnitude, 1, :y) => 0.0,
-                        (:jitter_magnitude, 1, :x) => 0.0,
-                        (:jitter_magnitude, 1, :y) => 0.0,
-                        (:isvisible, 1) => true)
+                            (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+                            (:x_observable, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
+                            (:y_observable, 2) => zeros(num_position_points),
+                            (:start_x, 1) => -23,
+                            (:start_y, 1) => 0,
+                            (:start_x, 2) => -18,
+                            (:start_y, 2) => 0,
+                            (:perceptual_noise_magnitude, 2, :x) => 0.0,
+                            (:perceptual_noise_magnitude, 2, :y) => 0.0,
+                            (:jitter_magnitude, 2, :x) => 0.0,
+                            (:jitter_magnitude, 2, :y) => 0.0,
+                            :num_visible => 2)
 
 
 
@@ -503,7 +507,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
     all_samples = []
     all_graphs = []
     num_dots = trace[:num_dots]
-    num_particles = 10000
+    num_particles = 100000
     #    num_resamples = 30
     observations[:num_visible] = trace[:num_visible]
     for i in 1:observations[:num_visible]
@@ -1447,7 +1451,7 @@ end
 # make the pluscounter 1 to start in the proposal. 
 
 @gen function covfunc_prior(mn_probs, dot, pluscounter)
-    if pluscounter == 2
+    if pluscounter == 1
         mn_probs[1] += mn_probs[4] / 2
         mn_probs[3] += mn_probs[4] / 2
         mn_probs[4] = 0
