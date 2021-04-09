@@ -59,27 +59,29 @@ using SpecialFunctions: loggamma
 # PROPOSING THE DIRECT TIMESERIES OF CHILD NODES I DONT THINK HURTS...
 
 
+# invisible leafs would seem a priori weird, but you imagine what a wrist looks like on the end of a hand. or
+# foot at the end of a leg. 
+# when we see an arm we can fill in the rest of the human. some torso dot / leg dot is controlling the forward
+# translation of the arm. 
+
 
 """ GENERATIVE CODE: These functions output dotmotion stimuli using GP-generated timeseries"""
 
 @gen function generate_dot_scene(ts::Array{Float64})
-    num_dots = { :num_dots } ~ poisson_bounded_below(1, 1)
+    num_visible = { :num_visible } ~ poisson_bounded_below(1, 1)
+    num_dots = { :num_dots } ~ poisson_bounded_below(.2, num_visible)
     motion_graph = MetaDiGraph(num_dots)
     dperm1 = { :dp1 } ~ randomPartialPermutation(num_dots, num_dots)
     dperm2 = { :dp2 } ~ randomPartialPermutation(num_dots, num_dots)
     candidate_edges = [(n1, n2) for n1 in dperm1 for n2 in dperm2 if n1!=n2]
+    vis_or_invis = [d <= num_visible ? {(:isvisible, d)} ~ bernoulli(1) : {(:isvisible, d)} ~ bernoulli(0) for d in 1:num_dots]
     dot_order = {*} ~ populate_edges(motion_graph, candidate_edges)
     for dot in dot_order
-        isvisible = {(:isvisible, dot)} ~ bernoulli(.8)
         cov_func_x, cov_func_y = { (:cf_tree, dot) } ~ covfunc_prior([.5/2, 0.0, .5/2, .5], dot, 0)
         covmat_x = compute_cov_matrix_vectorized(cov_func_x, ϵ, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
         start_x = {(:start_x, dot)} ~ uniform(-25, 25)
         start_y = {(:start_y, dot)} ~ uniform(-25, 25)
-
-        # ask about this in Gen slack. you have an mvnormal.
-        # you ahve the observations of the first 30 values,
-        # want to condition on this in importance sampling 
         x_timeseries = {(:x_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
         y_timeseries = {(:y_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
         perceptual_noise_magnitude = {(:perceptual_noise_magnitude, dot)} ~ multinomial(param_dict[:perceptual_noise_magnitude])
@@ -90,24 +92,25 @@ using SpecialFunctions: loggamma
                         :x_timeseries => x_timeseries,
                         :y_timeseries => y_timeseries,
                         :perceptual_noise => noise,
-                        :isvisible => isvisible,
+                        :isvisible => vis_or_invis[dot],
                         :MType => mtype_extractor(cov_func_x))
         set_props!(motion_graph, dot, dot_dict)
         output_covmat = compute_cov_matrix_vectorized(RandomWalk(0), ϵ, ts)
-        parent_velocity_x, parent_velocity_y = get_parent_velocity(motion_graph, dot, ts)
+        parent_x, parent_y = get_parent_influence(motion_graph, dot, ts)
         x_obs, y_obs = create_observable(x_timeseries, y_timeseries, jitter, noise, start_x, start_y,
-                                         parent_velocity_x, parent_velocity_y)
+                                         parent_x, parent_y)
         x_observable = {(:x_observable, dot)} ~ mvnormal(x_obs, output_covmat)
         y_observable = {(:y_observable, dot)} ~ mvnormal(y_obs, output_covmat)
     end
+    
     return motion_graph
 end
 
 
 @gen function generate_white_noise(variance::Float64, rv::Symbol, ts::Array{Float64}, dot::Int64)
-    covmat = compute_cov_matrix_vectorized(RandomWalk(variance), ϵ, ts[2:end])
-    white_noise_x = {(rv, dot, :x)} ~ mvnormal(zeros(length(ts)-1), covmat)
-    white_noise_y = {(rv, dot, :y)} ~ mvnormal(zeros(length(ts)-1), covmat)
+    covmat = compute_cov_matrix_vectorized(RandomWalk(variance), ϵ, ts)
+    white_noise_x = {(rv, dot, :x)} ~ mvnormal(zeros(length(ts)), covmat)
+    white_noise_y = {(rv, dot, :y)} ~ mvnormal(zeros(length(ts)), covmat)
     return white_noise_x, white_noise_y
 end
 
@@ -140,35 +143,33 @@ end
 
 
 function create_observable(x_timeseries, y_timeseries, jitter, noise, start_x, start_y,
-                           parent_velocity_x, parent_velocity_y)
+                           parent_x, parent_y)
     x_obs = deepcopy(x_timeseries)
     y_obs = deepcopy(y_timeseries)
-    x_obs[2:end] += jitter[1]
-    x_obs[2:end] += cumsum(parent_velocity_x)
-    x_obs[2:end] += noise[1]
-    y_obs[2:end] += jitter[2]
-    y_obs[2:end] += cumsum(parent_velocity_y)
-    y_obs[2:end] += noise[2]
+    x_obs += jitter[1]
+    x_obs += parent_x
+    x_obs += noise[1]
+    y_obs += jitter[2]
+    y_obs += parent_y
+    y_obs += noise[2]
     x_obs .+= (start_x - x_obs[1])
     y_obs .+= (start_y - y_obs[1])
     return x_obs, y_obs
 end
 
+# this is WRONG. have to get entire path of inneighbors, not just immediate above neighbor. 
 
-function get_parent_velocity(motion_graph, dot, ts)
-    parent_dot = inneighbors(motion_graph, dot)
-    if !isempty(parent_dot)
-        parent_pos_x = deepcopy(props(motion_graph, parent_dot[1])[:x_timeseries])
-        parent_pos_x[2:end] += props(motion_graph, parent_dot[1])[:jitter][1]
-        parent_pos_y = deepcopy(props(motion_graph, parent_dot[1])[:y_timeseries])
-        parent_pos_y[2:end] += props(motion_graph, parent_dot[1])[:jitter][2]
-        parent_velocity_x = diff(parent_pos_x)
-        parent_velocity_y = diff(parent_pos_y)
-    else
-        parent_velocity_x = zeros(length(ts)-1)
-        parent_velocity_y = zeros(length(ts)-1)
+function get_parent_influence(motion_graph, dot, ts)
+    parent_dots = reachable_to(motion_graph.graph, dot)
+    parent_x = zeros(length(ts))
+    parent_y = zeros(length(ts))
+    for parent_dot in parent_dots
+        parent_x += deepcopy(props(motion_graph, parent_dot)[:x_timeseries])
+        parent_x += props(motion_graph, parent_dot)[:jitter][1]
+        parent_y += deepcopy(props(motion_graph, parent_dot)[:y_timeseries])
+        parent_y += props(motion_graph, parent_dot)[:jitter][2]
     end
-    return parent_velocity_x, parent_velocity_y
+    return parent_x, parent_y
 end
 
 # proposal will be count the amount of observable variables in the choicemap. constrain the number of dots to a tight distribution on it.
@@ -176,26 +177,33 @@ end
 """ PROPOSALS AND INFERENCE WRAPPERS W PLOTTING METHODS """ 
 
 
-@gen function dotnum_and_type_proposal(current_trace)
+@gen function dotnum_and_timeseries_proposal(current_trace)
     observed_dot_ids = []
-    # have to go through this w/out restricting on num dots, and make
-    observed_dot = 0
-    while(true)
-        try
-            current_trace[(:x_observable, observed_dot+1)]
-            observed_dot += 1
-            push!(observed_dot_ids, observed_dot)
-        catch
-            break
+    ts_covmat = compute_cov_matrix_vectorized(RandomWalk(0), ϵ*100, get_args(current_trace)[1])
+    # here you get the number of dots observed for free,
+    # but in the future just detect the coords of visible dots and count them.
+    num_dots = { :num_dots } ~ poisson_bounded_below(.1, current_trace[:num_visible])
+    new_tree = MetaDiGraph(num_dots)
+    dperm1 = { :dp1 } ~ randomPartialPermutation(num_dots, num_dots)
+    dperm2 = { :dp2 } ~ randomPartialPermutation(num_dots, num_dots)
+    candidate_edges = [(n1, n2) for n1 in dperm1 for n2 in dperm2 if n1!=n2]
+    dot_order = {*} ~ populate_edges(new_tree, candidate_edges)
+    for dot in dot_order
+        influence_x = influence_y = zeros(length(get_args(current_trace)[1]))
+        for parent in inneighbors(new_tree, dot)
+            if parent <= current_trace[:num_visible]
+                influence_x -= current_trace[(:x_observable, parent)]
+                influence_y -= current_trace[(:y_observable, parent)]
+            end
+            if dot <= current_trace[:num_visible]
+                {(:x_timeseries, dot)} ~ mvnormal(current_trace[(:x_observable, dot)] + influence_x, ts_covmat)
+                {(:y_timeseries, dot)} ~ mvnormal(current_trace[(:y_observable, dot)] + influence_y, ts_covmat)
+            end
         end
     end
-    num_dots = { :num_dots } ~ poisson_bounded_below(.5, length(observed_dot_ids))
-    [{(:isvisible, i)} ~ bernoulli(0) for i in 1:num_dots if !in(i, observed_dot_ids)]
-    # for dot in num_dots
-    #     {(:cf_tree, dot)} ~ covfunc_prior([.4, 0.0, .2, .4], dot, 0)
-    # end
-    return 
-end    
+end
+
+    
 
 """ THESE FUNCTIONS WRAP SAMPLING RENDERING AND INFERENCE """
 
@@ -315,7 +323,7 @@ dot_obs = Dict(
     (:perceptual_noise_magnitude, 1) => 0.0,
     (:jitter_magnitude, 1) => 0.0,
     (:jitter_magnitude, 1) => 0.0,
-    (:isvisible, 1) => true)
+    :num_visible => 1)
 
 # get_submap will work here, but need observations to be indexed, not choicemap. 
 # you'll have cf_func
@@ -478,7 +486,7 @@ function animate_imp_inference(all_importance_samples, groundtruth_trace)
             start_y = trace[(:start_y, dot)]
             x_timeseries = trace[(:x_timeseries, dot)]
             y_timeseries = trace[(:y_timeseries, dot)]
-            pvel_x, pvel_y = get_parent_velocity(m_graph, dot, ts)
+            pvel_x, pvel_y = get_parent_influence(m_graph, dot, ts)
             x_obs, y_obs = create_observable(x_timeseries, y_timeseries, jitter, noise, start_x, start_y, pvel_x, pvel_y)
             lines!(dotmotion_axis[dot], x_obs, y_obs, color=:gray)
             sleep(.3)
@@ -497,16 +505,15 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
     num_dots = trace[:num_dots]
     num_particles = 10000
     #    num_resamples = 30
-    for i in 1:num_dots
-        if trace[(:isvisible, i)]
-            observations[(:start_x, i)] = trace[(:start_x, i)]
-            observations[(:start_y, i)] = trace[(:start_y, i)]
-            observations[(:x_observable, i)] = trace[(:x_observable, i)]
-            observations[(:y_observable, i)] = trace[(:y_observable, i)]
-        end
+    observations[:num_visible] = trace[:num_visible]
+    for i in 1:observations[:num_visible]
+        observations[(:start_x, i)] = trace[(:start_x, i)]
+        observations[(:start_y, i)] = trace[(:start_y, i)]
+        observations[(:x_observable, i)] = trace[(:x_observable, i)]
+        observations[(:y_observable, i)] = trace[(:y_observable, i)]
     end
     [observations[constraint] = observed_data[constraint] for constraint in keys(observed_data)]
-    (traces, weights, lml_est) = Gen.importance_sampling(generate_dot_scene, args, observations, dotnum_and_type_proposal, (trace,), num_particles)
+    (traces, weights, lml_est) = Gen.importance_sampling(generate_dot_scene, args, observations, dotnum_and_timeseries_proposal, (trace,), num_particles)
     
     # for i in 1:num_resamples
     #     (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, dotnum_and_type_proposal, (trace,), num_particles)
@@ -1391,7 +1398,7 @@ end
 param_dict = Dict(Periodic => [collect(1:10), collect(.5:.5:2), collect(.5:.25:2)],
                   Linear => [[.5], collect(0:20)],
                   SquaredExponential => [collect(1:20), collect(.05:.05:.5)],
-                  :jitter_magnitude => [0, .01, .1, 1], 
+                  :jitter_magnitude => [0],    # previously [.01, .1, 1]
                   :perceptual_noise_magnitude => [0, .01, .1, 1])
 
 ϵ = 1e-6
