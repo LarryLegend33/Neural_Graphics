@@ -77,7 +77,7 @@ using SpecialFunctions: loggamma
     vis_or_invis = [d <= num_visible ? {(:isvisible, d)} ~ bernoulli(1) : {(:isvisible, d)} ~ bernoulli(0) for d in 1:num_dots]
     assignment_order = {*} ~ populate_edges(motion_graph, candidate_edges)
     for dot in assignment_order
-        cov_func_x, cov_func_y = { (:cf_tree, dot) } ~ covfunc_prior([.35, 0.0, .35, .3], dot, 0)
+        cov_func_x, cov_func_y = { (:cf_tree, dot) } ~ covfunc_prior([.4, 0.0, .4, .2], dot, 0)
         covmat_x = compute_cov_matrix_vectorized(cov_func_x, ϵ, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
         start_x = {(:start_x, dot)} ~ uniform(-25, 25)
@@ -129,11 +129,11 @@ end
     if path_recurrence || dot_has_parent
         add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(0)
     else
-        if isempty(inneighbors(motion_graph, cand_parent))
-            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.3)
-        else
-            add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.1)
-        end
+#        if isempty(inneighbors(motion_graph, cand_parent))
+        add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.3)
+        # else
+        #     add_edge = { (:edge, cand_parent, current_dot) } ~  bernoulli(.1)
+        # end
     end
     if add_edge
         add_edge!(motion_graph, cand_parent, current_dot)
@@ -198,10 +198,10 @@ end
                 influence_x -= current_trace[(:x_observable, parent)]
                 influence_y -= current_trace[(:y_observable, parent)]
             end
-            if dot <= current_trace[:num_visible]
-                {(:x_timeseries, dot)} ~ mvnormal(current_trace[(:x_observable, dot)] + influence_x, ts_covmat)
-                {(:y_timeseries, dot)} ~ mvnormal(current_trace[(:y_observable, dot)] + influence_y, ts_covmat)
-            end
+        end
+        if dot <= current_trace[:num_visible]
+            {(:x_timeseries, dot)} ~ mvnormal(current_trace[(:x_observable, dot)] + influence_x, ts_covmat)
+            {(:y_timeseries, dot)} ~ mvnormal(current_trace[(:y_observable, dot)] + influence_y, ts_covmat)
         end
     end
 end
@@ -221,9 +221,9 @@ function dotwrap(constraints::Gen.DynamicChoiceMap)
     (trace, weight) = Gen.generate(generate_dot_scene, 
                                    (timepoints,),  
                                    constraints)
-#    constraints[(:x_observable, 1)] = trace[(:x_observable, 1)]
-#    constraints[(:y_observable, 1)] = trace[(:y_observable, 1)]
-    dotwrap(trace, choicemap())
+    #    dotwrap(trace, choicemap())
+    render_dotmotion(trace, true, true)
+    return trace, weight
 end
                  
 function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints::Gen.DynamicChoiceMap)
@@ -234,7 +234,7 @@ function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraint
 #    ax = visualize_scenegraph(scenegraph, get_choices(updated_trace))
     # s = Scene()
     # display(s)
-    return trace
+    return trace, w
 end    
 
 
@@ -255,6 +255,73 @@ end
 #                   SquaredExponential => [collect(1:20), collect(.05:.05:.5)],
 #                   :jitter_magnitude => [0],    # previously [.01, .1, 1]
 #                   :perceptual_noise_magnitude => [0, .01])
+
+function compare_edge_noedge(num_samples)
+    fig, ax = hist([dotwrap(make_constraints_noedge())[2] for i in 1:num_samples], color=(RGBf0(0,0,0), .3))
+    hist!(ax, [dotwrap(make_constraints_edge())[2] for i in 1:num_samples], color=(RGBf0(0,255,0), .3))
+    display(fig)
+end    
+
+
+function make_constraints_edge()
+    constraints = choicemap()
+    bar_height = 15
+    ball_freq = .15
+    wheel_dictionary = Dict(
+        :num_dots => 2,
+        :num_visible => 2,
+        (:edge, 2, 1) => true, 
+        (:edge, 1, 2) => false, 
+        # (:x_timeseries, 1) => [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
+        # (:y_timeseries, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+        # (:x_timeseries, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
+        # (:y_timeseries, 2) => zeros(num_position_points),
+        (:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
+        (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+        (:x_observable, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
+        (:y_observable, 2) => zeros(num_position_points),
+        ((:cf_tree, 1) => :kernel_type) => Periodic,
+        ((:cf_tree, 2) => :kernel_type) => Linear,
+        (:start_x, 1) => -23,
+        (:start_y, 1) => 0,
+        (:start_x, 2) => -18,
+        (:start_y, 2) => 0,
+        (:perceptual_noise_magnitude, 1) => 0.0,
+        (:jitter_magnitude, 1) => 0.0,
+        (:perceptual_noise_magnitude, 2) => 0.0,
+        (:jitter_magnitude, 2) => 0.0) 
+    constraints = choicemap([Tuple(d) for d in wheel_dictionary]...)
+    return constraints
+end
+    
+function make_constraints_noedge()
+    constraints = choicemap()
+    bar_height = 15
+    ball_freq = .15
+    wheel_dictionary = Dict(
+        :num_dots => 1,
+        :num_visible => 1,
+        (:edge, 2, 1) => false, 
+        (:edge, 1, 2) => false,
+        (:x_observable, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
+        (:y_observable, 2) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+        (:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
+        (:y_observable, 1) => zeros(num_position_points),
+        ((:cf_tree, 1) => :kernel_type) => Plus,
+        ((:cf_tree, 1) => :left => :kernel_type) => Periodic,
+        ((:cf_tree, 1) => :right => :kernel_type) => Linear,
+        ((:cf_tree, 2) => :kernel_type) => Linear,
+        (:start_x, 1) => -23,
+        (:start_y, 1) => 0,
+        (:start_x, 2) => -18,
+        (:start_y, 2) => 0,
+        (:perceptual_noise_magnitude, 1) => 0.0,
+        (:jitter_magnitude, 1) => 0.0,
+        (:perceptual_noise_magnitude, 2) => 0.0,
+        (:jitter_magnitude, 2) => 0.0)
+    constraints = choicemap([Tuple(d) for d in wheel_dictionary]...)
+    return constraints
+end
 
 function make_constraints()
     constraints = choicemap()
@@ -283,84 +350,6 @@ function make_constraints()
                           (:x_timeseries, 3) => -20*ones(num_position_points),
                           (:y_timeseries, 3) => [bar_height*sin(ball_freq*i) for i in 0:num_position_points-1])
 
-    # wheel_dictionary = (:num_dots => 2,
-    #                     (:kernel_type, 1) => Linear,
-    #                     (:kernel_type, 2) => Periodic,
-    #                     (:perceptual_noise_magnitude, 1) => 0.0,
-    #                     (:perceptual_noise_magnitude, 2) => 0.0,
-    #                     (:jitter_magnitude, 1) => 0.0,
-    #                     (:jitter_magnitude, 2) => 0.0,
-    #                     (:isvisible, 1) => true, 
-    #                     (:isvisible, 2) => true,
-    #                     (:edge, 1, 2) => true, 
-    #                     (:x_timeseries, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
-    #                     (:y_timeseries, 1) => zeros(num_position_points),
-    #                     (:x_timeseries, 2) => [-5*cos(ball_freq*i) - 18 for i in 0:num_position_points-1],
-    #                     (:y_timeseries, 2) => [5*sin(ball_freq*i) for i in 0:num_position_points-1])
-
-    # wheel_dictionary = Dict((:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
-    #                         (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
-    #                         (:start_x, 1) => -23,
-    #                         (:start_y, 1) => 0,
-    #                         (:perceptual_noise_magnitude, 1) => 0.0,
-    #                         (:perceptual_noise_magnitude, 1) => 0.0,
-    #                         (:jitter_magnitude, 1) => 0.0,
-    #                         (:jitter_magnitude, 1) => 0.0)
-
-    #                         # (:x_observable, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
-    #                         # (:y_observable, 2) => zeros(num_position_points),
-
-    #                         # (:start_x, 2) => -18,
-    #                         # (:start_y, 2) => 0,
-    #                         # (:perceptual_noise_magnitude, 2, :x) => 0.0,
-    #                         # (:perceptual_noise_magnitude, 2, :y) => 0.0,
-                            # (:jitter_magnitude, 2, :x) => 0.0,
-                            # (:jitter_magnitude, 2, :y) => 0.0,
-                            # :num_visible => 2)
-
-    wheel_dictionary = Dict(# (:x_timeseries, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
-                        #     (:y_timeseries, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
-                        #   #  (:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
-                        # #    (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
-                        #     (:start_x, 1) => -23,
-                        #     (:start_y, 1) => 0,
-                            (:perceptual_noise_magnitude, 1) => 0.0,
-                            (:jitter_magnitude, 1) => 0.0,
-                        #     ((:cf_tree, 1) => :kernel_type) => Plus,
-                        #     ((:cf_tree, 1) => :left => :kernel_type) => Linear,
-                        #     ((:cf_tree, 1) => :right => :kernel_type) => Periodic,
-                            :num_dots => 2,
-                            :num_visible => 2,
-                            (:edge, 2, 1) => true,
-                            (:edge, 1, 2) => false, 
-                            (:x_timeseries, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
-                            (:y_timeseries, 2) => zeros(num_position_points),
-                            (:x_timeseries, 1) => [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
-                            (:y_timeseries, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
-                            (:start_x, 1) => -23,
-                            (:start_y, 1) => 0,
-                            (:start_x, 2) => -18,
-                            (:start_y, 2) => 0,
-                            (:perceptual_noise_magnitude, 2) => 0.0,
-                            (:jitter_magnitude, 2) => 0.0,
-                            ((:cf_tree, 2) => :kernel_type) => Linear,
-                            ((:cf_tree, 1) => :kernel_type) => Periodic)
-
-
-
-
-
-    
-
-    # freestyle = (:num_dots => 1,
-    #              (:perceptual_noise_magnitude, 1) => 0.0,
-    #              (:jitter_magnitude, 1) => 0.0,
-    #              :num_visible => 1,
-    #              ((:cf_tree, 1) => :kernel_type) => Periodic, 
-    #              (:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
-    #              (:y_observable, 1) => zeros(num_position_points),
-    #              (:start_x, 1) => -18,
-    #              (:start_y, 1) => 0)
 
     freestyle = (:num_dots => 1,
                  (:perceptual_noise_magnitude, 1) => 0.0,
@@ -377,9 +366,7 @@ function make_constraints()
 
     # variance controls speed of linear motion, offset controls where it crosses axis. since all
     # lines are normalized to the start_x and y, leave offset at 0 and only switch the speed. 
-
-
-    constraints = choicemap([Tuple(d) for d in wheel_dictionary]...)
+    constraints = choicemap([Tuple(d) for d in bar_dictionary]...)
     return constraints
 end
 
@@ -565,7 +552,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
     all_samples = []
     all_graphs = []
     num_dots = trace[:num_dots]
-    num_particles = 100000
+    num_particles = 10000
     #    num_resamples = 30
     observations[:num_visible] = trace[:num_visible]
     for i in 1:observations[:num_visible]
@@ -1082,8 +1069,8 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
             cl = []
             motion_type = mtype_extractor(trace[(:cf_tree, i)][1])
             cl = [node_color(motion_type, :dot)[1]*.5, node_color(motion_type, :dot)[1]]
-            ofs_x = lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:x_timeseries, i)]), time_node), color=cl[1])
-            ofs_y = lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:y_timeseries, i)]), time_node), color=cl[2])
+            ofs_x = lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:x_timeseries, i)] .+= (trace[(:start_x, i)] - trace[(:x_timeseries, i)][1])), time_node), color=cl[1])
+            ofs_y = lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:y_timeseries, i)] .+= (trace[(:start_y, i)] - trace[(:y_timeseries, i)][1])), time_node), color=cl[2])
 #            axislegend(offset_axis[i], [ofs_x, ofs_y], [string([string(h, "=", trace[(h, i, 1)], " ") for h in hp]...),
  #                                                       string([string(h, "=", trace[(h, i, 2)], " ") for h in hp]...)], position=:lt)
             ts_x = lines!(timeseries_axis[i], lift(t -> f_timeseries(t, trace[(:x_observable, i)]), time_node), color=cl[1])
@@ -1449,11 +1436,11 @@ function test_param_set(mn_probs)
     return covmat_x
 end
 
-param_dict = Dict(Periodic => [collect(1:10), collect(.5:.5:2), collect(.4:.2:3)],
+param_dict = Dict(Periodic => [collect(2:10), collect(.5:.5:2), collect(.4:.2:3)],
                   Linear => [[0], collect(0:.5:20)],
                   SquaredExponential => [collect(1:20), collect(.05:.05:.5)],
                   :jitter_magnitude => [0],    # previously [.01, .1, 1]
-                  :perceptual_noise_magnitude => [0, .01])
+                  :perceptual_noise_magnitude => [0.0])
 
 ϵ = 1e-6
 # need a tiny bit of noise in mvnormal else factorization errors. this is also noted in Gaussian Process book. 
@@ -1501,16 +1488,16 @@ end
 # make the pluscounter 1 to start in the proposal. 
 
 @gen function covfunc_prior(mn_probs, dot, pluscounter)
-    if pluscounter == 1
-        mn_probs[1] += mn_probs[4] / 2
-        mn_probs[3] += mn_probs[4] / 2
-        mn_probs[4] = 0
-    end
+    # if pluscounter == 1
+    #     mn_probs[1] += mn_probs[4] / 2
+    #     mn_probs[3] += mn_probs[4] / 2
+    #     mn_probs[4] = 0
+    # end
     kernel_type = { :kernel_type } ~ choose_kernel_type(mn_probs)
     if in(kernel_type, [Plus, Times])
         pluscounter += 1
-        left = { :left } ~ covfunc_prior(mn_probs, dot, pluscounter)
-        right = { :right } ~ covfunc_prior(mn_probs, dot, pluscounter)
+        left = { :left } ~ covfunc_prior([1, 0, 0, 0], dot, pluscounter)
+        right = { :right } ~ covfunc_prior([0, 0, 1, 0], dot, pluscounter)
         return kernel_type(left[1], right[1]), kernel_type(left[2], right[2])
     end
     if kernel_type == Periodic
