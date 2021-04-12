@@ -42,27 +42,27 @@ using SpecialFunctions: loggamma
 # counting the peak to peak amplitude and using heuristics to get period may be helpful.
 # Make sure tomorrow that you know how period translates to amount of repeats...this wasn't completely clear before. 
 
-# get_submap gets cf_tree's choices, but not sure how to set them.
-# get_selected filters a choicemap.
-# try set_submap!(choices, addr, submap), where submap is just a map, and addr is the title of the map.
-# i think its fine to use these as observed even in the case where it goes in another direction.
-# you can even set the left and right params; set kernel type inside the cf_tree
 
+# Possible Proposals that fit: measure the consistency of xy magnitude from each dot.
+# if XY magnitude is basically constant, this explains fully inherited patterns (i.e. linear->stationary)
+# the wheel stimulus;
+# dot moving inside the bar is activating TP neurons in ewert -- it's an antiworm stimulus!
+# what is evidence for offset of a 
 
-# 3 THINGS: PROVE THAT X ADDING IN THE CONTEXT OF AN X_INIT IS THE SAME AS DIFF ADDING.
-# CONSIDER PROPOSING TO THE MVNORMAL DRAW BY GIVING NEW ARGS.
-# CONSIDER PROPOSING DIRECTLY TO THE KERNEL_TYPE VARIABLE FOR A GIVEN DOT USING A
-# UNIFORM OVER KERNEL TYPES THAT ARE NOT LINEAR OR ARE LINEAR.
 # NOTE THAT NOISE WILL DISRUPT EVERYTHING. THATS THE WHOLE POINT.
 # NOISE WILL SCREW UP HEURISTICS, MAKE TIMESERIES CONSTRAINING DIFFICULT BECAUSE CORRELATIONS WILL
 # ARISE FROM NOISE, ETC. JITTER MAY ALSO HELP! SHARING MORE VELOCITY WILL BE BETTER.
 # PROPOSING THE DIRECT TIMESERIES OF CHILD NODES I DONT THINK HURTS...
 
+# No
+
 
 # invisible leafs would seem a priori weird, but you imagine what a wrist looks like on the end of a hand. or
 # foot at the end of a leg. 
 # when we see an arm we can fill in the rest of the human. some torso dot / leg dot is controlling the forward
-# translation of the arm. 
+# translation of the arm.
+
+# 
 
 
 """ GENERATIVE CODE: These functions output dotmotion stimuli using GP-generated timeseries"""
@@ -75,9 +75,9 @@ using SpecialFunctions: loggamma
     dperm2 = { :dp2 } ~ randomPartialPermutation(num_dots, num_dots)
     candidate_edges = [(n1, n2) for n1 in dperm1 for n2 in dperm2 if n1!=n2]
     vis_or_invis = [d <= num_visible ? {(:isvisible, d)} ~ bernoulli(1) : {(:isvisible, d)} ~ bernoulli(0) for d in 1:num_dots]
-    dot_order = {*} ~ populate_edges(motion_graph, candidate_edges)
-    for dot in dot_order
-        cov_func_x, cov_func_y = { (:cf_tree, dot) } ~ covfunc_prior([.5/2, 0.0, .5/2, .5], dot, 0)
+    assignment_order = {*} ~ populate_edges(motion_graph, candidate_edges)
+    for dot in assignment_order
+        cov_func_x, cov_func_y = { (:cf_tree, dot) } ~ covfunc_prior([.35, 0.0, .35, .3], dot, 0)
         covmat_x = compute_cov_matrix_vectorized(cov_func_x, ϵ, ts)
         covmat_y = compute_cov_matrix_vectorized(cov_func_y, ϵ, ts)
         start_x = {(:start_x, dot)} ~ uniform(-25, 25)
@@ -174,6 +174,8 @@ end
 
 # proposal will be count the amount of observable variables in the choicemap. constrain the number of dots to a tight distribution on it.
 
+# calculate as a smart proposal: slope of line, 
+
 """ PROPOSALS AND INFERENCE WRAPPERS W PLOTTING METHODS """ 
 
 
@@ -189,7 +191,8 @@ end
     candidate_edges = [(n1, n2) for n1 in dperm1 for n2 in dperm2 if n1!=n2]
     dot_order = {*} ~ populate_edges(new_tree, candidate_edges)
     for dot in dot_order
-        influence_x = influence_y = zeros(length(get_args(current_trace)[1]))
+        influence_x = zeros(length(get_args(current_trace)[1]))
+        influence_y = zeros(length(get_args(current_trace)[1]))
         for parent in inneighbors(new_tree, dot)
             if parent <= current_trace[:num_visible]
                 influence_x -= current_trace[(:x_observable, parent)]
@@ -218,13 +221,15 @@ function dotwrap(constraints::Gen.DynamicChoiceMap)
     (trace, weight) = Gen.generate(generate_dot_scene, 
                                    (timepoints,),  
                                    constraints)
+#    constraints[(:x_observable, 1)] = trace[(:x_observable, 1)]
+#    constraints[(:y_observable, 1)] = trace[(:y_observable, 1)]
     dotwrap(trace, choicemap())
 end
                  
 function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints::Gen.DynamicChoiceMap)
     args = get_args(trace)
     (updated_trace, w, retdiff, discard) = Gen.update(trace, args, (), constraints)
-    render_dotmotion(updated_trace, true, false)
+    render_dotmotion(updated_trace, true, true)
 #    @spawn render_dotmotion(updated_trace, false)
 #    ax = visualize_scenegraph(scenegraph, get_choices(updated_trace))
     # s = Scene()
@@ -245,6 +250,11 @@ end
 # Can make a set of particles for this. Per particle, draw a few samples instead of
 # just one. This will cover a few phases of the periodic wave. 
 
+# param_dict = Dict(Periodic => [collect(1:10), collect(.5:.5:2), collect(.5:.25:2)],
+#                   Linear => [[0, 10, 20], collect(0:5:20)],
+#                   SquaredExponential => [collect(1:20), collect(.05:.05:.5)],
+#                   :jitter_magnitude => [0],    # previously [.01, .1, 1]
+#                   :perceptual_noise_magnitude => [0, .01])
 
 function make_constraints()
     constraints = choicemap()
@@ -288,31 +298,85 @@ function make_constraints()
     #                     (:x_timeseries, 2) => [-5*cos(ball_freq*i) - 18 for i in 0:num_position_points-1],
     #                     (:y_timeseries, 2) => [5*sin(ball_freq*i) for i in 0:num_position_points-1])
 
-    wheel_dictionary = Dict((:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
-                            (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
-                            (:x_observable, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
-                            (:y_observable, 2) => zeros(num_position_points),
+    # wheel_dictionary = Dict((:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
+    #                         (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+    #                         (:start_x, 1) => -23,
+    #                         (:start_y, 1) => 0,
+    #                         (:perceptual_noise_magnitude, 1) => 0.0,
+    #                         (:perceptual_noise_magnitude, 1) => 0.0,
+    #                         (:jitter_magnitude, 1) => 0.0,
+    #                         (:jitter_magnitude, 1) => 0.0)
+
+    #                         # (:x_observable, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
+    #                         # (:y_observable, 2) => zeros(num_position_points),
+
+    #                         # (:start_x, 2) => -18,
+    #                         # (:start_y, 2) => 0,
+    #                         # (:perceptual_noise_magnitude, 2, :x) => 0.0,
+    #                         # (:perceptual_noise_magnitude, 2, :y) => 0.0,
+                            # (:jitter_magnitude, 2, :x) => 0.0,
+                            # (:jitter_magnitude, 2, :y) => 0.0,
+                            # :num_visible => 2)
+
+    wheel_dictionary = Dict(# (:x_timeseries, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
+                        #     (:y_timeseries, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+                        #   #  (:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
+                        # #    (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+                        #     (:start_x, 1) => -23,
+                        #     (:start_y, 1) => 0,
+                            (:perceptual_noise_magnitude, 1) => 0.0,
+                            (:jitter_magnitude, 1) => 0.0,
+                        #     ((:cf_tree, 1) => :kernel_type) => Plus,
+                        #     ((:cf_tree, 1) => :left => :kernel_type) => Linear,
+                        #     ((:cf_tree, 1) => :right => :kernel_type) => Periodic,
+                            :num_dots => 2,
+                            :num_visible => 2,
+                            (:edge, 2, 1) => true,
+                            (:edge, 1, 2) => false, 
+                            (:x_timeseries, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
+                            (:y_timeseries, 2) => zeros(num_position_points),
+                            (:x_timeseries, 1) => [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
+                            (:y_timeseries, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
                             (:start_x, 1) => -23,
                             (:start_y, 1) => 0,
                             (:start_x, 2) => -18,
                             (:start_y, 2) => 0,
-                            (:perceptual_noise_magnitude, 2, :x) => 0.0,
-                            (:perceptual_noise_magnitude, 2, :y) => 0.0,
-                            (:jitter_magnitude, 2, :x) => 0.0,
-                            (:jitter_magnitude, 2, :y) => 0.0,
-                            :num_visible => 2)
+                            (:perceptual_noise_magnitude, 2) => 0.0,
+                            (:jitter_magnitude, 2) => 0.0,
+                            ((:cf_tree, 2) => :kernel_type) => Linear,
+                            ((:cf_tree, 1) => :kernel_type) => Periodic)
+
+
 
 
 
     
 
+    # freestyle = (:num_dots => 1,
+    #              (:perceptual_noise_magnitude, 1) => 0.0,
+    #              (:jitter_magnitude, 1) => 0.0,
+    #              :num_visible => 1,
+    #              ((:cf_tree, 1) => :kernel_type) => Periodic, 
+    #              (:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
+    #              (:y_observable, 1) => zeros(num_position_points),
+    #              (:start_x, 1) => -18,
+    #              (:start_y, 1) => 0)
+
     freestyle = (:num_dots => 1,
                  (:perceptual_noise_magnitude, 1) => 0.0,
-#                 (:perceptual_noise_magnitude, 2) => 0.0,
                  (:jitter_magnitude, 1) => 0.0,
- #                (:jitter_magnitude, 2) => 0.0,
-                 (:isvisible, 1) => true)
-  #               (:isvisible, 2) => true)
+                 :num_visible => 1,
+                 ((:cf_tree, 1) => :kernel_type) => Linear, 
+                 (:start_x, 1) => 0,
+                 (:start_y, 1) => 0,
+                 ((:cf_tree, 1) => (:variance, :x)) =>  20,
+                 ((:cf_tree, 1) => (:offset, :x)) =>  0,
+                 ((:cf_tree, 1) => (:variance, :y)) =>  20,
+                 ((:cf_tree, 1) => (:offset, :y)) =>  0)
+                 
+
+    # variance controls speed of linear motion, offset controls where it crosses axis. since all
+    # lines are normalized to the start_x and y, leave offset at 0 and only switch the speed. 
 
 
     constraints = choicemap([Tuple(d) for d in wheel_dictionary]...)
@@ -322,12 +386,6 @@ end
 
 
 
-dot_obs = Dict(
-    (:perceptual_noise_magnitude, 1) => 0.0,
-    (:perceptual_noise_magnitude, 1) => 0.0,
-    (:jitter_magnitude, 1) => 0.0,
-    (:jitter_magnitude, 1) => 0.0,
-    :num_visible => 1)
 
 # get_submap will work here, but need observations to be indexed, not choicemap. 
 # you'll have cf_func
@@ -1014,7 +1072,7 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
                                       MarkerElement(color=:lightgreen, marker=:circle, strokecolor=:black)],
                                      ["SqExp", "Periodic", "Linear"], orientation=:vertical)
         offset_axis = [Axis(dotmotion_fig,
-                            backgroundcolor = white, title=string("Offset Dot ", i)) for i in 1:trace[:num_dots]]
+                            backgroundcolor = white, title=string("Indep Component Dot ", i)) for i in 1:trace[:num_dots]]
         timeseries_axis = [Axis(dotmotion_fig,
                                 backgroundcolor = white, title=string("Final Timeseries Dot ", i)) for i in 1:trace[:num_dots]]
         ts_subscene = dotmotion_fig[2:3, :]
@@ -1023,22 +1081,11 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
             ts_subscene[i, 2] = timeseries_axis[i]
             cl = []
             motion_type = mtype_extractor(trace[(:cf_tree, i)][1])
-
-            # have to figure out how to index the choicemap hierarchies
-            if motion_type == "Linear"
-                cl = [:green, :lightgreen]
-                hp = [:lengthscale, :variance]
-            elseif motion_type == "Periodic"
-                cl = [:blue, :skyblue]
-                hp = [:period, :lengthscale, :amplitude]
-            elseif motion_type == "SquaredExponential"
-                cl = [:brown, :red]
-                hp = [:lengthscale, :amplitude]
-            end
+            cl = [node_color(motion_type, :dot)[1]*.5, node_color(motion_type, :dot)[1]]
             ofs_x = lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:x_timeseries, i)]), time_node), color=cl[1])
             ofs_y = lines!(offset_axis[i], lift(t -> f_timeseries(t, trace[(:y_timeseries, i)]), time_node), color=cl[2])
-            axislegend(offset_axis[i], [ofs_x, ofs_y], [string([string(h, "=", trace[(h, i, 1)], " ") for h in hp]...),
-                                                        string([string(h, "=", trace[(h, i, 2)], " ") for h in hp]...)], position=:lt)
+#            axislegend(offset_axis[i], [ofs_x, ofs_y], [string([string(h, "=", trace[(h, i, 1)], " ") for h in hp]...),
+ #                                                       string([string(h, "=", trace[(h, i, 2)], " ") for h in hp]...)], position=:lt)
             ts_x = lines!(timeseries_axis[i], lift(t -> f_timeseries(t, trace[(:x_observable, i)]), time_node), color=cl[1])
             ts_y = lines!(timeseries_axis[i], lift(t -> f_timeseries(t, trace[(:y_observable, i)]), time_node), color=cl[2])
             [xlims!(t_ax, 0, number_timepoints) for t_ax in [offset_axis; timeseries_axis]]
@@ -1114,7 +1161,10 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
         end
 
         for e1 in 1:trace[:num_dots]
-            for e2 in (e1+1):trace[:num_dots]
+            for e2 in 1:trace[:num_dots]
+                if e1 == e2
+                    continue
+                end
                 if trace[(:edge, e1, e2)]
                     x_source = [raw_dotmotion[e1,:][1][1] .* ones(stationary_duration) ; [x[1] for x in raw_dotmotion[e1,:]]]
                     y_source = [raw_dotmotion[e1,:][1][2] .* ones(stationary_duration) ; [y[2] for y in raw_dotmotion[e1,:]]]
@@ -1399,11 +1449,11 @@ function test_param_set(mn_probs)
     return covmat_x
 end
 
-param_dict = Dict(Periodic => [collect(1:10), collect(.5:.5:2), collect(.5:.25:2)],
-                  Linear => [[.5], collect(0:20)],
+param_dict = Dict(Periodic => [collect(1:10), collect(.5:.5:2), collect(.4:.2:3)],
+                  Linear => [[0], collect(0:.5:20)],
                   SquaredExponential => [collect(1:20), collect(.05:.05:.5)],
                   :jitter_magnitude => [0],    # previously [.01, .1, 1]
-                  :perceptual_noise_magnitude => [0, .01, .1, 1])
+                  :perceptual_noise_magnitude => [0, .01])
 
 ϵ = 1e-6
 # need a tiny bit of noise in mvnormal else factorization errors. this is also noted in Gaussian Process book. 
@@ -1425,7 +1475,7 @@ kernel_types = [Periodic, SquaredExponential, Linear, Plus]
         amplitude = {(:amplitude, dot, dim)} ~ multinomial(param_dict[Periodic][1])
         kernel_args = [amplitude, lengthscale, period]
     elseif kernel_type == Linear
-        lengthscale =  {(:lengthscale, dot , dim)} ~ multinomial(param_dict[Linear][1])  
+        lengthscale =  {(:offset, dot , dim)} ~ multinomial(param_dict[Linear][1])  
         variance = {(:variance, dot, dim)} ~ multinomial(param_dict[Linear][2])
         kernel_args = [lengthscale, variance]
     elseif kernel_type == RandomWalk
