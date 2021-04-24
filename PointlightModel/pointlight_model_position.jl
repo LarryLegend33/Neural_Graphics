@@ -84,6 +84,9 @@ using SpecialFunctions: loggamma
         start_y = {(:start_y, dot)} ~ uniform(-25, 25)
         x_timeseries = {(:x_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_x)
         y_timeseries = {(:y_timeseries, dot)} ~ mvnormal(zeros(length(ts)), covmat_y)
+        vel_covmat = compute_cov_matrix_vectorized(RandomWalk(0), ϵ, ts[2:end])
+        xvel = {(:x_vel, dot)} ~ mvnormal(diff(x_timeseries), vel_covmat)
+        yvel = {(:y_vel, dot)} ~ mvnormal(diff(y_timeseries), vel_covmat)
         perceptual_noise_magnitude = {(:perceptual_noise_magnitude, dot)} ~ multinomial(param_dict[:perceptual_noise_magnitude])
         noise = {*} ~ generate_white_noise(perceptual_noise_magnitude, :perceptual_noise, ts, dot)
         jitter_magnitude = {(:jitter_magnitude, dot)} ~ multinomial(param_dict[:jitter_magnitude])
@@ -180,8 +183,7 @@ end
 
 
 @gen function dotnum_and_timeseries_proposal(current_trace)
-    observed_dot_ids = []
-    ts_covmat = compute_cov_matrix_vectorized(RandomWalk(0), ϵ*100, get_args(current_trace)[1])
+    ts_covmat = compute_cov_matrix_vectorized(RandomWalk(0), ϵ, get_args(current_trace)[1][2:end])
     # here you get the number of dots observed for free,
     # but in the future just detect the coords of visible dots and count them.
     num_dots = { :num_dots } ~ poisson_bounded_below(.1, current_trace[:num_visible])
@@ -200,8 +202,10 @@ end
             end
         end
         if dot <= current_trace[:num_visible]
-            {(:x_timeseries, dot)} ~ mvnormal(current_trace[(:x_observable, dot)] + influence_x, ts_covmat)
-            {(:y_timeseries, dot)} ~ mvnormal(current_trace[(:y_observable, dot)] + influence_y, ts_covmat)
+            x_obs = current_trace[(:x_observable, dot)] + influence_x
+            y_obs = current_trace[(:y_observable, dot)] + influence_y
+            {(:x_vel, dot)} ~ mvnormal(diff(x_obs), ts_covmat)
+            {(:y_vel, dot)} ~ mvnormal(diff(y_obs), ts_covmat)
         end
     end
 end
@@ -222,14 +226,14 @@ function dotwrap(constraints::Gen.DynamicChoiceMap)
                                    (timepoints,),  
                                    constraints)
     #    dotwrap(trace, choicemap())
-    render_dotmotion(trace, true, true)
+#    render_dotmotion(trace, true, true)
     return trace, weight
 end
                  
 function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints::Gen.DynamicChoiceMap)
     args = get_args(trace)
     (updated_trace, w, retdiff, discard) = Gen.update(trace, args, (), constraints)
-    render_dotmotion(updated_trace, true, true)
+   # render_dotmotion(updated_trace, true, true)
 #    @spawn render_dotmotion(updated_trace, false)
 #    ax = visualize_scenegraph(scenegraph, get_choices(updated_trace))
     # s = Scene()
@@ -257,11 +261,12 @@ end
 #                   :perceptual_noise_magnitude => [0, .01])
 
 function compare_edge_noedge(num_samples)
-    fig, ax = hist([dotwrap(make_constraints_noedge())[2] for i in 1:num_samples], color=(RGBf0(0,0,0), .3))
-    hist!(ax, [dotwrap(make_constraints_edge())[2] for i in 1:num_samples], color=(RGBf0(0,255,0), .3))
+    fig, ax = hist([dotwrap(make_constraints_noedge())[2] for i in 1:num_samples], color=(RGBf0(0,0,0), .3), bins=collect(-4e12:.5e11:0))
+    hist!(ax, [dotwrap(make_constraints_edge())[2] for i in 1:num_samples], color=(RGBf0(0,255,0), .3), bins=collect(-4e12:.5e11:0))
     display(fig)
 end    
 
+#then all you do is switch make_constraints edge to 1 visible, then noedge to 1 dot 1 vis
 
 function make_constraints_edge()
     constraints = choicemap()
@@ -269,13 +274,13 @@ function make_constraints_edge()
     ball_freq = .15
     wheel_dictionary = Dict(
         :num_dots => 2,
-        :num_visible => 2,
+        :num_visible => 1,
         (:edge, 2, 1) => true, 
         (:edge, 1, 2) => false, 
-        # (:x_timeseries, 1) => [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
-        # (:y_timeseries, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
-        # (:x_timeseries, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
-        # (:y_timeseries, 2) => zeros(num_position_points),
+#        (:x_timeseries, 1) => [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
+#        (:y_timeseries, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+#        (:x_timeseries, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
+#        (:y_timeseries, 2) => zeros(num_position_points),
         (:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
         (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
         (:x_observable, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
@@ -303,10 +308,14 @@ function make_constraints_noedge()
         :num_visible => 1,
         (:edge, 2, 1) => false, 
         (:edge, 1, 2) => false,
-        (:x_observable, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
-        (:y_observable, 2) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
-        (:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
-        (:y_observable, 1) => zeros(num_position_points),
+ #       (:x_timeseries, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
+#        (:y_timeseries, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+ #       (:x_timeseries, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
+#        (:y_timeseries, 2) => zeros(num_position_points),
+        (:x_observable, 1) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1] + [-5*cos(ball_freq*i) for i in 0:num_position_points-1],
+        (:y_observable, 1) => [5*sin(ball_freq*i) for i in 0:num_position_points-1],
+        (:x_observable, 2) => [(50/num_position_points * i) - 18 for i in 0:num_position_points-1],
+        (:y_observable, 2) => zeros(num_position_points),
         ((:cf_tree, 1) => :kernel_type) => Plus,
         ((:cf_tree, 1) => :left => :kernel_type) => Periodic,
         ((:cf_tree, 1) => :right => :kernel_type) => Linear,
@@ -552,7 +561,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
     all_samples = []
     all_graphs = []
     num_dots = trace[:num_dots]
-    num_particles = 10000
+    num_particles = 100000
     #    num_resamples = 30
     observations[:num_visible] = trace[:num_visible]
     for i in 1:observations[:num_visible]
@@ -563,6 +572,7 @@ function imp_inference(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}},
     end
     [observations[constraint] = observed_data[constraint] for constraint in keys(observed_data)]
     (traces, weights, lml_est) = Gen.importance_sampling(generate_dot_scene, args, observations, dotnum_and_timeseries_proposal, (trace,), num_particles)
+#    (traces, weights, lml_est) = Gen.importance_sampling(generate_dot_scene, args, observations, num_particles)
     
     # for i in 1:num_resamples
     #     (tr, w) = Gen.importance_resampling(generate_dot_scene, args, observations, dotnum_and_type_proposal, (trace,), num_particles)
@@ -1054,10 +1064,11 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
         # scenegraph_axis.aspect = DataAspect()
         # dotmotion_fig[1, 2] = visualize_scenegraph(motion_tree, get_choices(trace), scenegraph_axis)
         dotmotion_fig[1, 3] = Legend(dotmotion_fig,
-                                     [MarkerElement(color=:orange, marker=:circle, strokecolor=:black),
+                                     [MarkerElement(color=:pink, marker=:circle, strokecolor=:black),
                                       MarkerElement(color=:skyblue, marker=:circle, strokecolor=:black),
-                                      MarkerElement(color=:lightgreen, marker=:circle, strokecolor=:black)],
-                                     ["SqExp", "Periodic", "Linear"], orientation=:vertical)
+                                      MarkerElement(color=:lightgreen, marker=:circle, strokecolor=:black),
+                                      MarkerElement(color=:darkcyan, marker=:circle, strokecolor=:black)],
+                                     ["SqExp", "Periodic", "Linear", "Composite"], orientation=:vertical)
         offset_axis = [Axis(dotmotion_fig,
                             backgroundcolor = white, title=string("Indep Component Dot ", i)) for i in 1:trace[:num_dots]]
         timeseries_axis = [Axis(dotmotion_fig,
