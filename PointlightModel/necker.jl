@@ -23,27 +23,52 @@ N = 100
 
 # constructor has to be with floats to use quaternion rotation w/ floats. q * p
 
-cube_prim = Rect(Vec(0.0, 0.0, 0.0), Vec(1.0, 1.0, 1.0))
-cube_mesh = GeometryBasics.mesh(cube_prim)
-vertices = cube_mesh.position
-rotator = Quaternionf0(0, -.2, 0, 1)
+cube_prim = GeometryBasics.Rect(Vec(0.0, 0.0, 0.0), Vec(1.0, 1.0, 1.0))
+
+# can also get positions w/out going to mesh first if you want to. i.e. vertices = decompose(Point3, cube_prim)
+# can construct a primitive as well w/ a set of vertices (i.e. 
+
+
+#cube_mesh = GeometryBasics.mesh(cube_prim)
+#cube_mesh.position
+
+vertices = decompose(Point{3, Float64}, cube_prim)
+# list of vertices
+faces = decompose(TriangleFace{Int}, cube_prim)
+# this is a list that connects indices of vertices to each other w/ a triangle
+
+cube_mesh = GeometryBasics.Mesh(vertices, faces)
+
+z_rotator = qrotation(Vec3f0(0, 0, 1), -.5)
+x_rotator = qrotation(Vec3f0(1, 0, 0), -.5)
+rotator = z_rotator * x_rotator
+
+
+#rotator = Quaternionf0(0, -.2, 0, 1)
+
+rotated_verts = [rotator * v for v in vertices]
+rotated_mesh = GeometryBasics.Mesh(rotated_verts, faces)
+
+fig, ax = GLMakie.mesh(rotated_mesh, color=:skyblue2)
+
+# qrotate will make a quaternion out of a set of rotations
+# 
 
 # RENDER THE WIREFRAMES AND MESH PLOTS DIRECTLY FROM CUBE_PRIM.
 # TRANSFORM POSITIONS USING [rotator * p for p in cube_mesh.position]
 # use 
 
-
-fig, ax = mesh(
-    cube_mesh, color = :skyblue2,
-)
-
-
-
+    
+# w Rotations.jl, can make a Quat(q.data...) call to get a quat
+    
+# fig, ax = mesh(
+#     cube_prim, color = :skyblue2,
+# )
  
 cube = ax.scene[end]
 GLMakie.rotate!(cube, rotator)
 
-rotated_positions = [rotator * p for p in cube_mesh.position]
+#rotated_positions = [rotator * p for p in cube_mesh.position]
 
 # once you've appled the same rotations to the mesh in the plot and the
 
@@ -55,27 +80,39 @@ println(cube.model)
 # cube.transformation.scale gives you scaling
 # 
 
-
+# qrotation takes an axis (e.g. Vec3(1,0,0)) and a radian angle and returns a Quaternion. 
 
 
 #ax.scene[end] is the rectangle. you can use this in the rotation function rotate! and the axis will stay the same
 # but the cube will rotate. 
 
 
-fig, ax = mesh(
- Rect(Vec3f0(-0.5), Vec3f0(1)), color = :skyblue2,
-)
+
 
 # ax.scene.camera contains the projection matricies w/ .projeciton and .projectionview
 
 screen = display(ax.scene)
 two_d_grid = AbstractPlotting.colorbuffer(screen)
 
+    
+
 # THIS REQUIRES DISPLAY |^
 
 # This doesnt
 
-# GLMakie.scene2image(ax.scene)
+
+
+#can also
+
+
+# This completely works    
+ax.scene.center = false
+im = GLMakie.scene2image(ax.scene)
+    # EQUIVALENT
+save("test.png", ax.scene)
+save("test2.png", im[1])
+
+
 
 # apparently you can also disable the rendering loop to make colorbuffer faster
 # GLMakie.opengl_renderloop[] = (screen) -> nothing. would have to test this. 
