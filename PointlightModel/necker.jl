@@ -27,10 +27,6 @@ rotator = z_rotator * x_rotator
 rotated_verts = [rotator * v for v in vertices]
 rotated_mesh = GeometryBasics.Mesh(rotated_verts, faces)
 
-struct Rotator
-    euler_axis::Vec
-    rot_radians::Float64
-end
     
 cube_prim = GeometryBasics.Rect(Vec(-.5, -.5, -.5), Vec(1.0, 1.0, 1.0)) # origin and side size
 sphere_prim = GeometryBasics.Sphere(Point3(0.0, 0.0, 0.0), 1) # origin, radius
@@ -44,13 +40,20 @@ shape_types = [cube_prim, sphere_prim, cylinder_prim]
     rotation_x = { :rot_x } ~ uniform(0, π)
     rotation_y = { :rot_y } ~ uniform(0, π)
     rotation_z = { :rot_z } ~ uniform(0, π / 2)
-    
-    
-    mesh_to_grid = scene2image(mesh_ax.scene)[1]
-    noisy_image = ({ :image_2D } ~ noisy_matrix(blurred_depth_image, 0.1))
+    axis3_vectors = [Vec(1.0, 0.0, 0.0),
+                     Vec(0.0, 1.0, 0.0),
+                     Vec(0.0, 0.0, 1.0)]
+    quat_rotations = [qrotation(v, r) for (v, r) in zip(
+        axis3_vectors, [rotation_x, rotation_y, rotation_z])]
+    rotation_quaternion = reduce(*, quat_rotations)
+    mesh_ax = render_static_mesh(shape, rotation_quaternion, "wire")
+    mesh_to_grid = GLMakie.scene2image(mesh_ax.scene)[1]
+    println(typeof(mesh_to_grid))
+    convert(Matrix{Float64}, mesh_to_grid)
+#    noisy_image = ({ :image_2D } ~ noisy_matrix(mesh_to_grid, 0.1))
 end
 
-function render_static_wireframe(mesh, rotation::Rotator, mesh_or_wire::String)
+function render_static_mesh(mesh, rotation::Quaternion{Float64}, mesh_or_wire::String)
     white = RGBAf0(255, 255, 255, 0.0)
     if mesh_or_wire == "wire"
         mesh_fig, mesh_axis = GLMakie.wireframe(cube_prim, color=:skyblue2)
@@ -60,7 +63,7 @@ function render_static_wireframe(mesh, rotation::Rotator, mesh_or_wire::String)
     meshscene = mesh_axis.scene[end]
     screen = display(mesh_fig)
     remove_axis_from_scene(mesh_axis)
-    rotate!(meshscene, qrotation(rotation.euler_axis, rotation.rot_radians))
+    rotate!(meshscene, rotation)
     return mesh_axis
 end    
     
