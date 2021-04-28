@@ -1,6 +1,7 @@
 using GLMakie
 using Gen
 using GenGridEnumeration
+using OrderedCollections
 #using LinearAlgebra
 using Random
 using Statistics
@@ -18,7 +19,7 @@ using Images
 
 
 
-
+@dist labeled_cat(labels, weights) = labels[categorical(weights)]
 
 function make_cube_mesh(sidelen::Float64)
     vertices = sidelen*Point{3, Float64}[
@@ -60,6 +61,21 @@ function make_tetrahedron_mesh(sidelen::Float64)
 end
 
     
+function enumeration_inference(two_d_projection)
+    constraints = Gen.choicemap((:image_2D, two_d_projection))
+    tr, w = Gen.generate(primitive_shapes, (), constraints)
+    g = UniformPointPushforwardGrid(tr, OrderedDict(
+        :shape_choice => DiscreteSingletons([:cube, :tetrahedron]),
+        :side_length => DiscreteSingletons([1, 2]),
+        :rot_x => DiscreteSingletons(collect(0:.1:π)),
+        :rot_y => DiscreteSingletons(collect(0:.1:π)),
+        :rot_z => DiscreteSingletons(collect(0:.1:π))))
+    return g
+end
+    
+    
+
+    
     
 
 
@@ -67,12 +83,10 @@ end
 # can also get positions w/out going to mesh first if you want to. i.e. vertices = decompose(Point3, cube_prim)
 # can construct a primitive as well w/ a set of vertices (i.e. 
 
-
+#camera(mesh_axis.scene).eyeposition
 
 sphere_prim = GeometryBasics.Sphere(Point3(0.0, 0.0, 0.0), 1) # origin, radius
 cylinder_prim = Cylinder(Point3(0.0, 0.0, 0.0), Point3(0.0,0.0,1.0), 1.0) #(origin, normal vector, width)
-shape_types = ["cube", "tetrahedron"]
-@dist choose_shape() = shape_types[categorical([1/2, 1/2])]
 
 function shape_wrap()
     trace = Gen.simulate(primitive_shapes, ())
@@ -82,24 +96,23 @@ function shape_wrap()
     
     #    two_d_grid = fig[1,2]
     # have to add image! to the figure
-    im = Gray.(projected_grid)
-    save("test.png", im)
+#    im = Gray.(projected_grid)
+    save("test.png", projected_grid)
     display(mesh_axis.scene)
-    return shape
+    return shape, mesh_axis
 end
                                    
 @gen function primitive_shapes()
-    shape_type = { :shape_choice } ~ choose_shape()
+    shape_type = { :shape_choice } ~ labeled_cat([:cube, :tetrahedron], [1/2, 1/2])
     side_length = { :side_length } ~ uniform_discrete(1,2)
-    println(shape_type)
-    if shape_type == "cube"
+    if shape_type == :cube
         shape = make_cube_mesh(convert(Float64, side_length))
-    elseif shape_type == "tetrahedron"
+    elseif shape_type == :tetrahedron
         shape = make_tetrahedron_mesh(convert(Float64, side_length))
     end
     rotation_x = { :rot_x } ~ uniform(0, 0)
     rotation_y = { :rot_y } ~ uniform(0, 0)
-    rotation_z = { :rot_z } ~ uniform(0, 1)
+    rotation_z = { :rot_z } ~ uniform(0, π)
     axis3_vectors = [Vec(1.0, 0.0, 0.0),
                      Vec(0.0, 1.0, 0.0),
                      Vec(0.0, 0.0, 1.0)]
@@ -110,7 +123,7 @@ end
     mesh_ax.scene.center = false
 #    display(mesh_ax.scene)
  #   sleep(5)
-    projected_grid = scene_to_matrix(GLMakie.scene2image(mesh_ax.scene)[1].parent)
+    projected_grid = scene_to_matrix(mesh_ax)
     noisy_image = ({ :image_2D } ~ noisy_matrix(projected_grid, 0.1))
     return mesh_ax, noisy_image, shape
 end
@@ -129,11 +142,12 @@ function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::
     return mesh_axis
 end    
 
-function scene_to_matrix(rgb_grid)
-    gray_matrix = zeros(size(rgb_grid)[2], size(rgb_grid)[1])
-    for i in 1:size(rgb_grid)[1]
-        for j in 1:size(rgb_grid)[2]
-            gray_matrix[j, i] = convert(Float64, rgb_grid[i, j].b)
+function scene_to_matrix(mesh_ax)
+    gray_grid = Gray.(GLMakie.scene2image(mesh_ax.scene)[1].parent)
+    gray_matrix = zeros(size(gray_grid)[2], size(gray_grid)[1])
+    for i in 1:size(gray_grid)[1]
+        for j in 1:size(gray_grid)[2]
+            gray_matrix[j, i] = convert(Float64, gray_grid[i, j])
         end
     end
     return gray_matrix
