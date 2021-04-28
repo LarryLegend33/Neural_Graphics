@@ -97,9 +97,9 @@ end
     elseif shape_type == "tetrahedron"
         shape = make_tetrahedron_mesh(convert(Float64, side_length))
     end
-    rotation_x = { :rot_x } ~ uniform(0, π)
-    rotation_y = { :rot_y } ~ uniform(0, π)
-    rotation_z = { :rot_z } ~ uniform(0, π / 2)
+    rotation_x = { :rot_x } ~ uniform(0, 0)
+    rotation_y = { :rot_y } ~ uniform(0, 0)
+    rotation_z = { :rot_z } ~ uniform(0, 1)
     axis3_vectors = [Vec(1.0, 0.0, 0.0),
                      Vec(0.0, 1.0, 0.0),
                      Vec(0.0, 0.0, 1.0)]
@@ -123,17 +123,17 @@ function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::
         mesh_fig, mesh_axis = GLMakie.mesh(shape, color=:skyblue2)
     end
     meshscene = mesh_axis.scene[end]
-#    screen = display(mesh_fig)
+    screen = display(mesh_fig)
     remove_axis_from_scene(mesh_axis)
     rotate!(meshscene, rotation)
     return mesh_axis
 end    
 
 function scene_to_matrix(rgb_grid)
-    gray_matrix = zeros(size(rgb_grid))
+    gray_matrix = zeros(size(rgb_grid)[2], size(rgb_grid)[1])
     for i in 1:size(rgb_grid)[1]
         for j in 1:size(rgb_grid)[2]
-            gray_matrix[i, j] = convert(Float64, rgb_grid[i, j].b)
+            gray_matrix[j, i] = convert(Float64, rgb_grid[i, j].b)
         end
     end
     return gray_matrix
