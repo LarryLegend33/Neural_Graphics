@@ -98,7 +98,11 @@ function shape_wrap()
     display(mesh_axis.scene)
     return trace
 end
-                                   
+
+
+# Use Axis3D objects and Figure declarations. Axis3D just needs to take the figure as an arg. 
+
+
 @gen function primitive_shapes()
     shape_type = { :shape_choice } ~ labeled_cat([:cube, :tetrahedron], [1/2, 1/2])
     side_length = { :side_length } ~ uniform_discrete(1,2)
@@ -129,10 +133,11 @@ end
 
 function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::String)
     white = RGBAf0(255, 255, 255, 0.0)
+    res = 50
     if mesh_or_wire == "wire"
-        mesh_fig, mesh_axis = GLMakie.wireframe(shape, color=:black)
+        mesh_fig, mesh_axis = GLMakie.wireframe(shape, color=:black, resolution=(res, res))
     elseif mesh_or_wire == "mesh"
-        mesh_fig, mesh_axis = GLMakie.mesh(shape, color=:skyblue2)
+        mesh_fig, mesh_axis = GLMakie.mesh(shape, color=:skyblue2, resolution=(res,res))
     end
     meshscene = mesh_axis.scene[end]
 #    screen = display(mesh_fig)
@@ -230,6 +235,8 @@ function makie_plot_grid(g::UniformPointPushforwardGrid,
     display(f)
     return ax
 end
+
+
     
 struct NoisyMatrix <: Gen.Distribution{Matrix{Float64}} end
 
