@@ -7,7 +7,7 @@ using Random
 using Statistics
 using StatsBase
 using GeometryBasics
-using Images
+import Images: load, Gray
 
 # note there are residual types in Makie from GeometryTypes, which is
 # deprecated in favor of GeometryBasics
@@ -16,7 +16,6 @@ using Images
 # will redefine GLMakie.mesh and wireframe to take Shape objects and render them.
 # will be able to compose composite shapes using the kernel func type trees. also then
 # assign translations and rotations using the function composition from pointlight. 
-
 
 
 @dist labeled_cat(labels, weights) = labels[categorical(weights)]
@@ -61,24 +60,22 @@ function make_tetrahedron_mesh(sidelen::Float64)
 end
 
     
-function enumeration_inference(two_d_projection)
+function enumeration_inference(input_trace)
+    two_d_projection = input_trace[:image_2D]
     constraints = Gen.choicemap((:image_2D, two_d_projection))
     tr, w = Gen.generate(primitive_shapes, (), constraints)
     g = UniformPointPushforwardGrid(tr, OrderedDict(
         :shape_choice => DiscreteSingletons([:cube, :tetrahedron]),
         :side_length => DiscreteSingletons([1, 2]),
         :rot_x => DiscreteSingletons(collect(0:.1:π)),
-        :rot_y => DiscreteSingletons(collect(0:.1:π)),
+      #  :rot_y => DiscreteSingletons(collect(0:1:π)),
         :rot_z => DiscreteSingletons(collect(0:.1:π))))
+    makie_plot_grid(g, :rot_x, :rot_z)
+    println(input_trace[:rot_x])
+    println(input_trace[:rot_z])
     return g
 end
     
-    
-
-    
-    
-
-
 
 # can also get positions w/out going to mesh first if you want to. i.e. vertices = decompose(Point3, cube_prim)
 # can construct a primitive as well w/ a set of vertices (i.e. 
@@ -99,7 +96,7 @@ function shape_wrap()
 #    im = Gray.(projected_grid)
     save("test.png", projected_grid)
     display(mesh_axis.scene)
-    return shape, mesh_axis
+    return trace
 end
                                    
 @gen function primitive_shapes()
@@ -110,14 +107,16 @@ end
     elseif shape_type == :tetrahedron
         shape = make_tetrahedron_mesh(convert(Float64, side_length))
     end
-    rotation_x = { :rot_x } ~ uniform(0, 0)
-    rotation_y = { :rot_y } ~ uniform(0, 0)
+    rotation_x = { :rot_x } ~ uniform(0, π)
+#    rotation_y = { :rot_y } ~ uniform(0, 0)
     rotation_z = { :rot_z } ~ uniform(0, π)
     axis3_vectors = [Vec(1.0, 0.0, 0.0),
-                     Vec(0.0, 1.0, 0.0),
+                 #    Vec(0.0, 1.0, 0.0),
                      Vec(0.0, 0.0, 1.0)]
+#    quat_rotations = [qrotation(v, r) for (v, r) in zip(
+ #       axis3_vectors, [rotation_x, rotation_y, rotation_z])]
     quat_rotations = [qrotation(v, r) for (v, r) in zip(
-        axis3_vectors, [rotation_x, rotation_y, rotation_z])]
+        axis3_vectors, [rotation_x, rotation_z])]
     rotation_quaternion = reduce(*, quat_rotations)
     mesh_ax = render_static_mesh(shape, rotation_quaternion, "wire")
     mesh_ax.scene.center = false
@@ -136,7 +135,7 @@ function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::
         mesh_fig, mesh_axis = GLMakie.mesh(shape, color=:skyblue2)
     end
     meshscene = mesh_axis.scene[end]
-    screen = display(mesh_fig)
+#    screen = display(mesh_fig)
     remove_axis_from_scene(mesh_axis)
     rotate!(meshscene, rotation)
     return mesh_axis
@@ -183,7 +182,54 @@ function remove_axis_from_scene(mesh_axis)
 end
 
 
-
+function makie_plot_grid(g::UniformPointPushforwardGrid,
+                         x_addr, y_addr;
+                         title::String="Cell weights and representative points")
+    @assert x_addr != y_addr
+    partitions = Dict(
+        x_addr => g.addr2partition[x_addr],
+        y_addr => g.addr2partition[y_addr])
+    repss = Dict()
+    valss = Dict()
+    sub_boundss = Dict()
+    for (addr, prt) in partitions
+        if prt isa DiscreteSingletons
+            valss[addr] = all_representatives(prt)
+            repss[addr] = 1:length(valss[addr])
+            sub_boundss[addr] = 1//2 : 1 : length(valss[addr]) + 1//2
+        else
+            repss[addr] = all_representatives(prt)
+            sub_bounds = all_subinterval_bounds(prt)
+            clip_to_finite!(sub_bounds, lower=minimum(repss[addr]) - 5,
+                            upper=maximum(repss[addr]) + 5)
+            sub_boundss[addr] = sub_bounds
+        end
+    end
+    w = let w_ = GenGridEnumeration.weights(g)
+        addrs = collect(keys(g.addr2partition))
+        (x_ind, y_ind) = indexin([x_addr, y_addr], addrs)
+        dims = Tuple(setdiff(1:length(addrs), [x_ind, y_ind]))
+        w = dropdims(sum(w_; dims=dims); dims=dims)
+        x_ind < y_ind ? w : w'
+    end
+    (x_heavy, y_heavy) = let (i_x, i_y) = Tuple(argmax(w))
+        (repss[x_addr][i_x], repss[y_addr][i_y])
+    end
+    println("making heatmap")
+    f = Figure(resolution = (800, 600))
+    ax = GLMakie.Axis(f[1, 1])
+    ax.xlabel = string(x_addr)
+    ax.ylabel = string(y_addr)
+    if x_addr ∈ keys(valss)
+        ax.xticks = (1:length(valss[x_addr]), [string(round(v, digits=2)) for v in valss[x_addr]])
+    end
+    if y_addr ∈ keys(valss)
+        ax.yticks = (1:length(valss[y_addr]), [string(round(v, digits=2)) for v in valss[y_addr]])
+    end
+    heatmap!(ax, float(collect(sub_boundss[x_addr])), float(collect(sub_boundss[y_addr])), w')
+    display(f)
+    return ax
+end
     
 struct NoisyMatrix <: Gen.Distribution{Matrix{Float64}} end
 
@@ -252,3 +298,10 @@ end
 # this is a list that connects indices of vertices to each other w/ a triangle
 
 #cube_mesh = GeometryBasics.Mesh(vertices, faces)
+
+# for speed i think we want to switch to colorbuffer(scene) instead of screen2image.
+# for screen to image, you have to display the scene, which takes time. 
+
+
+
+
