@@ -225,15 +225,15 @@ function dotwrap(constraints::Gen.DynamicChoiceMap)
     (trace, weight) = Gen.generate(generate_dot_scene, 
                                    (timepoints,),  
                                    constraints)
-    #    dotwrap(trace, choicemap())
-#    render_dotmotion(trace, true, true)
+#    dotwrap(trace, choicemap())
+    render_dotmotion(trace, true, true)
     return trace, weight
 end
                  
 function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints::Gen.DynamicChoiceMap)
     args = get_args(trace)
     (updated_trace, w, retdiff, discard) = Gen.update(trace, args, (), constraints)
-   # render_dotmotion(updated_trace, true, true)
+    render_dotmotion(updated_trace, true, true)
 #    @spawn render_dotmotion(updated_trace, false)
 #    ax = visualize_scenegraph(scenegraph, get_choices(updated_trace))
     # s = Scene()

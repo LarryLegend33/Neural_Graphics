@@ -88,15 +88,10 @@ cylinder_prim = Cylinder(Point3(0.0, 0.0, 0.0), Point3(0.0,0.0,1.0), 1.0) #(orig
 function shape_wrap()
     trace = Gen.simulate(primitive_shapes, ())
     fig = Figure()
-    mesh_axis, projected_grid, shape = get_retval(trace)
-    #    fig[1,1] = mesh_axis
-    
-    #    two_d_grid = fig[1,2]
-    # have to add image! to the figure
-#    im = Gray.(projected_grid)
+    mesh_fig, projected_grid, shape = get_retval(trace)
     save("test.png", projected_grid)
-    display(mesh_axis.scene)
-    return trace
+    display(mesh_fig)
+    return trace, mesh_fig
 end
 
 
@@ -122,32 +117,35 @@ end
     quat_rotations = [qrotation(v, r) for (v, r) in zip(
         axis3_vectors, [rotation_x, rotation_z])]
     rotation_quaternion = reduce(*, quat_rotations)
-    mesh_ax = render_static_mesh(shape, rotation_quaternion, "wire")
-    mesh_ax.scene.center = false
-#    display(mesh_ax.scene)
- #   sleep(5)
-    projected_grid = scene_to_matrix(mesh_ax)
+    mesh_render = render_static_mesh(shape, rotation_quaternion, "wire")
+    mesh_render.scene.center = false
+    projected_grid = scene_to_matrix(mesh_render)
     noisy_image = ({ :image_2D } ~ noisy_matrix(projected_grid, 0.1))
-    return mesh_ax, noisy_image, shape
+    return mesh_render, noisy_image, shape
 end
 
 function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::String)
     white = RGBAf0(255, 255, 255, 0.0)
-    res = 50
+    res = 150
+    mesh_fig = Figure(resolution=(res, res), figure_padding=0)
+    lim = [(-1.5, -1.5, -1.5), (1.5, 1.5, 1.5)]
+    # note perspectiveness variable is 0.0 for orthographic, 1.0 for perspective, .5 for intermediate
+    mesh_axis = Axis3(mesh_fig[1,1], xtickcolor=white,
+                      viewmode=:fit, aspect=:data, perspectiveness=0.0)
     if mesh_or_wire == "wire"
-        mesh_fig, mesh_axis = GLMakie.wireframe(shape, color=:black, resolution=(res, res))
+        wireframe!(mesh_axis, shape, color=:black)
     elseif mesh_or_wire == "mesh"
-        mesh_fig, mesh_axis = GLMakie.mesh(shape, color=:skyblue2, resolution=(res,res))
+        mesh!(mesh_axis, shape, color=:skyblue2)
     end
     meshscene = mesh_axis.scene[end]
-#    screen = display(mesh_fig)
-    remove_axis_from_scene(mesh_axis)
     rotate!(meshscene, rotation)
-    return mesh_axis
+    hidedecorations!(mesh_axis)
+    hidespines!(mesh_axis)
+    return mesh_fig
 end    
 
-function scene_to_matrix(mesh_ax)
-    gray_grid = Gray.(GLMakie.scene2image(mesh_ax.scene)[1].parent)
+function scene_to_matrix(mesh_fig)
+    gray_grid = Gray.(GLMakie.scene2image(mesh_fig.scene)[1].parent)
     gray_matrix = zeros(size(gray_grid)[2], size(gray_grid)[1])
     for i in 1:size(gray_grid)[1]
         for j in 1:size(gray_grid)[2]
@@ -178,7 +176,8 @@ end
 
 function remove_axis_from_scene(mesh_axis)
     white = RGBAf0(255, 255, 255, 0.0)
-    threeDaxis = mesh_axis.scene[OldAxis]
+    threeDaxis = mesh_axis.scene
+#    threeDaxis = mesh_axis.scene[OldAxis]
     threeDaxis[:showgrid] = (false, false, false)
     threeDaxis[:showaxis] = (false, false, false)
     threeDaxis[:ticks][:textcolor] = (white, white, white)
