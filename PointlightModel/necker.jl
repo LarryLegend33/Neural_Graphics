@@ -61,12 +61,12 @@ end
 
     
 function enumeration_inference(input_trace)
-    two_d_projection = input_trace[:image_2D]
-    constraints = Gen.choicemap((:image_2D, two_d_projection))
+    constraint_syms = [:image_2D, :shape_choice]
+    constraints = Gen.choicemap([(sym, input_trace[sym]) for sym in constraint_syms]...)
     tr, w = Gen.generate(primitive_shapes, (), constraints)
     g = UniformPointPushforwardGrid(tr, OrderedDict(
-        :shape_choice => DiscreteSingletons([:cube, :tetrahedron]),
-        :side_length => DiscreteSingletons([1, 2]),
+#        :shape_choice => DiscreteSingletons([:cube, :tetrahedron]),
+ #       :side_length => DiscreteSingletons([1, 2]),
         :rot_x => DiscreteSingletons(collect(0:.1:π)),
       #  :rot_y => DiscreteSingletons(collect(0:1:π)),
         :rot_z => DiscreteSingletons(collect(0:.1:π))))
@@ -100,7 +100,8 @@ end
 
 @gen function primitive_shapes()
     shape_type = { :shape_choice } ~ labeled_cat([:cube, :tetrahedron], [1/2, 1/2])
-    side_length = { :side_length } ~ uniform_discrete(1,2)
+    #    side_length = { :side_length } ~ uniform_discrete(1,2)
+    side_length = 1.0
     if shape_type == :cube
         shape = make_cube_mesh(convert(Float64, side_length))
     elseif shape_type == :tetrahedron
@@ -126,7 +127,7 @@ end
 
 function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::String)
     white = RGBAf0(255, 255, 255, 0.0)
-    res = 150
+    res = 300
     mesh_fig = Figure(resolution=(res, res), figure_padding=0)
     lim = [(-1.5, -1.5, -1.5), (1.5, 1.5, 1.5)]
     # note perspectiveness variable is 0.0 for orthographic, 1.0 for perspective, .5 for intermediate
@@ -157,7 +158,6 @@ end
 
 function animate_mesh_rotation(shape, rotations)
     time_node = Node(1);
-  
     f(t, rotations) = qrotation(rotations[t]...)
     mesh_fig, mesh_axis = GLMakie.wireframe(shape, color=:black)
     meshscene = mesh_axis.scene[end]
@@ -220,7 +220,7 @@ function makie_plot_grid(g::UniformPointPushforwardGrid,
         (repss[x_addr][i_x], repss[y_addr][i_y])
     end
     println("making heatmap")
-    f = Figure(resolution = (800, 600))
+    f = Figure(resolution = (1600, 800))
     ax = GLMakie.Axis(f[1, 1])
     ax.xlabel = string(x_addr)
     ax.ylabel = string(y_addr)
@@ -230,7 +230,7 @@ function makie_plot_grid(g::UniformPointPushforwardGrid,
     if y_addr ∈ keys(valss)
         ax.yticks = (1:length(valss[y_addr]), [string(round(v, digits=2)) for v in valss[y_addr]])
     end
-    heatmap!(ax, float(collect(sub_boundss[x_addr])), float(collect(sub_boundss[y_addr])), w')
+    heatmap!(ax, float(collect(sub_boundss[x_addr])), float(collect(sub_boundss[y_addr])), w', colormap=:thermal)
     display(f)
     return ax
 end
