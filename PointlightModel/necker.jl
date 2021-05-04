@@ -8,6 +8,7 @@ using Statistics
 using StatsBase
 using GeometryBasics
 import Images: load, Gray
+using ImageFiltering
 
 # note there are residual types in Makie from GeometryTypes, which is
 # deprecated in favor of GeometryBasics
@@ -18,7 +19,33 @@ import Images: load, Gray
 # assign translations and rotations using the function composition from pointlight. 
 
 
+# gaussian blur in the model before running the likelihood model
+# class of likelihood models that are better than pixel space
+# essentially based on edge detection -- take image and produce a list of
+# points w/ a coordinate along edges. points dont have IDs. rendering is doing a job. run edge detector that returns points along hte line. consider two sets of points to compare. chamfer distance between the points. what is likelihood of these points wrt the ones i generated? given the rendered points, how do you simulate data? one way of doing it is sampling N points you will generate. randomly pick an input point, add noise. mixture of gaussians of points. gives low weight to far away points. NxM input and output points in terms of computaiton. could compute w/ KD trees w/ pointcloud. grey noise or salt and pepper binary noise. no guidance towards answer. unless its coarse . relative to bottom up neural net. chamfer distance on point clouds. depth image: if you've got one, how do you score a synthetic depth image vs. observed one -- in a better way than just comparing w/ gaussians. pixel wise robust. distribution on scales of the 3D model. each section of 3D model has a name and identity: wheel, hull, exhaust pipe. points in 3D space; you render those and get 2D projections.
+
+# given distance and fit to the 2D projection, its one thing. given fit to the 2D projection and another distance its another thing. knowledge of the rendering process -- this is common sense. big or small. what happens inside the generative model vs. the raw sensor. then there's the rest of your high level stuff. depth image is feedforward. separate from everything going on with the RGB image. chamfer distance marginalizing over all correspondences. multi object tracking work -- much more in depth into that problem. 
+
+
+
+# Currently coming up w/ the inverted explanation b/c of the way images and matricies are described.
+
+
+# cube vs. pyramid -- probability
+# mesh vs wireframe -- add in possibility of giving random images.
+# make visualization w/ fixed axis after talking to ben
+# pick an outlier shape.
+# output binary. how small grid can be how small bins can be.
+# mh inside ben's example.
+# each pixel is a binary value. space of values has to be discrete.
+# noise model -- bit flipping by box. boxfilter > 4, bernouli = num_filed / 9.
+# map in dynamic DSL. try julia conv
+
+
+
 @dist labeled_cat(labels, weights) = labels[categorical(weights)]
+
+@dist uniform_discrete_floats(value_range) = value_range[uniform_discrete(1,length(value_range))]
 
 function make_cube_mesh(sidelen::Float64)
     vertices = sidelen*Point{3, Float64}[
@@ -107,8 +134,10 @@ end
     elseif shape_type == :tetrahedron
         shape = make_tetrahedron_mesh(convert(Float64, side_length))
     end
-    rotation_x = { :rot_x } ~ uniform(0, π)
 #    rotation_y = { :rot_y } ~ uniform(0, 0)
+#    rotation_x = { :rot_x } ~ uniform_discrete_floats(0:.1:π)
+#    rotation_z = { :rot_z } ~ uniform_discrete_floats(0:.1:π)
+    rotation_x = { :rot_x } ~ uniform(0, π)
     rotation_z = { :rot_z } ~ uniform(0, π)
     axis3_vectors = [Vec(1.0, 0.0, 0.0),
                  #    Vec(0.0, 1.0, 0.0),
@@ -121,9 +150,15 @@ end
     mesh_render = render_static_mesh(shape, rotation_quaternion, "wire")
     mesh_render.scene.center = false
     projected_grid = scene_to_matrix(mesh_render)
-    noisy_image = ({ :image_2D } ~ noisy_matrix(projected_grid, 0.1))
+    noisy_image = {*} ~ generate_pixel_noise(projected_grid, .01)
     return mesh_render, noisy_image, shape
 end
+
+@gen function generate_pixel_noise(grid, noiselevel)
+    blurred_grid = imfilter(grid, Kernel.gaussian(3))
+    noisy_image = ({ :image_2D } ~ noisy_matrix(blurred_grid, 0.1))
+    return noisy_image
+end    
 
 function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::String)
     white = RGBAf0(255, 255, 255, 0.0)
