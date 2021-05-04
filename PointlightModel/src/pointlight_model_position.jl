@@ -1,3 +1,4 @@
+import AbstractPlotting: Axis
 using GLMakie
 using Gen
 using GenGridEnumeration
