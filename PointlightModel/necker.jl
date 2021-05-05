@@ -155,19 +155,24 @@ end
 end
 
 @gen function generate_pixel_noise(grid, noiselevel)
-    blurred_grid = imfilter(grid, Kernel.gaussian(3))
+    blurred_grid = imfilter(grid, Kernel.gaussian(1))
     noisy_image = ({ :image_2D } ~ noisy_matrix(blurred_grid, 0.1))
     return noisy_image
 end    
 
 function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::String)
     white = RGBAf0(255, 255, 255, 0.0)
-    res = 300
-    mesh_fig = Figure(resolution=(res, res), figure_padding=0)
-    lim = [(-1.5, -1.5, -1.5), (1.5, 1.5, 1.5)]
+    res = 100
+    mesh_fig = Figure(resolution=(res, res), figure_padding=-50)
+    limval = 1.0
+    lim = [(-limval, -limval, -limval), (limval, limval, limval)]
     # note perspectiveness variable is 0.0 for orthographic, 1.0 for perspective, .5 for intermediate
     mesh_axis = Axis3(mesh_fig[1,1], xtickcolor=white,
-                      viewmode=:fit, aspect=:data, perspectiveness=0.0)
+                      viewmode=:fit, aspect=(1,1,1), perspectiveness=0.0, protrusions=0)
+
+
+
+
     if mesh_or_wire == "wire"
         wireframe!(mesh_axis, shape, color=:black)
     elseif mesh_or_wire == "mesh"
