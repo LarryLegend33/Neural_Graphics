@@ -1,8 +1,6 @@
 using AbstractPlotting
-using MakieLayout
-using StatsMakie
 using DataFrames, RDatasets
-using StatsMakie: linear, smooth
+using AlgebraOfGraphics: linear, smooth
 using GLMakie
 using LightGraphs
 using MetaGraphs

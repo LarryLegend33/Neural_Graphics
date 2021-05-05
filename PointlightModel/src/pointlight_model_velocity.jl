@@ -1,7 +1,5 @@
 using Makie
 using AbstractPlotting
-using StatsMakie
-using MakieLayout
 using Gen
 using LinearAlgebra
 using LightGraphs
