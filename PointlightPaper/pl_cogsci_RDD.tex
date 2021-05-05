@@ -27,17 +27,15 @@
 
 \maketitle
 
-Qs for reader:
-
-1. If considering this task as bayesian inference, does it make sense to pool humans (i.e. study bayes at the population level) or ask the humans for second and third interpretations of the scene (i.e. ``it might be X, but it could be Y''). This would be bayes at the individual level. I think I balanced this with the confidence metric, but would like to know if that's convincing. 
-
-2. General appropriateness of the approach / alternative approaches that might be powerful that I don't know about.
-
-3. Any additional analysis or future directions that may be interesting. 
 
 \section{Abstract}
 \begin{abstract}
-  Changes in the intensity, qualities, or position of a stimulus over time can significantly affect how humans interpret its meaning. One example of this comes from Gunnar Johansson's work on point light walkers, which revealed that ambiguous arrangements of only a few stationary dots can induce striking perceptions of humans when set in biologically realistic motion. Here, we seek to further elucidate how perceptual meaning arises from the integration of common motion cues observed both in physics and everyday life. Specifically, using the probabilistic programming system Gen, we have created a model that stochastically composes dynamic dot scenes. This Gaussian Process based model first assigns a primitive motion type to each dot (Random Walk, Periodic, or Uniform Linear), then generates a directed scene graph that describes inheritance of motion from one dot to another. In this way, more complex motion is formulated via groupings of dots that share common motion features and suggest unified objects. 
+  The pattern of an object's motion over time can significantly affect how animals and humans interpret its meaning. For example,
+
+  
+
+
+  One example of this comes from Gunnar Johansson's work on point light walkers, which revealed that ambiguous arrangements of only a few stationary dots can induce striking perceptions of humans when set in biologically realistic motion. Here, we seek to further elucidate how perceptual meaning arises from the integration of common motion cues observed both in physics and everyday life. Specifically, using the probabilistic programming system Gen, we have created a model that stochastically composes dynamic dot scenes. This Gaussian Process based model first assigns a primitive motion type to each dot (Random, Periodic, or Linear), then generates a directed scene graph that describes inheritance of motion from one dot to another. In this way, more complex motion is formulated via groupings of dots that share common motion features and suggest unified objects. 
   
   We posit that the model we have constructed may mirror the human cognitive processes involved in dot motion perception. To this end, we have developed an automated task where dot patterns generated from our model are shown to human subjects. It is the job of the subject to infer the motion type assigned to each dot and decide which dots belong to which groups (i.e. infer the scene graph). Once human data has been collected, human performance will be compared to an ideal bayesian observer and importance resampling posteriors that are constrained on only the observation of position and motion of the dots. Overall, we propose that the Gaussian Process abstraction we have implemented enables accurate and explicit reasoning about dot motion scenes, providing a framework for explaining percepts that emerge from random dot patterns.
 
@@ -93,6 +91,14 @@ A set of phenomena observed in past literature and in our own experiences with o
 
 \begin{equation}
   Timeseries \; Draw: ts_j \sim P(ts_j | k_j, \epsillon_j, ts_i \; if \; edge_{ij} == true)
+\end{equation}
+
+\begin{equation}
+    p(h_{i}) = \sum_{j} p(h_{i},d_{j})
+\end{equation}
+
+\begin{equation}
+P\left( x \right) = \frac{{e^{ - \lambda } \lambda ^x }}{{x!}}
 \end{equation}
 
 
@@ -187,13 +193,8 @@ A set of phenomena observed in past literature and in our own experiences with o
 
 
     
-
-    % If{$has\_parent(edge[Child])$}
-    %   {$add\_edge \leftarrow \BERNOULLI(.1)$}
-    % Else{$add\_edge \leftarrow \BERNOULLI(.3)$}}}
-        
   
-  
+ \section{Inference Strategies}  
 
 
 

@@ -7,3 +7,17 @@
    Pkg.add(Pkg.PackageSpec(; path="/Users/nightcrawler2/GenGridEnumeration")) in my pointlight model project repo. Worked w/ a using command. 
 
 
+** full Makie fail after update to GLMakie 2.8. tests all immediately fail and no menial example works. upgraded julia via brew to 1.6.1. made a dummy folder w/ a fresh project and manifest toml and installed GLMakie. a lot more happened w/ the install after the julia update vs. before. immediately got renders of most plots during tests onscreen. 
+* Setting up George Library
+For circuits and spiking circuits library - clone it locally. Then forked the spikinginferencecircuits repo into larrylegend and cloned it to my computer. added george's main repo as the upstream remote of my fork using 
+
+git remote add upstream GEORGE'S REPO ADDRESS
+
+to synch to george's changes, use:
+
+git fetch upstream
+git checkout main (this switches to my main branch)
+git merge upstream/main
+
+(This brings your fork's default branch into sync with the upstream repository, without losing your local changes.)
+

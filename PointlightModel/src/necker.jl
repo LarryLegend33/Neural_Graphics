@@ -169,10 +169,6 @@ function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::
     # note perspectiveness variable is 0.0 for orthographic, 1.0 for perspective, .5 for intermediate
     mesh_axis = Axis3(mesh_fig[1,1], xtickcolor=white,
                       viewmode=:fit, aspect=(1,1,1), perspectiveness=0.0, protrusions=0)
-
-
-
-
     if mesh_or_wire == "wire"
         wireframe!(mesh_axis, shape, color=:black)
     elseif mesh_or_wire == "mesh"
