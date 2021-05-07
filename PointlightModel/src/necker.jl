@@ -8,6 +8,10 @@ using StatsBase
 using GeometryBasics
 import Images: load, Gray
 using ImageFiltering
+knl = ImageFiltering.Kernel
+
+greet() = Hello!
+
 
 # note there are residual types in Makie from GeometryTypes, which is
 # deprecated in favor of GeometryBasics
@@ -16,6 +20,7 @@ using ImageFiltering
 # will redefine GLMakie.mesh and wireframe to take Shape objects and render them.
 # will be able to compose composite shapes using the kernel func type trees. also then
 # assign translations and rotations using the function composition from pointlight. 
+
 
 
 # gaussian blur in the model before running the likelihood model
@@ -86,7 +91,7 @@ function make_tetrahedron_mesh(sidelen::Float64)
 end
 
     
-function enumeration_inference(input_trace)
+function enumeration_grid(input_trace)
     constraint_syms = [:image_2D, :shape_choice]
     constraints = Gen.choicemap([(sym, input_trace[sym]) for sym in constraint_syms]...)
     tr, w = Gen.generate(primitive_shapes, (), constraints)
@@ -101,7 +106,18 @@ function enumeration_inference(input_trace)
     println(input_trace[:rot_z])
     return g
 end
-    
+
+function grid_mh_inference(input_trace)
+    constraint_syms = [:image_2D, :shape_choice]
+    constraints = Gen.choicemap([(sym, input_trace[sym]) for sym in constraint_syms]...)
+    tr, w = Gen.generate(primitive_shapes, (), constraints)
+    (new_tr, did_accept, grid, I_chosen, p_accept) = GenGridEnumeration.grid_drift_mh(
+        tr,
+        OrderedDict(:rot_x => IntervalPartition(),
+                    :rot_z => IntervalPartition(), 
+        OrderedDict{Symbol, DiscreteSingletons}())
+    (did_accept, p_accept)
+end
 
 # can also get positions w/out going to mesh first if you want to. i.e. vertices = decompose(Point3, cube_prim)
 # can construct a primitive as well w/ a set of vertices (i.e. 
@@ -161,20 +177,20 @@ end
 
 function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::String)
     white = RGBAf0(255, 255, 255, 0.0)
-    res = 100
+    res = 50
     mesh_fig = Figure(resolution=(res, res), figure_padding=-50)
-    limval = 1.0
-    lim = [(-limval, -limval, -limval), (limval, limval, limval)]
+    limval = 2.0
+    lim = (-limval, limval, -limval, limval, -limval, limval)
     # note perspectiveness variable is 0.0 for orthographic, 1.0 for perspective, .5 for intermediate
     mesh_axis = Axis3(mesh_fig[1,1], xtickcolor=white,
-                      viewmode=:fit, aspect=(1,1,1), perspectiveness=0.0, protrusions=0)
+                      viewmode=:fit, aspect=(1,1,1), perspectiveness=0.0, protrusions=0, limits=lim)
     if mesh_or_wire == "wire"
         wireframe!(mesh_axis, shape, color=:black)
     elseif mesh_or_wire == "mesh"
         mesh!(mesh_axis, shape, color=:skyblue2)
     end
     meshscene = mesh_axis.scene[end]
-    rotate!(meshscene, rotation)
+    GLMakie.rotate!(meshscene, rotation)
     hidedecorations!(mesh_axis)
     hidespines!(mesh_axis)
     return mesh_fig
@@ -201,7 +217,7 @@ function animate_mesh_rotation(shape, rotations)
     screen = display(mesh_fig)
     remove_axis_from_scene(mesh_axis)
     for r in rotations
-        rotate!(meshscene, qrotation(r...))
+        GLMakie.rotate!(meshscene, qrotation(r...))
         # need a 2D gridsave in the loop
         sleep(.1)
     end

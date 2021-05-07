@@ -1,3 +1,12 @@
 ./logging
 depth.png
 wire.png
+
+PointlightModel/Manifest.toml
+
+# Emacs recovery files
+*~
+
+# Vim recovery files
+*.swp
+*.swo
