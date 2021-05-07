@@ -165,8 +165,8 @@ end
     mesh_render.scene.center = false
     projected_grid = scene_to_matrix(mesh_render)
     #    noisy_image = {*} ~ generate_blur(projected_grid, .01)
-    noisy_image = {*} ~ generate_bitnoise(projected_grid, 3)
-    return mesh_render, noisy_image, shape
+    noisy_image = { :image_2D } ~ generate_bitnoise(projected_grid, 3)
+    return mesh_render, reshape(noisy_image, size(projected_grid)), shape
 end
 
 @gen function generate_blur(grid, noiselevel)
@@ -183,12 +183,13 @@ end
   return pix
 end
 
+
 @gen function generate_bitnoise(im_mat, filter_size)
     # if all 9 are white pixels, still have a .1 chance of going black.
     # this will be offset by the baseline noise the other way. 
     baseline_noise = .9
     conv_filter = baseline_noise*ones(filter_size, filter_size) / (filter_size^2)
-    reshape(Gen.Map(bernoulli_noisegen)(imfilter(im_mat, conv_filter)), size(im_mat))
+    Gen.Map(bernoulli_noisegen)(imfilter(im_mat, conv_filter))
 end
 
 
