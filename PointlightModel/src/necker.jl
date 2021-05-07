@@ -2,7 +2,6 @@ using GLMakie
 using Gen
 using GenGridEnumeration
 using OrderedCollections
-#using LinearAlgebra
 using Random
 using Statistics
 using StatsBase
@@ -155,7 +154,7 @@ end
 end
 
 @gen function generate_pixel_noise(grid, noiselevel)
-    blurred_grid = imfilter(grid, Kernel.gaussian(1))
+    blurred_grid = imfilter(grid, ImageFiltering.Kernel.gaussian(1))
     noisy_image = ({ :image_2D } ~ noisy_matrix(blurred_grid, 0.1))
     return noisy_image
 end    

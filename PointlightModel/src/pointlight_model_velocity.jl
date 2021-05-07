@@ -1,7 +1,5 @@
-using Makie
 using AbstractPlotting
 using Gen
-using LinearAlgebra
 using LightGraphs
 using MetaGraphs
 using Random
