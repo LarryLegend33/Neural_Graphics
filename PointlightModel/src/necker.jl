@@ -114,8 +114,8 @@ function grid_mh_inference(input_trace)
     tr, w = Gen.generate(primitive_shapes, (), constraints)
     (new_tr, did_accept, grid, I_chosen, p_accept) = GenGridEnumeration.grid_drift_mh(
         tr,
-        OrderedDict(:rot_x => IntervalPartition(),
-                    :rot_z => IntervalPartition(), 
+        OrderedDict(:rot_x => IntervalPartition(logit(loc=π/2, scale=.1), 30),
+                    :rot_z => IntervalPartition(logit(loc=π/2, scale=.1), 30)), 
         OrderedDict{Symbol, DiscreteSingletons}())
     (did_accept, p_accept)
 end
@@ -150,11 +150,9 @@ end
     elseif shape_type == :tetrahedron
         shape = make_tetrahedron_mesh(convert(Float64, side_length))
     end
-#    rotation_y = { :rot_y } ~ uniform(0, 0)
-#    rotation_x = { :rot_x } ~ uniform_discrete_floats(0:.1:π)
-#    rotation_z = { :rot_z } ~ uniform_discrete_floats(0:.1:π)
     rotation_x = { :rot_x } ~ uniform(0, π)
     rotation_z = { :rot_z } ~ uniform(0, π)
+#    rotation_y = { :rot_y } ~ uniform(0, 0)
     axis3_vectors = [Vec(1.0, 0.0, 0.0),
                  #    Vec(0.0, 1.0, 0.0),
                      Vec(0.0, 0.0, 1.0)]
@@ -166,19 +164,37 @@ end
     mesh_render = render_static_mesh(shape, rotation_quaternion, "wire")
     mesh_render.scene.center = false
     projected_grid = scene_to_matrix(mesh_render)
-    noisy_image = {*} ~ generate_pixel_noise(projected_grid, .01)
+    #    noisy_image = {*} ~ generate_blur(projected_grid, .01)
+    noisy_image = {*} ~ generate_bitnoise(projected_grid, 3)
     return mesh_render, noisy_image, shape
 end
 
-@gen function generate_pixel_noise(grid, noiselevel)
+@gen function generate_blur(grid, noiselevel)
     blurred_grid = imfilter(grid, ImageFiltering.Kernel.gaussian(1))
     noisy_image = ({ :image_2D } ~ noisy_matrix(blurred_grid, 0.1))
     return noisy_image
-end    
+end
+
+
+@gen function bernoulli_noisegen(p)
+  # i.e. if all 9 are black pixels, still have a .1 chance of turning it white
+  baseline_noise = .05 
+  pix ~ bernoulli(p+baseline_noise)
+  return pix
+end
+
+@gen function generate_bitnoise(im_mat, filter_size)
+    # if all 9 are white pixels, still have a .1 chance of going black.
+    # this will be offset by the baseline noise the other way. 
+    baseline_noise = .9
+    conv_filter = baseline_noise*ones(filter_size, filter_size) / (filter_size^2)
+    reshape(Gen.Map(bernoulli_noisegen)(imfilter(im_mat, conv_filter)), size(im_mat))
+end
+
 
 function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::String)
     white = RGBAf0(255, 255, 255, 0.0)
-    res = 50
+    res = 100
     mesh_fig = Figure(resolution=(res, res), figure_padding=-50)
     limval = 2.0
     lim = (-limval, limval, -limval, limval, -limval, limval)
@@ -199,13 +215,14 @@ end
 
 function scene_to_matrix(mesh_fig)
     gray_grid = Gray.(GLMakie.scene2image(mesh_fig.scene)[1].parent)
-    gray_matrix = zeros(size(gray_grid)[2], size(gray_grid)[1])
-    for i in 1:size(gray_grid)[1]
-        for j in 1:size(gray_grid)[2]
-            gray_matrix[j, i] = convert(Float64, gray_grid[i, j])
-        end
-    end
-    return gray_matrix
+    # gray_matrix = zeros(size(gray_grid)[2], size(gray_grid)[1])
+    # for i in 1:size(gray_grid)[1]
+    #     for j in 1:size(gray_grid)[2]
+    #         gray_matrix[j, i] = convert(Float64, gray_grid[i, j])
+    #     end
+    # end
+    gray_matrix = convert(Matrix{Float64}, gray_grid)
+    return gray_matrix'
 end
 
 function animate_mesh_rotation(shape, rotations)
