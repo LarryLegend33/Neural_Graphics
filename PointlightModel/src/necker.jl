@@ -2,7 +2,6 @@ using GLMakie
 using Gen
 using GenGridEnumeration
 using OrderedCollections
-#using LinearAlgebra
 using Random
 using Statistics
 using StatsBase
