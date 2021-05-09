@@ -92,8 +92,11 @@ end
 
     
 function enumeration_grid(input_trace)
-    constraint_syms = [:image_2D, :shape_choice]
-    constraints = Gen.choicemap([(sym, input_trace[sym]) for sym in constraint_syms]...)
+ #   constraint_syms = [:image_2D, :shape_choice]
+#    constraints = Gen.choicemap([(sym, input_trace[sym]) for sym in constraint_syms]...)
+    constraints = Gen.choicemap()
+    constraints[:shape_choice] = input_trace[:shape_choice]
+    set_submap!(constraints, :image_2D, get_submap(get_choices(input_trace), :image_2D))
     tr, w = Gen.generate(primitive_shapes, (), constraints)
     g = UniformPointPushforwardGrid(tr, OrderedDict(
 #        :shape_choice => DiscreteSingletons([:cube, :tetrahedron]),
@@ -107,9 +110,16 @@ function enumeration_grid(input_trace)
     return g
 end
 
+# notes: w/ 2.94, .08 groundtruths, switching the order of rot_x and rot_z in g = had an effect, as did
+# switching the axis of makie_plot_grid (i.e. putting :rot_z first). w/ normal order g and plot_grid,
+# got the inverted axis effect. 
+
+
+
 function grid_mh_inference(input_trace)
     constraint_syms = [:image_2D, :shape_choice]
-    constraints = Gen.choicemap([(sym, input_trace[sym]) for sym in constraint_syms]...)
+    tr_choices = get_choices(input_trace)
+    constraints = Gen.choicemap([(sym, tr_choices[sym]) for sym in constraint_syms]...)
     tr, w = Gen.generate(primitive_shapes, (), constraints)
     (new_tr, did_accept, grid, I_chosen, p_accept) = GenGridEnumeration.grid_drift_mh(
         tr,
@@ -136,6 +146,8 @@ function shape_wrap()
     return trace, mesh_fig
 end
 
+# Note showing the reshaped image with GLMakie.image shows an inverted pic relative to the saved image. May have
+# something to do with the inverted outcomes in inference
 
 # Use Axis3D objects and Figure declarations. Axis3D just needs to take the figure as an arg. 
 
@@ -149,8 +161,8 @@ end
     elseif shape_type == :tetrahedron
         shape = make_tetrahedron_mesh(convert(Float64, side_length))
     end
-    rotation_x = { :rot_x } ~ uniform(0, π)
-    rotation_z = { :rot_z } ~ uniform(0, π)
+    rotation_x = { :rot_x } ~ uniform_discrete_floats(0:.01:π)
+    rotation_z = { :rot_z } ~ uniform_discrete_floats(0:.01:π)
 #    rotation_y = { :rot_y } ~ uniform(0, 0)
     axis3_vectors = [Vec(1.0, 0.0, 0.0),
                  #    Vec(0.0, 1.0, 0.0),
@@ -163,8 +175,8 @@ end
     mesh_render = render_static_mesh(shape, rotation_quaternion, "wire")
     mesh_render.scene.center = false
     projected_grid = scene_to_matrix(mesh_render)
-    #    noisy_image = {*} ~ generate_blur(projected_grid, .01)
-    noisy_image = { :image_2D } ~ generate_bitnoise(projected_grid, 3)
+#    noisy_image = {*} ~ generate_blur(projected_grid, .01)
+    noisy_image = {*} ~  generate_bitnoise(projected_grid, 3)
     return mesh_render, reshape(noisy_image, size(projected_grid)), shape
 end
 
@@ -188,13 +200,55 @@ end
     # this will be offset by the baseline noise the other way. 
     baseline_noise = .9
     conv_filter = baseline_noise*ones(filter_size, filter_size) / (filter_size^2)
-    Gen.Map(bernoulli_noisegen)(imfilter(im_mat, conv_filter))
+    image_2D = { :image_2D } ~ Gen.Map(bernoulli_noisegen)(imfilter(im_mat, conv_filter))
 end
+
+
+function calculate_rot_bounds(rot)
+    rt = round(rot, digits=1)
+    if 1 < rt < π-1
+        return rt-1:.1:rt+1
+    elseif 1 < rt 
+        return rt-1:.1:π
+    elseif rt < π-1
+        return 0:.1:rt+1
+    end
+end
+
+@gen function rotation_proposal(tr)
+    rot_x = { :rot_x } ~ uniform_discrete_floats(calculate_rot_bounds(tr[:rot_x]))
+    rot_z = { :rot_z } ~ uniform_discrete_floats(calculate_rot_bounds(tr[:rot_z]))
+end
+
+
+function shape_mh_update(tr, amnt_computation)
+    mh_traces = []
+    accepted_list = []
+    for i in 1:amnt_computation
+        #   (tr, accepted) = Gen.mh(tr, rotation_proposal, ())
+        (tr, accepted) = Gen.mh(tr, select(:rot_x, :rot_z))
+        push!(mh_traces, tr)
+        push!(accepted_list, accepted)
+    end
+    rot_mat = zeros(length(0:.1:π), length(0:.1:π))
+    for x in 0:.1:π
+        for z in 0:.1:π
+            [rot_mat[x,z] += 1 for t in mh_traces if t[:rot_x] == x && t[:rot_z] == z]
+        end
+    end
+    return mh_traces, accepted_list
+end
+
+
+
+
+
+
 
 
 function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::String)
     white = RGBAf0(255, 255, 255, 0.0)
-    res = 100
+    res = 50
     mesh_fig = Figure(resolution=(res, res), figure_padding=-50)
     limval = 2.0
     lim = (-limval, limval, -limval, limval, -limval, limval)
@@ -215,12 +269,9 @@ end
 
 function scene_to_matrix(mesh_fig)
     gray_grid = Gray.(GLMakie.scene2image(mesh_fig.scene)[1].parent)
-    # gray_matrix = zeros(size(gray_grid)[2], size(gray_grid)[1])
-    # for i in 1:size(gray_grid)[1]
-    #     for j in 1:size(gray_grid)[2]
-    #         gray_matrix[j, i] = convert(Float64, gray_grid[i, j])
-    #     end
-    # end
+    #    gray_grid = Gray.(AbstractPlotting.colorbuffer(mesh_fig.scene))
+    # these run at the same speed but have different rotations in the end.
+    # also, colorbuffer shows the image. 
     gray_matrix = convert(Matrix{Float64}, gray_grid)
     return gray_matrix'
 end
