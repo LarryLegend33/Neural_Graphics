@@ -92,13 +92,8 @@ end
 
     
 function enumeration_grid(input_trace)
- #   constraint_syms = [:image_2D, :shape_choice]
-#    constraints = Gen.choicemap([(sym, input_trace[sym]) for sym in constraint_syms]...)
-    constraints = Gen.choicemap()
-    constraints[:shape_choice] = input_trace[:shape_choice]
-    set_submap!(constraints, :image_2D, get_submap(get_choices(input_trace), :image_2D))
-    tr, w = Gen.generate(primitive_shapes, (), constraints)
-    g = UniformPointPushforwardGrid(tr, OrderedDict(
+    tr_w_constraints = make_2D_constraints(input_trace)
+    g = UniformPointPushforwardGrid(tr_w_constraints, OrderedDict(
 #        :shape_choice => DiscreteSingletons([:cube, :tetrahedron]),
  #       :side_length => DiscreteSingletons([1, 2]),
         :rot_x => DiscreteSingletons(collect(0:.1:π)),
@@ -115,12 +110,16 @@ end
 # got the inverted axis effect. 
 
 
+function make_2D_constraints(input_trace)
+    constraints = Gen.choicemap()
+    constraints[:shape_choice] = input_trace[:shape_choice]
+    set_submap!(constraints, :image_2D, get_submap(get_choices(input_trace), :image_2D))
+    tr, w = Gen.generate(primitive_shapes, (), constraints)
+    return tr
+end
 
 function grid_mh_inference(input_trace)
-    constraint_syms = [:image_2D, :shape_choice]
-    tr_choices = get_choices(input_trace)
-    constraints = Gen.choicemap([(sym, tr_choices[sym]) for sym in constraint_syms]...)
-    tr, w = Gen.generate(primitive_shapes, (), constraints)
+    constraints = make_2D_constraints(input_trace)
     (new_tr, did_accept, grid, I_chosen, p_accept) = GenGridEnumeration.grid_drift_mh(
         tr,
         OrderedDict(:rot_x => IntervalPartition(logit(loc=π/2, scale=.1), 30),
@@ -161,8 +160,8 @@ end
     elseif shape_type == :tetrahedron
         shape = make_tetrahedron_mesh(convert(Float64, side_length))
     end
-    rotation_x = { :rot_x } ~ uniform_discrete_floats(0:.01:π)
-    rotation_z = { :rot_z } ~ uniform_discrete_floats(0:.01:π)
+    rotation_x = { :rot_x } ~ uniform_discrete_floats(0:.1:π)
+    rotation_z = { :rot_z } ~ uniform_discrete_floats(0:.1:π)
 #    rotation_y = { :rot_y } ~ uniform(0, 0)
     axis3_vectors = [Vec(1.0, 0.0, 0.0),
                  #    Vec(0.0, 1.0, 0.0),
@@ -179,6 +178,7 @@ end
     noisy_image = {*} ~  generate_bitnoise(projected_grid, 3)
     return mesh_render, reshape(noisy_image, size(projected_grid)), shape
 end
+
 
 @gen function generate_blur(grid, noiselevel)
     blurred_grid = imfilter(grid, ImageFiltering.Kernel.gaussian(1))
@@ -205,15 +205,17 @@ end
 
 
 function calculate_rot_bounds(rot)
-    rt = round(rot, digits=1)
-    if 1 < rt < π-1
-        return rt-1:.1:rt+1
-    elseif 1 < rt 
-        return rt-1:.1:π
-    elseif rt < π-1
-        return 0:.1:rt+1
+    rot_range = 1
+    rt = round(rot, digits=2)
+    if rot_range < rt < π-rot_range
+        return rt-rot_range:.1:rt+rot_range
+    elseif rot_range < rt 
+        return rt-rot_range:.1:π
+    elseif rt < π-rot_range
+        return 0:.01:rt+rot_range
     end
 end
+
 
 @gen function rotation_proposal(tr)
     rot_x = { :rot_x } ~ uniform_discrete_floats(calculate_rot_bounds(tr[:rot_x]))
@@ -221,30 +223,52 @@ end
 end
 
 
-function shape_mh_update(tr, amnt_computation)
+function shape_mh_update(tr_populated, amnt_computation)
     mh_traces = []
     accepted_list = []
+    tr = make_2D_constraints(tr_populated)
     for i in 1:amnt_computation
-        #   (tr, accepted) = Gen.mh(tr, rotation_proposal, ())
+#        (tr, accepted) = Gen.mh(tr, rotation_proposal, ())
         (tr, accepted) = Gen.mh(tr, select(:rot_x, :rot_z))
         push!(mh_traces, tr)
         push!(accepted_list, accepted)
     end
     rot_mat = zeros(length(0:.1:π), length(0:.1:π))
-    for x in 0:.1:π
-        for z in 0:.1:π
-            [rot_mat[x,z] += 1 for t in mh_traces if t[:rot_x] == x && t[:rot_z] == z]
+    for (xi, x) in enumerate(0:.1:π)
+        for (zi, z) in enumerate(0:.1:π)
+            [rot_mat[xi,zi] += 1 for t in mh_traces if (x-.1 < t[:rot_x] < x+.1) && (z-.1 < t[:rot_z] < z+.1)]
         end
     end
+    f, a = heatmap(0:.1:π, 0:.1:π, rot_mat)
+    display(f)
     return mh_traces, accepted_list
 end
 
 
 
+function animate_mh_chain(mh_traces)
+    darkcyan = RGBAf0(0, 170, 170, 50) / 255
+    tr_rot_x_z = [(tr[:rot_x], tr[:rot_z]) for tr in mh_traces]
+    f(t) = tr_rot_x_z[1:t]
+    time_node = Node(1)
+    fig, ax = scatter(lift(t -> f(t), time_node), color=darkcyan)
+    display(fig)
+    for (i, t) in enumerate(mh_traces)
+        time_node[] = i
+        sleep(.05)
+    end
+end
 
-
-
-
+    
+function specify_rotations(rot_x, rot_z, shape)
+    constraints = Gen.choicemap()
+    constraints[:shape_choice] = shape
+    constraints[:rot_x] = rot_x
+    constraints[:rot_z] = rot_z
+    tr, w = Gen.generate(primitive_shapes, (), constraints)
+    return tr
+end
+# 
 
 function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::String)
     white = RGBAf0(255, 255, 255, 0.0)
@@ -284,6 +308,7 @@ function animate_mesh_rotation(shape, rotations)
     # another option is rotating outside the "rotations" call and instead lifting the mesh itself.
     # then all of your rotations are on the mesh instead of the 
     screen = display(mesh_fig)
+    # REPLACE THIS WITH AXIS3
     remove_axis_from_scene(mesh_axis)
     for r in rotations
         GLMakie.rotate!(meshscene, qrotation(r...))
