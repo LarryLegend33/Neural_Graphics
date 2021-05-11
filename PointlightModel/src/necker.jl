@@ -91,14 +91,14 @@ function make_tetrahedron_mesh(sidelen::Float64)
 end
 
     
-function enumeration_grid(input_trace)
+function enumeration_grid(input_trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     tr_w_constraints = make_2D_constraints(input_trace)
     g = UniformPointPushforwardGrid(tr_w_constraints, OrderedDict(
 #        :shape_choice => DiscreteSingletons([:cube, :tetrahedron]),
  #       :side_length => DiscreteSingletons([1, 2]),
-        :rot_x => DiscreteSingletons(collect(0:.1:π)),
+        :rot_x => DiscreteSingletons(collect(-1:.05:1)),
       #  :rot_y => DiscreteSingletons(collect(0:1:π)),
-        :rot_z => DiscreteSingletons(collect(0:.1:π))))
+        :rot_z => DiscreteSingletons(collect(-1:.05:1))))
     makie_plot_grid(g, :rot_x, :rot_z)
     println(input_trace[:rot_x])
     println(input_trace[:rot_z])
@@ -110,7 +110,7 @@ end
 # got the inverted axis effect. 
 
 
-function make_2D_constraints(input_trace)
+function make_2D_constraints(input_trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     constraints = Gen.choicemap()
     constraints[:shape_choice] = input_trace[:shape_choice]
     set_submap!(constraints, :image_2D, get_submap(get_choices(input_trace), :image_2D))
@@ -138,11 +138,24 @@ cylinder_prim = Cylinder(Point3(0.0, 0.0, 0.0), Point3(0.0,0.0,1.0), 1.0) #(orig
 
 function shape_wrap()
     trace = Gen.simulate(primitive_shapes, ())
+    shape_wrap(trace)
+end
+
+function shape_wrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     fig = Figure()
     mesh_fig, projected_grid, shape = get_retval(trace)
     save("test.png", projected_grid)
     display(mesh_fig)
     return trace, mesh_fig
+end
+
+function shape_wrap(rot_x::Float64, rot_z::Float64, shape::Symbol)
+    constraints = Gen.choicemap()
+    constraints[:shape_choice] = shape
+    constraints[:rot_x] = rot_x
+    constraints[:rot_z] = rot_z
+    tr, w = Gen.generate(primitive_shapes, (), constraints)
+    shape_wrap(tr)
 end
 
 # Note showing the reshaped image with GLMakie.image shows an inverted pic relative to the saved image. May have
@@ -160,8 +173,8 @@ end
     elseif shape_type == :tetrahedron
         shape = make_tetrahedron_mesh(convert(Float64, side_length))
     end
-    rotation_x = { :rot_x } ~ uniform_discrete_floats(0:.1:π)
-    rotation_z = { :rot_z } ~ uniform_discrete_floats(0:.1:π)
+    rotation_x = { :rot_x } ~ uniform_discrete_floats(-1:.05:1)
+    rotation_z = { :rot_z } ~ uniform_discrete_floats(-1:.05:1)
 #    rotation_y = { :rot_y } ~ uniform(0, 0)
     axis3_vectors = [Vec(1.0, 0.0, 0.0),
                  #    Vec(0.0, 1.0, 0.0),
@@ -180,14 +193,14 @@ end
 end
 
 
-@gen function generate_blur(grid, noiselevel)
+@gen function generate_blur(grid::Matrix{Float64}, noiselevel::Float64)
     blurred_grid = imfilter(grid, ImageFiltering.Kernel.gaussian(1))
     noisy_image = ({ :image_2D } ~ noisy_matrix(blurred_grid, 0.1))
     return noisy_image
 end
 
 
-@gen function bernoulli_noisegen(p)
+@gen function bernoulli_noisegen(p::Float64)
   # i.e. if all 9 are black pixels, still have a .1 chance of turning it white
   baseline_noise = .05 
   pix ~ bernoulli(p+baseline_noise)
@@ -195,7 +208,7 @@ end
 end
 
 
-@gen function generate_bitnoise(im_mat, filter_size)
+@gen function generate_bitnoise(im_mat::Matrix{Float64}, filter_size::Int)
     # if all 9 are white pixels, still have a .1 chance of going black.
     # this will be offset by the baseline noise the other way. 
     baseline_noise = .9
@@ -204,17 +217,20 @@ end
 end
 
 
-function calculate_rot_bounds(rot)
-    rot_range = 1
-    rt = round(rot, digits=2)
-    if rot_range < rt < π-rot_range
-        return rt-rot_range:.1:rt+rot_range
-    elseif rot_range < rt 
-        return rt-rot_range:.1:π
-    elseif rt < π-rot_range
-        return 0:.01:rt+rot_range
-    end
+
+#function rot_candidates
+
+
+@gen function tile_proposal(tr)
+    intervals = [π/8, π/4, π/2]
+    tile_x = { :tile_x } ~ uniform_discrete_floats(intervals)
+    tile_z = { :tile_z } ~ uniform_discrete_floats(intervals)
+    rotation_bounds_x = collect(rot_candidates(tr[:rot_x], π/2, tile_x))
+    rotation_bounds_x = collect(rot_candidates(tr[:rot_x], π/2, tile_z))
+    rot_x = { :rot_x } ~ categorical(tr[:rot_x]*rotation_bounds_x)
+    rot_z = { :rot_z } ~ categorical(tr[:rot_z]*rotation_bounds_z)
 end
+    
 
 
 @gen function rotation_proposal(tr)
@@ -228,8 +244,9 @@ function shape_mh_update(tr_populated, amnt_computation)
     accepted_list = []
     tr = make_2D_constraints(tr_populated)
     for i in 1:amnt_computation
+        (tr, accepted) = Gen.mh(tr, tile_proposal, ())
 #        (tr, accepted) = Gen.mh(tr, rotation_proposal, ())
-        (tr, accepted) = Gen.mh(tr, select(:rot_x, :rot_z))
+#        (tr, accepted) = Gen.mh(tr, select(:rot_x, :rot_z))
         push!(mh_traces, tr)
         push!(accepted_list, accepted)
     end
@@ -255,19 +272,12 @@ function animate_mh_chain(mh_traces)
     display(fig)
     for (i, t) in enumerate(mh_traces)
         time_node[] = i
-        sleep(.05)
+        sleep(.01)
     end
 end
 
     
-function specify_rotations(rot_x, rot_z, shape)
-    constraints = Gen.choicemap()
-    constraints[:shape_choice] = shape
-    constraints[:rot_x] = rot_x
-    constraints[:rot_z] = rot_z
-    tr, w = Gen.generate(primitive_shapes, (), constraints)
-    return tr
-end
+
 # 
 
 function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::String)
@@ -296,8 +306,9 @@ function scene_to_matrix(mesh_fig)
     #    gray_grid = Gray.(AbstractPlotting.colorbuffer(mesh_fig.scene))
     # these run at the same speed but have different rotations in the end.
     # also, colorbuffer shows the image. 
-    gray_matrix = convert(Matrix{Float64}, gray_grid)
-    return gray_matrix'
+    gray_matrix = convert(Matrix{Float64}, gray_grid')
+    return gray_matrix
+#    return gray_matrix'
 end
 
 function animate_mesh_rotation(shape, rotations)
