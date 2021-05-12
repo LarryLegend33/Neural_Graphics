@@ -323,7 +323,6 @@ function scene_to_matrix(mesh_fig)
     # also, colorbuffer shows the image. 
     gray_matrix = convert(Matrix{Float64}, gray_grid')
     return gray_matrix
-#    return gray_matrix'
 end
 
 function animate_mesh_rotation(shape, rotations)
@@ -401,7 +400,8 @@ function makie_plot_grid(g::UniformPointPushforwardGrid,
     if y_addr ∈ keys(valss)
         ax.yticks = (1:length(valss[y_addr]), [string(round(v, digits=2)) for v in valss[y_addr]])
     end
-    heatmap!(ax, float(collect(sub_boundss[x_addr])), float(collect(sub_boundss[y_addr])), w', colormap=:thermal)
+    heatmap!(ax, float(collect(sub_boundss[x_addr])),
+             float(collect(sub_boundss[y_addr])), w', colormap=:thermal)
     display(f)
     return ax
 end
