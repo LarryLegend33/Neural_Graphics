@@ -10,6 +10,10 @@ import Images: load, Gray
 using ImageFiltering
 knl = ImageFiltering.Kernel
 
+
+# Place camera on Y axis
+
+
 greet() = Hello!
 
 
@@ -45,7 +49,7 @@ greet() = Hello!
 # noise model -- bit flipping by box. boxfilter > 4, bernouli = num_filed / 9.
 # map in dynamic DSL. try julia conv
 
-
+rotation_bounds = collect(-.5:.05:.5)
 
 @dist labeled_cat(labels, weights) = labels[categorical(weights)]
 
@@ -96,9 +100,9 @@ function enumeration_grid(input_trace::Gen.DynamicDSLTrace{DynamicDSLFunction{An
     g = UniformPointPushforwardGrid(tr_w_constraints, OrderedDict(
 #        :shape_choice => DiscreteSingletons([:cube, :tetrahedron]),
  #       :side_length => DiscreteSingletons([1, 2]),
-        :rot_x => DiscreteSingletons(collect(-1:.05:1)),
+        :rot_x => DiscreteSingletons(rotation_bounds),
       #  :rot_y => DiscreteSingletons(collect(0:1:π)),
-        :rot_z => DiscreteSingletons(collect(-1:.05:1))))
+        :rot_z => DiscreteSingletons(rotation_bounds)))
     makie_plot_grid(g, :rot_x, :rot_z)
     println(input_trace[:rot_x])
     println(input_trace[:rot_z])
@@ -173,8 +177,8 @@ end
     elseif shape_type == :tetrahedron
         shape = make_tetrahedron_mesh(convert(Float64, side_length))
     end
-    rotation_x = { :rot_x } ~ uniform_discrete_floats(-1:.05:1)
-    rotation_z = { :rot_z } ~ uniform_discrete_floats(-1:.05:1)
+    rotation_x = { :rot_x } ~ uniform_discrete_floats(rotation_bounds)
+    rotation_z = { :rot_z } ~ uniform_discrete_floats(rotation_bounds)
 #    rotation_y = { :rot_y } ~ uniform(0, 0)
     axis3_vectors = [Vec(1.0, 0.0, 0.0),
                  #    Vec(0.0, 1.0, 0.0),
@@ -244,19 +248,19 @@ function shape_mh_update(tr_populated, amnt_computation)
     accepted_list = []
     tr = make_2D_constraints(tr_populated)
     for i in 1:amnt_computation
-        (tr, accepted) = Gen.mh(tr, tile_proposal, ())
+       # (tr, accepted) = Gen.mh(tr, tile_proposal, ())
 #        (tr, accepted) = Gen.mh(tr, rotation_proposal, ())
-#        (tr, accepted) = Gen.mh(tr, select(:rot_x, :rot_z))
+        (tr, accepted) = Gen.mh(tr, select(:rot_x, :rot_z))
         push!(mh_traces, tr)
         push!(accepted_list, accepted)
     end
-    rot_mat = zeros(length(0:.1:π), length(0:.1:π))
-    for (xi, x) in enumerate(0:.1:π)
-        for (zi, z) in enumerate(0:.1:π)
+    rot_mat = zeros(length(rotation_bounds), length(rotation_bounds))
+    for (xi, x) in enumerate(rotation_bounds)
+        for (zi, z) in enumerate(rotation_bounds)
             [rot_mat[xi,zi] += 1 for t in mh_traces if (x-.1 < t[:rot_x] < x+.1) && (z-.1 < t[:rot_z] < z+.1)]
         end
     end
-    f, a = heatmap(0:.1:π, 0:.1:π, rot_mat)
+    f, a = heatmap(rotation_bounds, rotation_bounds, rot_mat)
     display(f)
     return mh_traces, accepted_list
 end
@@ -267,10 +271,15 @@ function animate_mh_chain(mh_traces)
     darkcyan = RGBAf0(0, 170, 170, 50) / 255
     tr_rot_x_z = [(tr[:rot_x], tr[:rot_z]) for tr in mh_traces]
     f(t) = tr_rot_x_z[1:t]
+    f_color(t) = RGBAf0(t / length(mh_traces), t / length(mh_traces), 0, .2)
     time_node = Node(1)
-    fig, ax = scatter(lift(t -> f(t), time_node), color=darkcyan)
+    fig = Figure()
+    ax = fig[1,1] = Axis(fig) 
+    scatter!(ax, lift(t -> f(t), time_node), color=lift(t -> f_color(t), time_node))
+    xlims!(ax, (-.6, .6))
+    ylims!(ax, (-.6, .6))
     display(fig)
-    for (i, t) in enumerate(mh_traces)
+    for (i, tr) in enumerate(mh_traces)
         time_node[] = i
         sleep(.01)
     end
@@ -298,6 +307,12 @@ function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::
     GLMakie.rotate!(meshscene, rotation)
     hidedecorations!(mesh_axis)
     hidespines!(mesh_axis)
+    cam = cam3d!(mesh_axis.scene)
+    cam.projectiontype[] = AbstractPlotting.Orthographic
+    cam.upvector[] = Vec3f0(1, 0, 0)
+    cam.lookat[] = Vec3f0(0, 0, 0)
+    cam.eyeposition[] = Vec3f0(0, 700, 0)
+    update_cam!(mesh_axis.scene, cam)
     return mesh_fig
 end    
 
