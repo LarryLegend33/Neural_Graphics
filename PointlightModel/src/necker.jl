@@ -49,7 +49,7 @@ greet() = Hello!
 # noise model -- bit flipping by box. boxfilter > 4, bernouli = num_filed / 9.
 # map in dynamic DSL. try julia conv
 
-rotation_bounds = collect(-.5:.05:.5)
+const rotation_bounds = collect(-.5:.05:.5)
 
 @dist labeled_cat(labels, weights) = labels[categorical(weights)]
 
@@ -78,7 +78,7 @@ function make_cube_mesh(sidelen::Float64)
 end    
 
 
-function make_tetrahedron_mesh(sidelen::Float64)
+function make_pyramid_mesh(sidelen::Float64)
     vertices = sidelen*Point{3, Float64}[
         (sqrt(8/9), 0, -1/3),
         (-sqrt(2/9), sqrt(2/3), -1/3),
@@ -90,18 +90,15 @@ function make_tetrahedron_mesh(sidelen::Float64)
         [1,2,4],
         [2,3,4],
         [1,3,4]]
-    tetrahedron_mesh = GeometryBasics.Mesh(vertices, faces)
-    return tetrahedron_mesh
+    pyramid_mesh = GeometryBasics.Mesh(vertices, faces)
+    return pyramid_mesh
 end
 
     
 function enumeration_grid(input_trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     tr_w_constraints = make_2D_constraints(input_trace)
     g = UniformPointPushforwardGrid(tr_w_constraints, OrderedDict(
-#        :shape_choice => DiscreteSingletons([:cube, :tetrahedron]),
- #       :side_length => DiscreteSingletons([1, 2]),
         :rot_x => DiscreteSingletons(rotation_bounds),
-      #  :rot_y => DiscreteSingletons(collect(0:1:π)),
         :rot_z => DiscreteSingletons(rotation_bounds)))
     makie_plot_grid(g, :rot_x, :rot_z)
     println(input_trace[:rot_x])
@@ -116,7 +113,7 @@ end
 
 function make_2D_constraints(input_trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     constraints = Gen.choicemap()
-    constraints[:shape_choice] = input_trace[:shape_choice]
+#    constraints[:shape_choice] = input_trace[:shape_choice]
     set_submap!(constraints, :image_2D, get_submap(get_choices(input_trace), :image_2D))
     tr, w = Gen.generate(primitive_shapes, (), constraints)
     return tr
@@ -169,13 +166,13 @@ end
 
 
 @gen function primitive_shapes()
-    shape_type = { :shape_choice } ~ labeled_cat([:cube, :tetrahedron], [1/2, 1/2])
+    shape_type = { :shape_choice } ~ labeled_cat([:cube, :pyramid], [1/2, 1/2])
     #    side_length = { :side_length } ~ uniform_discrete(1,2)
     side_length = 1.0
     if shape_type == :cube
         shape = make_cube_mesh(convert(Float64, side_length))
-    elseif shape_type == :tetrahedron
-        shape = make_tetrahedron_mesh(convert(Float64, side_length))
+    elseif shape_type == :pyramid
+        shape = make_pyramid_mesh(convert(Float64, side_length))
     end
     rotation_x = { :rot_x } ~ uniform_discrete_floats(rotation_bounds)
     rotation_z = { :rot_z } ~ uniform_discrete_floats(rotation_bounds)
@@ -192,7 +189,7 @@ end
     mesh_render.scene.center = false
     projected_grid = scene_to_matrix(mesh_render)
 #    noisy_image = {*} ~ generate_blur(projected_grid, .01)
-    noisy_image = {*} ~  generate_bitnoise(projected_grid, 3)
+    noisy_image = {*} ~  generate_bitnoise(projected_grid, 1)
     return mesh_render, reshape(noisy_image, size(projected_grid)), shape
 end
 
@@ -220,7 +217,7 @@ end
     image_2D = { :image_2D } ~ Gen.Map(bernoulli_noisegen)(imfilter(im_mat, conv_filter))
 end
 
-
+    
 
 #function rot_candidates
 
@@ -248,20 +245,24 @@ function shape_mh_update(tr_populated, amnt_computation)
     accepted_list = []
     tr = make_2D_constraints(tr_populated)
     for i in 1:amnt_computation
-       # (tr, accepted) = Gen.mh(tr, tile_proposal, ())
-#        (tr, accepted) = Gen.mh(tr, rotation_proposal, ())
-        (tr, accepted) = Gen.mh(tr, select(:rot_x, :rot_z))
+        (tr, accepted) = Gen.mh(tr, select(:rot_x, :rot_z, :shape_choice))
         push!(mh_traces, tr)
         push!(accepted_list, accepted)
     end
-    rot_mat = zeros(length(rotation_bounds), length(rotation_bounds))
+    rot_mat_cube = zeros(length(rotation_bounds), length(rotation_bounds))
+    rot_mat_pyramid = zeros(length(rotation_bounds), length(rotation_bounds))
     for (xi, x) in enumerate(rotation_bounds)
         for (zi, z) in enumerate(rotation_bounds)
-            [rot_mat[xi,zi] += 1 for t in mh_traces if (x-.1 < t[:rot_x] < x+.1) && (z-.1 < t[:rot_z] < z+.1)]
+            [rot_mat_cube[xi,zi] += 1 for t in mh_traces if (x-.1 < t[:rot_x] < x+.1) && (z-.1 < t[:rot_z] < z+.1) && t[:shape_choice] == :cube]
+            [rot_mat_pyramid[xi,zi] += 1 for t in mh_traces if (x-.1 < t[:rot_x] < x+.1) && (z-.1 < t[:rot_z] < z+.1) && t[:shape_choice] == :pyramid]
         end
     end
-    f, a = heatmap(rotation_bounds, rotation_bounds, rot_mat)
-    display(f)
+    fig = Figure()
+    ax_cube = fig[1, 1] = Axis(fig)
+    ax_pyr = fig[2, 1] = Axis(fig)
+    heatmap!(ax_cube, rotation_bounds, rotation_bounds, rot_mat_cube)
+    heatmap!(ax_pyr, rotation_bounds, rotation_bounds, rot_mat_pyramid)
+    display(fig)
     return mh_traces, accepted_list
 end
 
