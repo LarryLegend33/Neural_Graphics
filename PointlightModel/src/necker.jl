@@ -50,49 +50,42 @@ greet() = Hello!
 # map in dynamic DSL. try julia conv
 
 const rotation_bounds = collect(-.5:.05:.5)
-
 @dist labeled_cat(labels, weights) = labels[categorical(weights)]
-
 @dist uniform_discrete_floats(value_range) = value_range[uniform_discrete(1,length(value_range))]
 
-function make_cube_mesh(sidelen::Float64)
-    vertices = sidelen*Point{3, Float64}[
-        (1/2, 1/2, 1/2),
-        (1/2, -1/2, 1/2),
-        (-1/2, -1/2, 1/2),
-        (-1/2, 1/2, 1/2),
-        (1/2, 1/2, -1/2),
-        (1/2, -1/2, -1/2),
-        (-1/2, -1/2, -1/2),
-        (-1/2, 1/2, -1/2),
-    ]
-    faces = QuadFace{Cint}[
-        1:4,
-        5:8,
-        [1, 5, 6, 2],
-        [2, 6, 7, 3],
-        [3, 7, 8, 4],
-        [4, 8, 5, 1]]
-    cube_mesh = GeometryBasics.Mesh(vertices, faces)
-    return cube_mesh
+function make_mesh(sidelen::Float64, shape::Symbol)
+    if shape == :cube
+        vertices = sidelen*Point{3, Float64}[
+            (1/2, 1/2, 1/2),
+            (1/2, -1/2, 1/2),
+            (-1/2, -1/2, 1/2),
+            (-1/2, 1/2, 1/2),
+            (1/2, 1/2, -1/2),
+            (1/2, -1/2, -1/2),
+            (-1/2, -1/2, -1/2),
+            (-1/2, 1/2, -1/2)]
+        faces = QuadFace{Cint}[
+            1:4,
+            5:8,
+            [1, 5, 6, 2],
+            [2, 6, 7, 3],
+            [3, 7, 8, 4],
+            [4, 8, 5, 1]]
+    elseif shape == :pyramid
+        vertices = sidelen*Point{3, Float64}[
+            (sqrt(8/9), 0, -1/3),
+            (-sqrt(2/9), sqrt(2/3), -1/3),
+            (-sqrt(2/9), -sqrt(2/3), -1/3),
+            (0, 0, 1)]
+        faces = TriangleFace{Int}[
+            [1,2,3],
+            [1,2,4],
+            [2,3,4],
+            [1,3,4]]
+    end
+    rendered_mesh = GeometryBasics.Mesh(vertices, faces)
+    return rendered_mesh
 end    
-
-
-function make_pyramid_mesh(sidelen::Float64)
-    vertices = sidelen*Point{3, Float64}[
-        (sqrt(8/9), 0, -1/3),
-        (-sqrt(2/9), sqrt(2/3), -1/3),
-        (-sqrt(2/9), -sqrt(2/3), -1/3),
-        (0, 0, 1)
-    ]
-    faces = TriangleFace{Int}[
-        [1,2,3],
-        [1,2,4],
-        [2,3,4],
-        [1,3,4]]
-    pyramid_mesh = GeometryBasics.Mesh(vertices, faces)
-    return pyramid_mesh
-end
 
     
 function enumeration_grid(input_trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
@@ -169,26 +162,15 @@ end
     shape_type = { :shape_choice } ~ labeled_cat([:cube, :pyramid], [1/2, 1/2])
     #    side_length = { :side_length } ~ uniform_discrete(1,2)
     side_length = 1.0
-    if shape_type == :cube
-        shape = make_cube_mesh(convert(Float64, side_length))
-    elseif shape_type == :pyramid
-        shape = make_pyramid_mesh(convert(Float64, side_length))
-    end
+    shape = make_mesh(side_length, shape_type)
     rotation_x = { :rot_x } ~ uniform_discrete_floats(rotation_bounds)
+    rotation_y = 0.0
     rotation_z = { :rot_z } ~ uniform_discrete_floats(rotation_bounds)
-#    rotation_y = { :rot_y } ~ uniform(0, 0)
-    axis3_vectors = [Vec(1.0, 0.0, 0.0),
-                 #    Vec(0.0, 1.0, 0.0),
-                     Vec(0.0, 0.0, 1.0)]
-#    quat_rotations = [qrotation(v, r) for (v, r) in zip(
- #       axis3_vectors, [rotation_x, rotation_y, rotation_z])]
-    quat_rotations = [qrotation(v, r) for (v, r) in zip(
-        axis3_vectors, [rotation_x, rotation_z])]
-    rotation_quaternion = reduce(*, quat_rotations)
-    mesh_render = render_static_mesh(shape, rotation_quaternion, "wire")
+    mesh_render = render_static_mesh(shape,
+                                     [rotation_x, rotation_y, rotation_z],
+                                     "wire")
     mesh_render.scene.center = false
     projected_grid = scene_to_matrix(mesh_render)
-#    noisy_image = {*} ~ generate_blur(projected_grid, .01)
     noisy_image = {*} ~  generate_bitnoise(projected_grid, 1)
     return mesh_render, reshape(noisy_image, size(projected_grid)), shape
 end
@@ -217,8 +199,6 @@ end
     image_2D = { :image_2D } ~ Gen.Map(bernoulli_noisegen)(imfilter(im_mat, conv_filter))
 end
 
-    
-
 #function rot_candidates
 
 
@@ -230,13 +210,6 @@ end
     rotation_bounds_x = collect(rot_candidates(tr[:rot_x], π/2, tile_z))
     rot_x = { :rot_x } ~ categorical(tr[:rot_x]*rotation_bounds_x)
     rot_z = { :rot_z } ~ categorical(tr[:rot_z]*rotation_bounds_z)
-end
-    
-
-
-@gen function rotation_proposal(tr)
-    rot_x = { :rot_x } ~ uniform_discrete_floats(calculate_rot_bounds(tr[:rot_x]))
-    rot_z = { :rot_z } ~ uniform_discrete_floats(calculate_rot_bounds(tr[:rot_z]))
 end
 
 
@@ -266,7 +239,57 @@ function shape_mh_update(tr_populated, amnt_computation)
     return mh_traces, accepted_list
 end
 
+function animate_percepts(mhtrs)
+    axes = [render_static_mesh(make_mesh(1.0, tr[:shape_choice]),
+                               [tr[:rot_x], 0.0, tr[:rot_z]], "mesh").content[1] for tr in mhtrs]
+    for ax in axes
+        display(ax.scene)
+    end
+end
 
+function plot_mh_results(mh_traces)
+    darkcyan = RGBf0(0, 170, 170) / 255
+    magenta = RGBf0(255, 0, 255) / 255
+    rot_xs = [tr[:rot_x] for tr in mh_traces]
+    rot_zs = [tr[:rot_z] for tr in mh_traces]
+    fig = Figure(resolution=(1000,1000));
+    rot_timeseries = fig[1, 1] = Axis(fig, xgridvisible=false, ygridvisible=false,
+                                      title="Perceived Rotation", xlabel="sample #",
+                                      ylabel="rotation (rad)")
+    shape_axis = fig[1, 2] = Axis(fig, title="Perceived Shape")
+    lines!(rot_timeseries, rot_xs, color=darkcyan)
+    lines!(rot_timeseries, rot_zs, color=magenta)
+    ylims!(rot_timeseries, -.6, .6)
+    shape_counter = countmap([tr[:shape_choice] for tr in mh_traces])
+    cubecount = 0
+    pyrcount = 0
+    try
+        cubecount = shape_counter[:cube]
+    catch
+        cubecount = 0
+    end
+    try
+        pyrcount = shape_counter[:pyramid]
+    catch
+        pyrcount = 0
+    end
+    barplot!(shape_axis, [1, 2], [cubecount, pyrcount])
+    shape_axis.xticks = (1:2, ["cube", "pyramid"])
+    mesh_sublayout = GridLayout()
+    fig[2, 1:2] = mesh_sublayout
+    for (mi, tr) in enumerate(mh_traces)
+        if mi % 20 == 0
+            mf = render_static_mesh(shape, [tr[:rot_x], 0.0, tr[:rot_z]], "mesh")
+            mesh_sublayout[1, mi] = mf.content[1]
+            display(mf)
+            println(mf.content[1])
+        end
+    end
+    display(fig)
+    return fig
+end    
+
+    
 
 function animate_mh_chain(mh_traces)
     darkcyan = RGBAf0(0, 170, 170, 50) / 255
@@ -286,13 +309,23 @@ function animate_mh_chain(mh_traces)
     end
 end
 
-    
 
-# 
+# make two subfunctions, one for rotation calculation and the other
+# for using the quaternion to rotate the scene and hide decorations.
+# then you can call these functions from the animation function and
+# the plot function. idea is you have to assign the Axis3 object to a figure.
+# also see if you can improve the shading in the mesh plot
 
-function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::String)
+
+function render_static_mesh(shape, rotation::Array{Float64}, mesh_or_wire::String)
+    axis3_vectors = [Vec(1.0, 0.0, 0.0),
+                     Vec(0.0, 1.0, 0.0),
+                     Vec(0.0, 0.0, 1.0)]
+    quat_rotations = [qrotation(v, r) for (v, r) in zip(
+                          axis3_vectors, rotation)]
+    rotation_quaternion = reduce(*, quat_rotations)
     white = RGBAf0(255, 255, 255, 0.0)
-    res = 50
+    res = 1000
     mesh_fig = Figure(resolution=(res, res), figure_padding=-50)
     limval = 2.0
     lim = (-limval, limval, -limval, limval, -limval, limval)
@@ -301,11 +334,16 @@ function render_static_mesh(shape, rotation::Quaternion{Float64}, mesh_or_wire::
                       viewmode=:fit, aspect=(1,1,1), perspectiveness=0.0, protrusions=0, limits=lim)
     if mesh_or_wire == "wire"
         wireframe!(mesh_axis, shape, color=:black)
+        meshscene = mesh_axis.scene[end]
+        GLMakie.rotate!(meshscene, rotation_quaternion)
     elseif mesh_or_wire == "mesh"
-        mesh!(mesh_axis, shape, color=:skyblue2)
+        mesh!(mesh_axis, shape, color=:skyblue2, shading=true, transparency=false)
+        wireframe!(mesh_axis, shape, color=:black)
+        meshscene = mesh_axis.scene[end-1]
+        GLMakie.rotate!(meshscene, rotation_quaternion)
+        wirescene = mesh_axis.scene[end]
+        GLMakie.rotate!(wirescene, rotation_quaternion)
     end
-    meshscene = mesh_axis.scene[end]
-    GLMakie.rotate!(meshscene, rotation)
     hidedecorations!(mesh_axis)
     hidespines!(mesh_axis)
     cam = cam3d!(mesh_axis.scene)
