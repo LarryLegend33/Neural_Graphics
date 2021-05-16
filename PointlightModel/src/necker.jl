@@ -1,4 +1,5 @@
 using GLMakie
+using CairoMakie
 using Gen
 using GenGridEnumeration
 using OrderedCollections
@@ -85,7 +86,15 @@ function make_mesh(sidelen::Float64, shape::Symbol)
     end
     rendered_mesh = GeometryBasics.Mesh(vertices, faces)
     return rendered_mesh
-end    
+end
+
+
+function save_renders_to_pdf(tr)
+    CairoMakie.activate!()
+    save("clean.pdf", get_retval(tr)[1].content[1].scene)
+    save("noisy.pdf", get_retval(tr)[2])
+    GLMakie.activate!()
+end
 
     
 function enumeration_grid(input_trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
@@ -138,7 +147,8 @@ end
 function shape_wrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     fig = Figure()
     mesh_fig, projected_grid, shape = get_retval(trace)
-    save("test.png", projected_grid)
+    save("clean.png", scene_to_matrix(mesh_fig))
+    save("noisy.png", projected_grid)
     display(mesh_fig)
     return trace, mesh_fig
 end
@@ -247,16 +257,23 @@ function animate_percepts(mhtrs)
     end
 end
 
-function plot_mh_results(mh_traces)
+function plot_mh_results(gt, mh_traces)
+    
+
     darkcyan = RGBf0(0, 170, 170) / 255
     magenta = RGBf0(255, 0, 255) / 255
     rot_xs = [tr[:rot_x] for tr in mh_traces]
     rot_zs = [tr[:rot_z] for tr in mh_traces]
     fig = Figure(resolution=(1000,1000));
-    rot_timeseries = fig[1, 1] = Axis(fig, xgridvisible=false, ygridvisible=false,
+    clean_ax = fig[1, 1] = Axis(fig)
+    noisy_ax = fig[1, 2] = Axis(fig)
+    
+    
+
+    rot_timeseries = fig[2, 1] = Axis(fig, xgridvisible=false, ygridvisible=false,
                                       title="Perceived Rotation", xlabel="sample #",
                                       ylabel="rotation (rad)")
-    shape_axis = fig[1, 2] = Axis(fig, title="Perceived Shape")
+    bar_axis = fig[2, 2] = Axis(fig, title="Perceived Shape")
     lines!(rot_timeseries, rot_xs, color=darkcyan)
     lines!(rot_timeseries, rot_zs, color=magenta)
     ylims!(rot_timeseries, -.6, .6)
@@ -273,18 +290,11 @@ function plot_mh_results(mh_traces)
     catch
         pyrcount = 0
     end
-    barplot!(shape_axis, [1, 2], [cubecount, pyrcount])
-    shape_axis.xticks = (1:2, ["cube", "pyramid"])
-    mesh_sublayout = GridLayout()
-    fig[2, 1:2] = mesh_sublayout
-    for (mi, tr) in enumerate(mh_traces)
-        if mi % 20 == 0
-            mf = render_static_mesh(shape, [tr[:rot_x], 0.0, tr[:rot_z]], "mesh")
-            mesh_sublayout[1, mi] = mf.content[1]
-            display(mf)
-            println(mf.content[1])
-        end
-    end
+    barplot!(bar_axis, [1, 2], [cubecount, pyrcount])
+    bar_axis.xticks = (1:2, ["cube", "pyramid"])
+    
+
+    
     display(fig)
     return fig
 end    
@@ -317,33 +327,18 @@ end
 # also see if you can improve the shading in the mesh plot
 
 
-function render_static_mesh(shape, rotation::Array{Float64}, mesh_or_wire::String)
+
+function calculate_rotation(rotation)
     axis3_vectors = [Vec(1.0, 0.0, 0.0),
                      Vec(0.0, 1.0, 0.0),
                      Vec(0.0, 0.0, 1.0)]
     quat_rotations = [qrotation(v, r) for (v, r) in zip(
                           axis3_vectors, rotation)]
     rotation_quaternion = reduce(*, quat_rotations)
-    white = RGBAf0(255, 255, 255, 0.0)
-    res = 1000
-    mesh_fig = Figure(resolution=(res, res), figure_padding=-50)
-    limval = 2.0
-    lim = (-limval, limval, -limval, limval, -limval, limval)
-    # note perspectiveness variable is 0.0 for orthographic, 1.0 for perspective, .5 for intermediate
-    mesh_axis = Axis3(mesh_fig[1,1], xtickcolor=white,
-                      viewmode=:fit, aspect=(1,1,1), perspectiveness=0.0, protrusions=0, limits=lim)
-    if mesh_or_wire == "wire"
-        wireframe!(mesh_axis, shape, color=:black)
-        meshscene = mesh_axis.scene[end]
-        GLMakie.rotate!(meshscene, rotation_quaternion)
-    elseif mesh_or_wire == "mesh"
-        mesh!(mesh_axis, shape, color=:skyblue2, shading=true, transparency=false)
-        wireframe!(mesh_axis, shape, color=:black)
-        meshscene = mesh_axis.scene[end-1]
-        GLMakie.rotate!(meshscene, rotation_quaternion)
-        wirescene = mesh_axis.scene[end]
-        GLMakie.rotate!(wirescene, rotation_quaternion)
-    end
+    return rotation_quaternion
+end    
+
+function translate_camera(mesh_axis)
     hidedecorations!(mesh_axis)
     hidespines!(mesh_axis)
     cam = cam3d!(mesh_axis.scene)
@@ -352,8 +347,66 @@ function render_static_mesh(shape, rotation::Array{Float64}, mesh_or_wire::Strin
     cam.lookat[] = Vec3f0(0, 0, 0)
     cam.eyeposition[] = Vec3f0(0, 700, 0)
     update_cam!(mesh_axis.scene, cam)
+end
+    
+function render_static_mesh(shape, rotation::Array{Float64}, mesh_or_wire::String)
+    white = RGBAf0(255, 255, 255, 0.0)
+    res = 50
+    mesh_fig = Figure(resolution=(res, res), figure_padding=-50)
+    limval = 2.0
+    lim = (-limval, limval, -limval, limval, -limval, limval)
+    # note perspectiveness variable is 0.0 for orthographic, 1.0 for perspective, .5 for intermediate
+    mesh_axis = Axis3(mesh_fig[1,1], xtickcolor=white,
+                      viewmode=:fit, aspect=(1,1,1), perspectiveness=0.0, protrusions=0, limits=lim)
+    rotation_quaternion = calculate_rotation(rotation)
+    if mesh_or_wire == "wire"
+        wireframe!(mesh_axis, shape, color=:black)
+        meshscene = mesh_axis.scene[end]
+        GLMakie.rotate!(meshscene, rotation_quaternion)
+    elseif mesh_or_wire == "mesh"
+        mesh!(mesh_axis, shape, color=:skyblue2, shading=true, transparency=false)
+        wireframe!(mesh_axis, shape, color=:black, linewidth=1)
+        meshscene = mesh_axis.scene[end-1]
+        GLMakie.rotate!(meshscene, rotation_quaternion)
+        wirescene = mesh_axis.scene[end]
+        GLMakie.rotate!(wirescene, rotation_quaternion)
+    end
+    translate_camera(mesh_axis)
     return mesh_fig
 end    
+
+
+function plot_meshrange(mh_traces)
+    res = 50
+    modulus = 20
+    mesh_fig = Figure(resolution=(((length(mh_traces)/modulus)+ 1)*res, res),
+                      figure_padding=-50)
+    limval = 2.0
+    lim = (-limval, limval, -limval, limval, -limval, limval)
+    # note perspectiveness variable is 0.0 for orthographic, 1.0 for perspective, .5 for intermediate
+    i = 0
+    for (mhi, tr) in enumerate(mh_traces)
+        if mhi % modulus == 1
+            println(mhi)
+            i += 1
+            rotation_quaternion = calculate_rotation([tr[:rot_x], 0.0, tr[:rot_z]])
+            ax = mesh_fig[1, i] = Axis3(mesh_fig, xtickcolor=:white,
+                                   viewmode=:fit, aspect=(1,1,1), perspectiveness=0.0, protrusions=0, limits=lim)
+            shape = make_mesh(1.0, tr[:shape_choice])
+                   mesh!(ax, shape, color=:skyblue2, shading=true, transparency=false)
+            wireframe!(ax, shape, color=:black, linewidth=1)
+            meshscene = ax.scene[end-1]
+            GLMakie.rotate!(meshscene, rotation_quaternion)
+            wirescene = ax.scene[end]
+            GLMakie.rotate!(wirescene, rotation_quaternion)
+            translate_camera(ax)
+        end
+    end
+    display(mesh_fig)
+    # I dont think you can currently save 3D plots to PDF. getting errors every time. 
+    return mesh_fig
+end
+
 
 function scene_to_matrix(mesh_fig)
     gray_grid = Gray.(GLMakie.scene2image(mesh_fig.scene)[1].parent)
@@ -373,25 +426,12 @@ function animate_mesh_rotation(shape, rotations)
     # then all of your rotations are on the mesh instead of the 
     screen = display(mesh_fig)
     # REPLACE THIS WITH AXIS3
-    remove_axis_from_scene(mesh_axis)
     for r in rotations
         GLMakie.rotate!(meshscene, qrotation(r...))
         # need a 2D gridsave in the loop
         sleep(.1)
     end
     return mesh_axis
-end
-
-
-function remove_axis_from_scene(mesh_axis)
-    white = RGBAf0(255, 255, 255, 0.0)
-    threeDaxis = mesh_axis.scene
-#    threeDaxis = mesh_axis.scene[OldAxis]
-    threeDaxis[:showgrid] = (false, false, false)
-    threeDaxis[:showaxis] = (false, false, false)
-    threeDaxis[:ticks][:textcolor] = (white, white, white)
-    threeDaxis[:names, :axisnames] = ("", "", "")
-    return threeDaxis
 end
 
 
