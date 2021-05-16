@@ -257,9 +257,10 @@ function animate_percepts(mhtrs)
     end
 end
 
-function plot_mh_results(gt, mh_traces)
-    
+# use CairoMakie to save pdfs of the renders instead of plotting them
+# directly here then saving to pdf. 
 
+function plot_mh_results(gt, mh_traces)
     darkcyan = RGBf0(0, 170, 170) / 255
     magenta = RGBf0(255, 0, 255) / 255
     rot_xs = [tr[:rot_x] for tr in mh_traces]
@@ -267,9 +268,6 @@ function plot_mh_results(gt, mh_traces)
     fig = Figure(resolution=(1000,1000));
     clean_ax = fig[1, 1] = Axis(fig)
     noisy_ax = fig[1, 2] = Axis(fig)
-    
-    
-
     rot_timeseries = fig[2, 1] = Axis(fig, xgridvisible=false, ygridvisible=false,
                                       title="Perceived Rotation", xlabel="sample #",
                                       ylabel="rotation (rad)")
@@ -292,9 +290,6 @@ function plot_mh_results(gt, mh_traces)
     end
     barplot!(bar_axis, [1, 2], [cubecount, pyrcount])
     bar_axis.xticks = (1:2, ["cube", "pyramid"])
-    
-
-    
     display(fig)
     return fig
 end    
