@@ -31,12 +31,15 @@ discretized_gaussian(mean, std, dom) = normalize([
 
 @dist LabeledCategorical(labels, probs) = labels[categorical(probs)]
 
-Xs = collect(1:40)
-HOME = 20
-Vels = collect(-4:4)
-Energies = collect(1:30)
-XInit = 20
-EInit = 10
+Xs = collect(1:20)
+HOME = 10
+Vels = collect(-3:3)
+Energies = collect(1:10)
+XInit = 10
+EInit = 5
+VInit = 0
+
+# when its 6 or 7 away, its likely to stop. 
 
 moving_away_from_home(x, v) = sign(v) == sign(x - HOME)
 dist_from_home(x) = abs(x - HOME)
@@ -48,7 +51,7 @@ prior_p_stop_far(x, v) = moving_away_from_home(x, v) ? 1-exp(-dist_from_home(x)/
 prop_p_stop_far(is_stopped, v, x) = !is_stopped ? 0. : moving_away_from_home(x, v) ? 0.5 : 0.
 prop_p_stop_tired(is_stopped, already_stopped, e_prev) = !is_stopped ? 0. : already_stopped ? prior_p_stop_tired(e_prev) : .6
 
-expected_e(e_prev, v) = e_prev + (abs(v) > 0 ? -abs(v) : 2)
+expected_e(e, v) = e + (abs(v) > 0 ? -abs(v) : Energies[end] / 5)
 
 # e drops if abs(v) > 0 proportionally to abs(v). if the previous
 # move was a rest, you get 2 energies back. probably too much of an energy hit
@@ -83,10 +86,10 @@ function Gen.logpdf(d::PseudoMarginalizedDist, val, args...)
 end
 
 
-@gen function vel_model(e_prev, v_prev, x_prev)
-    stop_bc_tired = { :stop_tired } ~ bernoulli(prior_p_stop_tired(e_prev))
+@gen function vel_model(e_curr, v_prev, x_curr)
+    stop_bc_tired = { :stop_tired } ~ bernoulli(prior_p_stop_tired(e_curr))
     # 1 away, 4.8% chance of stopping. 10 away, 40%
-    stop_bc_far_from_home = { :stop_far } ~ bernoulli(prior_p_stop_far(x_prev, v_prev))
+    stop_bc_far_from_home = { :stop_far } ~ bernoulli(prior_p_stop_far(x_curr, v_prev))
     stop = stop_bc_tired || stop_bc_far_from_home
     v = { :v } ~ LabeledCategorical(Vels, 
         stop ? onehot(0, Vels) :
@@ -109,10 +112,12 @@ vel_dist = PseudoMarginalizedDist(
     2 # TODO: tune NParticles
 )
 
-@gen function position_step_model(v_prev, e_prev, x_prev)
-    v = { :v } ~ vel_dist(e_prev, v_prev, x_prev)
-    e = { :e } ~ categorical(maybe_one_off(expected_e(e_prev, v), .5, Energies))
-    x = { :x } ~ categorical(maybe_one_off(x_prev + v, .6, Xs))
+@gen function position_step_model(v_prev, e_curr, x_curr)
+    # make a step depending on your energy and x location, and your previous velocity
+    v = { :v } ~ vel_dist(e_curr, v_prev, x_curr)
+    e = { :e } ~ categorical(maybe_one_off(expected_e(e_prev, v_prev), .5, Energies))
+    x = { :x } ~ categorical(maybe_one_off(x_prev + v, .2, Xs))
+#    x = { :x } ~ categorical(maybe_one_or_two_off(x_prev + v, .3, Xs))
     # Play with std
     obs = { :obs } ~ categorical(discretized_gaussian(x, 2.0, Xs))
     return (v, e, x, obs)
@@ -125,17 +130,22 @@ end
     if t > 1
         x_prev = tr_old[t-1 => :x]
         e_prev = tr_old[t-1 => :e]
+        v_prev = tr_old[t-1 => :v]
     else
         x_prev = XInit
         e_prev = EInit
+        v_prev = VInit
     end
-    v = { t => :v } ~ categorical(maybe_one_or_two_off(x - x_prev, 0.5, Vels))
-    { t => :e } ~ categorical(maybe_one_off(expected_e(e_prev, v), .5, Energies))
+    v = { t => :v } ~ categorical(maybe_one_off(x - x_prev, 0.5, Vels))
+#    v = { t => :v } ~ categorical(maybe_one_or_two_off(x - x_prev, 0.5, Vels))
+    { t => :e } ~ categorical(maybe_one_off(expected_e(e_prev, v_prev), .5, Energies))
 end
 
 @gen function move_for_time(T::Int)
     x = XInit
-    v = 3
+    v = VInit
+    # this should be implicit. your velocity before this was 0.
+    # XInit and EInit are added to the plot as the first member of the array. 
     e = EInit 
     xs = []
     obss = []
@@ -165,6 +175,8 @@ function linepos_particle_filter(num_particles::Int, num_samples::Int, observati
 end
 
 
+# am doing full resampling. if not, you can use Gen.sample_unweighted_traces(state, num_samples)
+# to get a sample set back. its kind of a misnomer -- it samples a categorical based on weights. 
 
 function heatmap_pf_results(state, latent_v::Symbol)
     times = length(get_retval(state.traces[1])[1])
@@ -182,7 +194,7 @@ function heatmap_pf_results(state, latent_v::Symbol)
     hm = heatmap!(ax, location_matrix)
     cbar = fig[1, 2] = Colorbar(fig, hm, label="N Particles")
     scatter!(ax, [o-.5 for o in observations], [t-.5 for t in 1:times], color=:magenta)
-    scatter!(ax, [tx-.5 for tx in true_x], [t-.5 for t in 1:times], color=:white)
+#    scatter!(ax, [tx-.5 for tx in true_x], [t-.5 for t in 1:times], color=:white)
     vlines!(ax, HOME, color=:red)
     display(fig)
 end
@@ -211,14 +223,18 @@ end
 
 function extract_and_plot_groundtruth(tr)
     times = length(get_retval(tr)[1])
-    xs = [tr[t=> :x] for t in 1:times]
+    xs = vcat([XInit], [tr[t=> :x] for t in 1:times])
     vs = [tr[t=> :v] for t in 1:times]
-    es = [tr[t=> :e] for t in 1:times]
-    fig = Figure(resolution=(1500,1500))
+    es = vcat([EInit], [tr[t=> :e] for t in 1:times])
+    fig = Figure(resolution=(1500,2000 * times / length(Xs)))
     ax = fig[1,1] = Axis(fig, xgridvisible=false, ygridvisible=false)
     vlines!(ax, [HOME], color=:red)
-    scatter!(ax, [xt for xt in zip(xs, 1:times)], color=es/Energies[end], colormap= :thermal, marker=:rect, markersize=30)
-    arrows!(ax, xs, 1:times, vs, ones(length(vs)))
+
+    println(es[1])
+    println(xs[1])
+    println(xs[2])
+    scatter!(ax, [xt for xt in zip(xs, 1:times)], colorrange = (1, Energies[end]), color=es, colormap= :thermal, marker=:rect, markersize=30)
+    arrows!(ax, xs[1:end-1], 1:times, vs, ones(length(vs)))
     xlims!(ax, (Xs[1]-2, Xs[end]+2))
     ylims!(ax, (0, times+1))
     display(fig)
@@ -241,3 +257,6 @@ function generate_groundtruth(num_steps)
     extract_and_plot_groundtruth(tr)
     return tr
 end
+
+
+# make sure you figure out why energy 1 is not constant. 
