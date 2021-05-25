@@ -37,7 +37,7 @@ Vels = collect(-3:3)
 Energies = collect(1:10)
 XInit = 10
 EInit = 5
-VInit = 0
+VThatLeadToXInit = 0
 
 # when its 6 or 7 away, its likely to stop. 
 
@@ -98,11 +98,13 @@ end
 end
 
 # need to marginalize out these two variables so we have to consider what we already know
-# would really like to sum over all possible values, but instead are going to sample tons of possibilities, 
-# which basically proposes the most important values contributing to the sum 
-@gen function vel_auxiliary_proposal(v, e_prev, v_prev, x_prev)
-    stop_because_far = { :stop_far } ~ bernoulli(prop_p_stop_far(v == 0, v_prev, x_prev))
-    stop_because_tired = { :stop_tired } ~ bernoulli(prop_p_stop_tired(v == 0, stop_because_far, e_prev))
+# would really like to sum over all possible values, but instead are going to sample tons of possibilities. 
+
+# This is given that you have already OBSERVED current v. if its zero, much more likely to propose that you stopped.
+# This part of the proposal occurs before you move on to proposing x and e values. 
+@gen function vel_auxiliary_proposal(v, e_curr, v_prev, x_curr)
+    stop_because_far = { :stop_far } ~ bernoulli(prop_p_stop_far(v == 0, v_prev, x_curr))
+    stop_because_tired = { :stop_tired } ~ bernoulli(prop_p_stop_tired(v == 0, stop_because_far, e_curr))
 end
 
 vel_dist = PseudoMarginalizedDist(
@@ -112,21 +114,26 @@ vel_dist = PseudoMarginalizedDist(
     2 # TODO: tune NParticles
 )
 
+
 @gen function position_step_model(v_prev, e_curr, x_curr)
     # make a step depending on your energy and x location, and your previous velocity
     v = { :v } ~ vel_dist(e_curr, v_prev, x_curr)
-    e = { :e } ~ categorical(maybe_one_off(expected_e(e_prev, v_prev), .5, Energies))
-    x = { :x } ~ categorical(maybe_one_off(x_prev + v, .2, Xs))
-#    x = { :x } ~ categorical(maybe_one_or_two_off(x_prev + v, .3, Xs))
+    # this is your next energy state after the first velocity move.
+    e = { :e } ~ categorical(maybe_one_off(expected_e(e_curr, v), .5, Energies))
+    x = { :x } ~ categorical(maybe_one_off(x_curr + v, .2, Xs))
     # Play with std
     obs = { :obs } ~ categorical(discretized_gaussian(x, 2.0, Xs))
     return (v, e, x, obs)
 end
 
 
+# here you have observed an X value. propose that the latent true value is near it.
+# propose that the velocity that lead to X is x-x_previous. propose that the energy after
+# the V step is based on e_prev and the V step. 
 
 @gen function step_proposal(tr_old, obs, t)
-    x = { t => :x } ~ categorical(discretized_gaussian(obs, 2.0, Xs))
+    #    x = { t => :x } ~ categorical(discretized_gaussian(obs, 4.0, Xs))
+    x = { t => :x } ~ categorical(maybe_one_off(obs, .4, Xs))
     if t > 1
         x_prev = tr_old[t-1 => :x]
         e_prev = tr_old[t-1 => :e]
@@ -134,16 +141,15 @@ end
     else
         x_prev = XInit
         e_prev = EInit
-        v_prev = VInit
+        v_prev = VThatLeadToXInit
     end
     v = { t => :v } ~ categorical(maybe_one_off(x - x_prev, 0.5, Vels))
-#    v = { t => :v } ~ categorical(maybe_one_or_two_off(x - x_prev, 0.5, Vels))
-    { t => :e } ~ categorical(maybe_one_off(expected_e(e_prev, v_prev), .5, Energies))
+    { t => :e } ~ categorical(maybe_one_off(expected_e(e_prev, v), .5, Energies))
 end
 
 @gen function move_for_time(T::Int)
     x = XInit
-    v = VInit
+    v = VThatLeadToXInit
     # this should be implicit. your velocity before this was 0.
     # XInit and EInit are added to the plot as the first member of the array. 
     e = EInit 
@@ -159,10 +165,16 @@ end
 
 
 
-function linepos_particle_filter(num_particles::Int, num_samples::Int, observations::Vector{Any}, gen_function::DynamicDSLFunction{Any}, proposal)
-    state = Gen.initialize_particle_filter(gen_function, (0,), Gen.choicemap(), num_particles)
-    for t in 1:length(observations)
-        Gen.maybe_resample!(state, ess_threshold=num_particles) #/2)
+function linepos_particle_filter(num_particles::Int, gt_trace::Trace, gen_function::DynamicDSLFunction{Any}, proposal)
+    observations = get_retval(gt_trace)[2]
+    obs1 = Gen.choicemap((1 => :obs, observations[1]))
+    if proposal == ()
+        state = Gen.initialize_particle_filter(gen_function, (1,), obs1, num_particles)
+    else
+        state = Gen.initialize_particle_filter(gen_function, (1,), obs1, proposal, (gt_trace, observations[1], 1), num_particles)
+    end
+    for t in 2:length(observations)
+        Gen.maybe_resample!(state, ess_threshold=num_particles)
         obs = Gen.choicemap((t => :obs, observations[t]))
         if proposal == ()
             Gen.particle_filter_step!(state, (t,), (UnknownChange(),), obs)
@@ -170,6 +182,7 @@ function linepos_particle_filter(num_particles::Int, num_samples::Int, observati
             Gen.particle_filter_step!(state, (t,), (UnknownChange(),), obs, proposal, (observations[t],t))
         end
         println([state.traces[1][tind => :x] for tind in 1:t])
+        println([get_score(state.traces[i]) for i in 1:num_particles if isfinite(get_score(state.traces[i]))])
     end
     return state
 end
@@ -178,10 +191,10 @@ end
 # am doing full resampling. if not, you can use Gen.sample_unweighted_traces(state, num_samples)
 # to get a sample set back. its kind of a misnomer -- it samples a categorical based on weights. 
 
-function heatmap_pf_results(state, latent_v::Symbol)
-    times = length(get_retval(state.traces[1])[1])
+function heatmap_pf_results(state, gt::Trace, latent_v::Symbol)
+    true_x = get_retval(gt)[1]
+    times = length(get_retval(state.traces[1])[2])
     observations = get_retval(state.traces[1])[2]
-    true_x = get_retval(state.traces[1])[1]
     # also plot the true x values
     location_matrix = zeros(length(Xs), times)
     for t in 1:times
@@ -194,7 +207,7 @@ function heatmap_pf_results(state, latent_v::Symbol)
     hm = heatmap!(ax, location_matrix)
     cbar = fig[1, 2] = Colorbar(fig, hm, label="N Particles")
     scatter!(ax, [o-.5 for o in observations], [t-.5 for t in 1:times], color=:magenta)
-#    scatter!(ax, [tx-.5 for tx in true_x], [t-.5 for t in 1:times], color=:white)
+    scatter!(ax, [tx-.5 for tx in true_x], [t-.5 for t in 1:times], color=:white)
     vlines!(ax, HOME, color=:red)
     display(fig)
 end
@@ -229,15 +242,12 @@ function extract_and_plot_groundtruth(tr)
     fig = Figure(resolution=(1500,2000 * times / length(Xs)))
     ax = fig[1,1] = Axis(fig, xgridvisible=false, ygridvisible=false)
     vlines!(ax, [HOME], color=:red)
-
-    println(es[1])
-    println(xs[1])
-    println(xs[2])
-    scatter!(ax, [xt for xt in zip(xs, 1:times)], colorrange = (1, Energies[end]), color=es, colormap= :thermal, marker=:rect, markersize=30)
-    arrows!(ax, xs[1:end-1], 1:times, vs, ones(length(vs)))
+    scatter!(ax, [xt for xt in zip(xs, 0:times)], colorrange = (1, Energies[end]), color=es, colormap= :thermal, marker=:rect, markersize=30)
+    arrows!(ax, xs[1:end-1], 0:times-1, vs, ones(length(vs)))
     xlims!(ax, (Xs[1]-2, Xs[end]+2))
-    ylims!(ax, (0, times+1))
+    ylims!(ax, (-1, times+1))
     display(fig)
+    return vs, es
 end
 
 
@@ -260,3 +270,27 @@ end
 
 
 # make sure you figure out why energy 1 is not constant. 
+
+function proposal_test()
+    run_out_for = 1
+    replace_ind = 1
+    tr = Gen.simulate(move_for_time, (1, ))
+    obs = get_retval(tr)[2]
+    tr, model_score_no_prop = Gen.generate(move_for_time, get_args(tr), get_choices(tr))
+    # this comes out finite
+    println(get_choices(tr))
+    println(model_score_no_prop) 
+    prop_choices, prop_score, retval = Gen.propose(step_proposal, (tr, get_retval(tr)[2][replace_ind], replace_ind))
+    # this also comes out finite. all that's happening here is we are proposing new values for the 5th x, v, and e. 
+    println(prop_score)
+    println(prop_choices)
+#    pc_as_dynamic_choicemap = Gen.choicemap(
+    updated_tr, update_score, retdiff, discard = Gen.update(tr, get_args(tr), (), prop_choices)
+    # this is never finite even though the trace is updated correctly with the proposal values. each [5 => latentv] enters the trace,
+    # but the score comes back Inf regardless. 
+    println(update_score)
+    model_after_prop_tr, model_score_after_prop = Gen.generate(move_for_time, get_args(tr), prop_choices)
+    println(model_score_after_prop)
+    return prop_choices, get_choices(updated_tr)
+end
+   
