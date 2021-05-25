@@ -4,6 +4,7 @@ using Serialization
 using GLMakie
 using CairoMakie
 using Distributions
+using BSON: @save, @load
 
 onehot(x, dom) =
     x < first(dom) ? onehot(first(dom), dom) :
@@ -29,21 +30,30 @@ discretized_gaussian(mean, std, dom) = normalize([
 ])
 
 @dist LabeledCategorical(labels, probs) = labels[categorical(probs)]
+
 Xs = collect(1:40)
 HOME = 20
 Vels = collect(-4:4)
 Energies = collect(1:30)
-XInit = 10
+XInit = 20
 EInit = 10
 
-moving_away_from_home(x_tminus1, v_tminus1) = sign(v_tminus1) == sign(x_tminus1 - HOME)
-dist_from_home(x_tminus1) = abs(x_tminus1 - HOME)
+moving_away_from_home(x, v) = sign(v) == sign(x - HOME)
+dist_from_home(x) = abs(x - HOME)
+
 τ_far() = 10
+τ_tired() = 10
+prior_p_stop_tired(e_prev) = exp(-e_prev/ τ_far())
+prior_p_stop_far(x, v) = moving_away_from_home(x, v) ? 1-exp(-dist_from_home(x)/τ_far()) : 0.
+prop_p_stop_far(is_stopped, v, x) = !is_stopped ? 0. : moving_away_from_home(x, v) ? 0.5 : 0.
+prop_p_stop_tired(is_stopped, already_stopped, e_prev) = !is_stopped ? 0. : already_stopped ? prior_p_stop_tired(e_prev) : .6
+
+expected_e(e_prev, v) = e_prev + (abs(v) > 0 ? -abs(v) : 2)
 
 # e drops if abs(v) > 0 proportionally to abs(v). if the previous
 # move was a rest, you get 2 energies back. probably too much of an energy hit
 # if abs(v) can be 4.
-expected_e(e_prev, v) = e_prev + (abs(v) > 0 ? -abs(v) : 2)
+
 
 
 """ Pseudomarginalized Dist Definition """
@@ -73,57 +83,41 @@ function Gen.logpdf(d::PseudoMarginalizedDist, val, args...)
 end
 
 
-@gen function vel_model(e_tminus1, v_tminus1, x_tminus1)
-    stop_bc_tired = { :stop_tired } ~ bernoulli(exp(-e_tminus1))
+@gen function vel_model(e_prev, v_prev, x_prev)
+    stop_bc_tired = { :stop_tired } ~ bernoulli(prior_p_stop_tired(e_prev))
     # 1 away, 4.8% chance of stopping. 10 away, 40%
-    stop_bc_far_from_home = { :stop_far } ~ bernoulli(
-        moving_away_from_home(x_tminus1, v_tminus1) ?
-            1-exp(-dist_from_home(x_tminus1)/τ_far()) :
-            0.)
+    stop_bc_far_from_home = { :stop_far } ~ bernoulli(prior_p_stop_far(x_prev, v_prev))
     stop = stop_bc_tired || stop_bc_far_from_home
     v = { :v } ~ LabeledCategorical(Vels, 
         stop ? onehot(0, Vels) :
-            maybe_one_or_two_off(v_tminus1, .8, Vels))
+            maybe_one_or_two_off(v_prev, .8, Vels))
     return v
 end
 
 # need to marginalize out these two variables so we have to consider what we already know
 # would really like to sum over all possible values, but instead are going to sample tons of possibilities, 
 # which basically proposes the most important values contributing to the sum 
-@gen function vel_auxiliary_proposal(v, e_tminus1, v_tminus1, x_tminus1)
-    if v != 0
-        { :stop_tired } ~ bernoulli(0)
-        { :stop_far } ~ bernoulli(0)
-        return
-    end
-    p_stopped_tired = exp(-e_tminus1)
-    p_stopped_far = moving_away_from_home(x_tminus1, v_tminus1) ? 1-exp(-dist_from_home(x_tminus1)/τ_far()) : 0.
-    p_neither_stop_true = (1 - p_stopped_tired)*(1 - p_stopped_far)
-    p_stopvar_true = 1 - p_neither_stop_true
-    # p (v = 0   ;  did not stop, v_tminus1)   (Prob v = 0 from being 1 or 2 off)
-    # TODO: remove hardcoded prob 0.5
-    p_off = maybe_one_or_two_off(0, 0.5, Vels)[v_tminus1 - first(Vels) + 1]
-    approx_marginal_p_stop = p_stopvar_true / (p_stopvar_true + p_off)
-    approx_p_tired_given_stop = p_stopped_tired / (p_stopped_tired + p_stopped_far)
-    stop_tired = { :stop_tired } ~ bernoulli(approx_marginal_p_stop * approx_p_tired_given_stop)
-    { :stop_far } ~ bernoulli(stop_tired ? p_stopped_far : approx_marginal_p_stop)
+@gen function vel_auxiliary_proposal(v, e_prev, v_prev, x_prev)
+    stop_because_far = { :stop_far } ~ bernoulli(prop_p_stop_far(v == 0, v_prev, x_prev))
+    stop_because_tired = { :stop_tired } ~ bernoulli(prop_p_stop_tired(v == 0, stop_because_far, e_prev))
 end
 
 vel_dist = PseudoMarginalizedDist(
     vel_model,
     vel_auxiliary_proposal,
     :v,
-    10 # TODO: tune NParticles
+    2 # TODO: tune NParticles
 )
 
 @gen function position_step_model(v_prev, e_prev, x_prev)
     v = { :v } ~ vel_dist(e_prev, v_prev, x_prev)
     e = { :e } ~ categorical(maybe_one_off(expected_e(e_prev, v), .5, Energies))
-    x = { :x } ~ categorical(maybe_one_off(x_prev + v, .8, Xs))
+    x = { :x } ~ categorical(maybe_one_off(x_prev + v, .6, Xs))
     # Play with std
-    obs = { :obs } ~ categorical(discretized_gaussian(x, 1.0, Xs))
+    obs = { :obs } ~ categorical(discretized_gaussian(x, 2.0, Xs))
     return (v, e, x, obs)
 end
+
 
 
 @gen function step_proposal(tr_old, obs, t)
@@ -153,11 +147,7 @@ end
     return (xs, obss)
 end
 
-# @gen function proposal_over_time(T)
-#     for t in 1:T
-#         {t} ~ step_proposal(..)
-#     end
-# end
+
 
 function linepos_particle_filter(num_particles::Int, num_samples::Int, observations::Vector{Any}, gen_function::DynamicDSLFunction{Any}, proposal)
     state = Gen.initialize_particle_filter(gen_function, (0,), Gen.choicemap(), num_particles)
@@ -181,18 +171,19 @@ function heatmap_pf_results(state, latent_v::Symbol)
     observations = get_retval(state.traces[1])[2]
     true_x = get_retval(state.traces[1])[1]
     # also plot the true x values
-    location_matrix = zeros(times, length(Xs))
+    location_matrix = zeros(length(Xs), times)
     for t in 1:times
         for tr in state.traces
-            location_matrix[t, tr[t => latent_v]] += 1
+            location_matrix[tr[t => latent_v], t] += 1
         end
     end
     fig = Figure(resolution=(1000,1000))
     ax = fig[1, 1] = Axis(fig)
     hm = heatmap!(ax, location_matrix)
     cbar = fig[1, 2] = Colorbar(fig, hm, label="N Particles")
-    scatter!(ax, [t-.5 for t in 1:times], [o-.5 for o in observations], color=:magenta)
-    scatter!(ax, [t-.5 for t in 1:times], [tx-.5 for tx in true_x], color=:white)
+    scatter!(ax, [o-.5 for o in observations], [t-.5 for t in 1:times], color=:magenta)
+    scatter!(ax, [tx-.5 for tx in true_x], [t-.5 for t in 1:times], color=:white)
+    vlines!(ax, HOME, color=:red)
     display(fig)
 end
 
@@ -218,3 +209,35 @@ function x_trajectory_anim(trace)
 end
 
 
+function extract_and_plot_groundtruth(tr)
+    times = length(get_retval(tr)[1])
+    xs = [tr[t=> :x] for t in 1:times]
+    vs = [tr[t=> :v] for t in 1:times]
+    es = [tr[t=> :e] for t in 1:times]
+    fig = Figure(resolution=(1500,1500))
+    ax = fig[1,1] = Axis(fig, xgridvisible=false, ygridvisible=false)
+    vlines!(ax, [HOME], color=:red)
+    scatter!(ax, [xt for xt in zip(xs, 1:times)], color=es/Energies[end], colormap= :thermal, marker=:rect, markersize=30)
+    arrows!(ax, xs, 1:times, vs, ones(length(vs)))
+    xlims!(ax, (Xs[1]-2, Xs[end]+2))
+    ylims!(ax, (0, times+1))
+    display(fig)
+end
+
+
+function save_run(tr, trace_file_id)
+    trace_args, trace_choices = get_args(tr), get_choices(tr)
+    @save string(trace_file_id) trace_args trace_choices
+end
+    
+function load_run(trace_file_id)
+    @load trace_file_id trace_args trace_choices
+    (trace, w) = Gen.generate(move_for_time, trace_args, trace_choices)
+    return trace
+end
+
+function generate_groundtruth(num_steps)
+    tr = Gen.simulate(move_for_time, (num_steps, ))
+    extract_and_plot_groundtruth(tr)
+    return tr
+end
