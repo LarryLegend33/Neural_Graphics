@@ -36,8 +36,8 @@ HOME = 10
 Vels = collect(-3:3)
 Energies = collect(1:10)
 XInit = 10
-EInit = 5
-VThatLeadToXInit = 0
+EInit = 10
+VThatLeadToXInit = 2
 
 # when its 6 or 7 away, its likely to stop. 
 
@@ -52,6 +52,9 @@ prop_p_stop_far(is_stopped, v, x) = !is_stopped ? 0. : moving_away_from_home(x, 
 prop_p_stop_tired(is_stopped, already_stopped, e_prev) = !is_stopped ? 0. : already_stopped ? prior_p_stop_tired(e_prev) : .6
 
 expected_e(e, v) = e + (abs(v) > 0 ? -abs(v) : Energies[end] / 5)
+
+truncate(pvec, min, max, dom) = [
+        (min ≤ i + first(dom) - 1 ≤ max ? p : 0.) for (i, p) in enumerate(pvec)] |> normalize
 
 # e drops if abs(v) > 0 proportionally to abs(v). if the previous
 # move was a rest, you get 2 energies back. probably too much of an energy hit
@@ -132,7 +135,6 @@ end
 # the V step is based on e_prev and the V step. 
 
 @gen function step_proposal(tr_old, obs, t)
-    x = { t => :x } ~ categorical(discretized_gaussian(obs, 4.0, Xs))
     if t > 1
         x_prev = tr_old[t-1 => :x]
         e_prev = tr_old[t-1 => :e]
@@ -142,7 +144,19 @@ end
         e_prev = EInit
         v_prev = VThatLeadToXInit
     end
-    v = { t => :v } ~ LabeledCategorical(Vels, maybe_one_off(x - x_prev, 0.5, Vels))
+#    x = { t => :x } ~ categorical(maybe_one_or_two_off(obs, .5, Xs))
+    #    x = { t => :x } ~ categorical(discretized_gaussian(floor((obs+x_prev) / 2), 2.0, Xs))
+    # minvel = min(v_prev - 2, 0)
+    # maxvel = max(v_prev + 2, 0)
+    # xmin = x_prev + minvel - 1
+    # xmax = x_prev + maxvel + 1
+    # x = { t => :x } ~ categorical(truncate(discretized_gaussian(obs, 2.0, Xs), xmin, xmax, Xs))
+    # v = { t => :v } ~ LabeledCategorical(Vels, truncate(maybe_one_or_two_off(x - x_prev, 0.5, Vels), minvel, maxvel, Vels))
+    #    v = { t => :v } ~ LabeledCategorical(Vels, maybe_one_off(x - x_prev, 0.5, Vels))
+    projection = min(max(first(Xs), x_prev + v_prev), last(Xs))
+    mean = (obs + projection)/2
+    x = { t => :x } ~ categorical(discretized_gaussian(obs, 1.0, Xs))
+    v = { t => :v } ~ LabeledCategorical(Vels, maybe_one_or_two_off(x - x_prev, .5, Vels))
     { t => :e } ~ categorical(maybe_one_off(expected_e(e_prev, v), .5, Energies))
 end
 
@@ -182,6 +196,7 @@ function linepos_particle_filter(num_particles::Int, gt_trace::Trace, gen_functi
         end
         println([state.traces[1][tind => :x] for tind in 1:t])
     end
+    heatmap_pf_results(state, gt_trace, :x)
     return state
 end
 
@@ -207,7 +222,9 @@ function heatmap_pf_results(state, gt::Trace, latent_v::Symbol)
     scatter!(ax, [o-.5 for o in observations], [t-.5 for t in 1:times], color=:magenta)
     scatter!(ax, [tx-.5 for tx in true_x], [t-.5 for t in 1:times], color=:white)
     vlines!(ax, HOME, color=:red)
+    scores = [get_score(tr) for tr in state.traces] 
     display(fig)
+    return fig
 end
 
 
@@ -233,16 +250,19 @@ end
 
 
 function extract_and_plot_groundtruth(tr)
+    darkcyan = RGBAf0(0, 255, 0, 70) / 255
     times = length(get_retval(tr)[1])
+    obs = get_retval(tr)[2]
     xs = vcat([XInit], [tr[t=> :x] for t in 1:times])
     vs = [tr[t=> :v] for t in 1:times]
     es = vcat([EInit], [tr[t=> :e] for t in 1:times])
     fig = Figure(resolution=(1500,1500 * times / length(Xs)))
     ax = fig[1,1] = Axis(fig, xgridvisible=false, ygridvisible=false)
     vlines!(ax, [HOME], color=:red)
-    emap = scatter!(ax, [xt for xt in zip(xs, 0:times)], colorrange = (1, Energies[end]), color=es, colormap= :thermal, marker=:rect, markersize=30)
+    emap = scatter!(ax, [xt for xt in zip(xs, 0:times)], colorrange = (1, Energies[end]), color=es, colormap= :thermal, marker=:rect, markersize=50)
     cbar = fig[1, 2] = Colorbar(fig, emap, label="Energy")
-    arrows!(ax, xs[1:end-1], 0:times-1, vs, ones(length(vs)), arrowsize=.2)
+    arrows!(ax, xs[1:end-1], 0:times-1, vs, ones(length(vs)), arrowsize=.25)
+    obs_plot = scatter!(ax, [ox for ox in zip(obs, 1:times)], color=darkcyan, marker=:circle, markersize=20)
     xlims!(ax, (Xs[1]-2, Xs[end]+2))
     ylims!(ax, (-1, times+1))
     display(fig)
@@ -262,14 +282,19 @@ function save_run(tr, trace_file_id)
     @save string(trace_file_id) times es xs vs obs
 end
     
-function load_run(trace_file_id)
+function load_run(trace_file_id, new_obs)
     @load trace_file_id times es xs vs obs
     cmap = Gen.choicemap()
     [cmap[t=> :e] = es[t] for t in 1:times]
     [cmap[t=> :x] = xs[t] for t in 1:times]
     [cmap[t=> :v] = vs[t] for t in 1:times]
-    [cmap[t=> :obs] = obs[t] for t in 1:times]
+    if new_obs
+        [t < 7 ? cmap[t=> :obs] = categorical(maybe_one_off(xs[t], .3, Xs)) : cmap[t=> :obs] = categorical(discretized_gaussian(xs[t], 2.0, Xs)) for t in 1:times]
+    else
+        [cmap[t=> :obs] = obs[t] for t in 1:times]
+    end
     (trace, w) = Gen.generate(move_for_time, (times,), cmap)
+    extract_and_plot_groundtruth(trace)
     return trace
 end
 
