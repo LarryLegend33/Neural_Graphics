@@ -111,7 +111,7 @@ vel_dist = PseudoMarginalizedDist(
     vel_model,
     vel_auxiliary_proposal,
     :v,
-    2 # TODO: tune NParticles
+    1 # TODO: tune NParticles
 )
 
 
@@ -132,8 +132,7 @@ end
 # the V step is based on e_prev and the V step. 
 
 @gen function step_proposal(tr_old, obs, t)
-    #    x = { t => :x } ~ categorical(discretized_gaussian(obs, 4.0, Xs))
-    x = { t => :x } ~ categorical(maybe_one_off(obs, .4, Xs))
+    x = { t => :x } ~ categorical(discretized_gaussian(obs, 4.0, Xs))
     if t > 1
         x_prev = tr_old[t-1 => :x]
         e_prev = tr_old[t-1 => :e]
@@ -143,7 +142,7 @@ end
         e_prev = EInit
         v_prev = VThatLeadToXInit
     end
-    v = { t => :v } ~ categorical(maybe_one_off(x - x_prev, 0.5, Vels))
+    v = { t => :v } ~ LabeledCategorical(Vels, maybe_one_off(x - x_prev, 0.5, Vels))
     { t => :e } ~ categorical(maybe_one_off(expected_e(e_prev, v), .5, Energies))
 end
 
@@ -174,15 +173,14 @@ function linepos_particle_filter(num_particles::Int, gt_trace::Trace, gen_functi
         state = Gen.initialize_particle_filter(gen_function, (1,), obs1, proposal, (gt_trace, observations[1], 1), num_particles)
     end
     for t in 2:length(observations)
-        Gen.maybe_resample!(state, ess_threshold=num_particles)
         obs = Gen.choicemap((t => :obs, observations[t]))
+        Gen.maybe_resample!(state, ess_threshold=num_particles)
         if proposal == ()
             Gen.particle_filter_step!(state, (t,), (UnknownChange(),), obs)
         else
             Gen.particle_filter_step!(state, (t,), (UnknownChange(),), obs, proposal, (observations[t],t))
         end
         println([state.traces[1][tind => :x] for tind in 1:t])
-        println([get_score(state.traces[i]) for i in 1:num_particles if isfinite(get_score(state.traces[i]))])
     end
     return state
 end
@@ -193,8 +191,8 @@ end
 
 function heatmap_pf_results(state, gt::Trace, latent_v::Symbol)
     true_x = get_retval(gt)[1]
-    times = length(get_retval(state.traces[1])[2])
-    observations = get_retval(state.traces[1])[2]
+    times = length(get_retval(gt)[2])
+    observations = get_retval(gt)[2]
     # also plot the true x values
     location_matrix = zeros(length(Xs), times)
     for t in 1:times
@@ -239,11 +237,12 @@ function extract_and_plot_groundtruth(tr)
     xs = vcat([XInit], [tr[t=> :x] for t in 1:times])
     vs = [tr[t=> :v] for t in 1:times]
     es = vcat([EInit], [tr[t=> :e] for t in 1:times])
-    fig = Figure(resolution=(1500,2000 * times / length(Xs)))
+    fig = Figure(resolution=(1500,1500 * times / length(Xs)))
     ax = fig[1,1] = Axis(fig, xgridvisible=false, ygridvisible=false)
     vlines!(ax, [HOME], color=:red)
-    scatter!(ax, [xt for xt in zip(xs, 0:times)], colorrange = (1, Energies[end]), color=es, colormap= :thermal, marker=:rect, markersize=30)
-    arrows!(ax, xs[1:end-1], 0:times-1, vs, ones(length(vs)))
+    emap = scatter!(ax, [xt for xt in zip(xs, 0:times)], colorrange = (1, Energies[end]), color=es, colormap= :thermal, marker=:rect, markersize=30)
+    cbar = fig[1, 2] = Colorbar(fig, emap, label="Energy")
+    arrows!(ax, xs[1:end-1], 0:times-1, vs, ones(length(vs)), arrowsize=.2)
     xlims!(ax, (Xs[1]-2, Xs[end]+2))
     ylims!(ax, (-1, times+1))
     display(fig)
@@ -251,14 +250,26 @@ function extract_and_plot_groundtruth(tr)
 end
 
 
+
+
+
 function save_run(tr, trace_file_id)
-    trace_args, trace_choices = get_args(tr), get_choices(tr)
-    @save string(trace_file_id) trace_args trace_choices
+    times = length(get_retval(tr)[1])
+    es = [tr[t=> :e] for t in 1:times]
+    xs = [tr[t=> :x] for t in 1:times]
+    vs = [tr[t=> :v] for t in 1:times]
+    obs = [tr[t=> :obs] for t in 1:times]
+    @save string(trace_file_id) times es xs vs obs
 end
     
 function load_run(trace_file_id)
-    @load trace_file_id trace_args trace_choices
-    (trace, w) = Gen.generate(move_for_time, trace_args, trace_choices)
+    @load trace_file_id times es xs vs obs
+    cmap = Gen.choicemap()
+    [cmap[t=> :e] = es[t] for t in 1:times]
+    [cmap[t=> :x] = xs[t] for t in 1:times]
+    [cmap[t=> :v] = vs[t] for t in 1:times]
+    [cmap[t=> :obs] = obs[t] for t in 1:times]
+    (trace, w) = Gen.generate(move_for_time, (times,), cmap)
     return trace
 end
 
@@ -285,7 +296,7 @@ function proposal_test()
     println(prop_score)
     println(prop_choices)
 #    pc_as_dynamic_choicemap = Gen.choicemap(
-    updated_tr, update_score, retdiff, discard = Gen.update(tr, get_args(tr), (), prop_choices)
+    updated_tr, update_score, retdiff, discard = Gen.update(tr, get_args(tr), (NoChange(),), prop_choices)
     # this is never finite even though the trace is updated correctly with the proposal values. each [5 => latentv] enters the trace,
     # but the score comes back Inf regardless. 
     println(update_score)
