@@ -85,6 +85,7 @@ function make_mesh(sidelen::Float64, shape::Symbol)
             [1,3,4]]
     end
     rendered_mesh = GeometryBasics.Mesh(vertices, faces)
+    #    return normal_mesh(rendered_mesh)
     return rendered_mesh
 end
 
@@ -260,18 +261,16 @@ end
 # use CairoMakie to save pdfs of the renders instead of plotting them
 # directly here then saving to pdf. 
 
-function plot_mh_results(gt, mh_traces)
+function plot_mh_results(mh_traces)
     darkcyan = RGBf0(0, 170, 170) / 255
     magenta = RGBf0(255, 0, 255) / 255
     rot_xs = [tr[:rot_x] for tr in mh_traces]
     rot_zs = [tr[:rot_z] for tr in mh_traces]
-    fig = Figure(resolution=(1000,1000));
-    clean_ax = fig[1, 1] = Axis(fig)
-    noisy_ax = fig[1, 2] = Axis(fig)
-    rot_timeseries = fig[2, 1] = Axis(fig, xgridvisible=false, ygridvisible=false,
+    fig = Figure(resolution=(2000,1000));
+    rot_timeseries = fig[1, 1] = Axis(fig, xgridvisible=false, ygridvisible=false,
                                       title="Perceived Rotation", xlabel="sample #",
                                       ylabel="rotation (rad)")
-    bar_axis = fig[2, 2] = Axis(fig, title="Perceived Shape")
+  #  bar_axis = fig[1, 2] = Axis(fig, title="Perceived Shape")
     lines!(rot_timeseries, rot_xs, color=darkcyan)
     lines!(rot_timeseries, rot_zs, color=magenta)
     ylims!(rot_timeseries, -.6, .6)
@@ -288,8 +287,8 @@ function plot_mh_results(gt, mh_traces)
     catch
         pyrcount = 0
     end
-    barplot!(bar_axis, [1, 2], [cubecount, pyrcount])
-    bar_axis.xticks = (1:2, ["cube", "pyramid"])
+   # barplot!(bar_axis, [1, 2], [cubecount, pyrcount])
+   # bar_axis.xticks = (1:2, ["cube", "pyramid"])
     display(fig)
     return fig
 end    
@@ -359,7 +358,9 @@ function render_static_mesh(shape, rotation::Array{Float64}, mesh_or_wire::Strin
         meshscene = mesh_axis.scene[end]
         GLMakie.rotate!(meshscene, rotation_quaternion)
     elseif mesh_or_wire == "mesh"
-        mesh!(mesh_axis, shape, color=:skyblue2, shading=true, transparency=false)
+        diffuse_val = .5
+        mesh!(mesh_axis, normal_mesh(shape), color=:skyblue2, shading=true, lightposition=Vec3f0(40, -100, 20), 
+              transparency=false, ambient=Vec3f0(.6, .6, .6), diffuse=Vec3f0(diffuse_val, diffuse_val, diffuse_val), shininess=100f0, specular=Vec3f0(0,0,0))
         wireframe!(mesh_axis, shape, color=:black, linewidth=1)
         meshscene = mesh_axis.scene[end-1]
         GLMakie.rotate!(meshscene, rotation_quaternion)
@@ -372,23 +373,25 @@ end
 
 
 function plot_meshrange(mh_traces)
-    res = 50
-    modulus = 20
-    mesh_fig = Figure(resolution=(((length(mh_traces)/modulus)+ 1)*res, res),
+    res = 200
+    modulus = 40
+    mesh_fig = Figure(resolution=((length(mh_traces)/modulus+10)*res, res),
                       figure_padding=-50)
     limval = 2.0
     lim = (-limval, limval, -limval, limval, -limval, limval)
     # note perspectiveness variable is 0.0 for orthographic, 1.0 for perspective, .5 for intermediate
     i = 0
     for (mhi, tr) in enumerate(mh_traces)
-        if mhi % modulus == 1
+        if mhi % modulus == 1 || mhi == length(mh_traces)
             println(mhi)
             i += 1
+            diffuse_val = .5
             rotation_quaternion = calculate_rotation([tr[:rot_x], 0.0, tr[:rot_z]])
             ax = mesh_fig[1, i] = Axis3(mesh_fig, xtickcolor=:white,
                                    viewmode=:fit, aspect=(1,1,1), perspectiveness=0.0, protrusions=0, limits=lim)
             shape = make_mesh(1.0, tr[:shape_choice])
-                   mesh!(ax, shape, color=:skyblue2, shading=true, transparency=false)
+            mesh!(ax, normal_mesh(shape), color=:gray, shading=true, lightposition=Vec3f0(40, -100, 20), 
+              transparency=false, ambient=Vec3f0(.6, .6, .6), diffuse=Vec3f0(diffuse_val, diffuse_val, diffuse_val), shininess=100f0, specular=Vec3f0(0,0,0))
             wireframe!(ax, shape, color=:black, linewidth=1)
             meshscene = ax.scene[end-1]
             GLMakie.rotate!(meshscene, rotation_quaternion)

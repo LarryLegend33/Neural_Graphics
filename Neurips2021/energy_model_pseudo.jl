@@ -114,7 +114,7 @@ vel_dist = PseudoMarginalizedDist(
     vel_model,
     vel_auxiliary_proposal,
     :v,
-    1 # TODO: tune NParticles
+    2 # TODO: tune NParticles
 )
 
 
@@ -202,9 +202,62 @@ end
 
 
 # am doing full resampling. if not, you can use Gen.sample_unweighted_traces(state, num_samples)
-# to get a sample set back. its kind of a misnomer -- it samples a categorical based on weights. 
+# to get a sample set back. its kind of a misnomer -- it samples a categorical based on weights.
 
+function heatmap_pf_results(location_matrix::Matrix{Float64}, gt::Trace)
+    gray_cmap = range(colorant"white", stop=colorant"gray32", length=6)
+    true_x = get_retval(gt)[1]
+    times = length(get_retval(gt)[2])
+    observations = get_retval(gt)[2]
+    # also plot the true x values
+    fig = Figure(resolution=(1000,1000))
+    ax = fig[1, 1] = Axis(fig)
+    hm = heatmap!(ax, location_matrix, colormap=gray_cmap)
+    cbar = fig[1, 2] = Colorbar(fig, hm, label="N Particles")
+    scatter!(ax, [o-.5 for o in observations], [t-.5 for t in 1:times], color=:skyblue2, marker=:rect, markersize=30.0)
+    scatter!(ax, [tx-.5 for tx in true_x], [t-.5 for t in 1:times], color=:orange, markersize=20.0)
+    vlines!(ax, HOME, color=:red)
+    display(fig)
+    return fig, location_matrix
+end
+
+
+neural_results = [
+ Dict(:x=> [14, 15], :e=> [8, 7], :v=> [6, 7])
+ Dict(:x=> [13, 13], :e=> [6, 6], :v=> [3, 3])
+ Dict(:x=> [15, 16], :e=> [4, 6], :v=> [6, 6])
+ Dict(:x=> [19, 15], :e=> [1, 4], :v=> [7, 2])
+ Dict(:x=> [20, 20], :e=> [3, 3], :v=> [7, 7])
+ Dict(:x=> [19, 16], :e=> [1, 1], :v=> [4, 1])
+ Dict(:x=> [17, 17], :e=> [4, 4], :v=> [2, 2])
+ Dict(:x=> [17, 19], :e=> [1, 3], :v=> [4, 6])
+ Dict(:x=> [17, 17], :e=> [4, 4], :v=> [4, 4])
+ Dict(:x=> [18, 18], :e=> [6, 6], :v=> [4, 5])
+ Dict(:x=> [18, 18], :e=> [7, 7], :v=> [4, 4])
+ Dict(:x=> [16, 16], :e=> [8, 8], :v=> [1, 1])
+ Dict(:x=> [13, 13], :e=> [5, 5], :v=> [1, 1])
+ Dict(:x=> [13, 13], :e=> [3, 3], :v=> [5, 5])
+ Dict(:x=> [13, 13], :e=> [2, 2], :v=> [4, 4])
+ Dict(:x=> [15, 15], :e=> [5, 5], :v=> [5, 5])]
+ #Dict(:xₜ => [12, 12], :eₜ => [4, 4], :vₜ => [3, 3])]
+
+
+
+function make_location_matrix_from_dicts(dict_list)
+    location_matrix = zeros(length(Xs), length(dict_list))
+    for (t,d) in enumerate(dict_list)
+        x_arr = d[:x]
+        for x in x_arr
+            location_matrix[x, t] += 1
+        end
+    end
+    return location_matrix
+end
+
+    
 function heatmap_pf_results(state, gt::Trace, latent_v::Symbol)
+    #    orange = RGBAf0(255, 255, 0, 200) / 255
+    gray_cmap = range(colorant"white", stop=colorant"gray32", length=6)
     true_x = get_retval(gt)[1]
     times = length(get_retval(gt)[2])
     observations = get_retval(gt)[2]
@@ -217,14 +270,14 @@ function heatmap_pf_results(state, gt::Trace, latent_v::Symbol)
     end
     fig = Figure(resolution=(1000,1000))
     ax = fig[1, 1] = Axis(fig)
-    hm = heatmap!(ax, location_matrix)
+    hm = heatmap!(ax, location_matrix, colormap=gray_cmap)
     cbar = fig[1, 2] = Colorbar(fig, hm, label="N Particles")
-    scatter!(ax, [o-.5 for o in observations], [t-.5 for t in 1:times], color=:magenta)
-    scatter!(ax, [tx-.5 for tx in true_x], [t-.5 for t in 1:times], color=:white)
+    scatter!(ax, [o-.5 for o in observations], [t-.5 for t in 1:times], color=:skyblue2, marker=:rect, markersize=30.0)
+    scatter!(ax, [tx-.5 for tx in true_x], [t-.5 for t in 1:times], color=:orange, markersize=20.0)
     vlines!(ax, HOME, color=:red)
     scores = [get_score(tr) for tr in state.traces] 
     display(fig)
-    return fig
+    return fig, location_matrix
 end
 
 
@@ -250,7 +303,7 @@ end
 
 
 function extract_and_plot_groundtruth(tr)
-    darkcyan = RGBAf0(0, 255, 0, 70) / 255
+    seagreen = RGBAf0(0, 255, 0, 70) / 255
     times = length(get_retval(tr)[1])
     obs = get_retval(tr)[2]
     xs = vcat([XInit], [tr[t=> :x] for t in 1:times])
@@ -262,7 +315,7 @@ function extract_and_plot_groundtruth(tr)
     emap = scatter!(ax, [xt for xt in zip(xs, 0:times)], colorrange = (1, Energies[end]), color=es, colormap= :thermal, marker=:rect, markersize=50)
     cbar = fig[1, 2] = Colorbar(fig, emap, label="Energy")
     arrows!(ax, xs[1:end-1], 0:times-1, vs, ones(length(vs)), arrowsize=.25)
-    obs_plot = scatter!(ax, [ox for ox in zip(obs, 1:times)], color=darkcyan, marker=:circle, markersize=20)
+    obs_plot = scatter!(ax, [ox for ox in zip(obs, 1:times)], color=seagreen, marker=:circle, markersize=20)
     xlims!(ax, (Xs[1]-2, Xs[end]+2))
     ylims!(ax, (-1, times+1))
     display(fig)
@@ -295,6 +348,10 @@ function load_run(trace_file_id, new_obs)
     end
     (trace, w) = Gen.generate(move_for_time, (times,), cmap)
     extract_and_plot_groundtruth(trace)
+    println(es)
+    println(xs)
+    println(vs)
+    println(obs)
     return trace
 end
 
