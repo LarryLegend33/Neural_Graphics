@@ -14,16 +14,6 @@ using ImageFiltering
 # further from the ground.
 
 
-spherical_overlap(vox::SphericalVoxel, coord::Tuple) = coord[1] == vox.az && coord[2] == vox.alt && coord[3] == vox.r
-
-CoordDivs = Dict(:az => collect(-50:10:50), 
-                 :alt => collect(-50:10:50),
-                 :dist => collect(0:5))
-
-photon_count_probs(n, max) = .5 ^(n) * [i <= n ? binomial(n, i) : 0. for i=0:max]
-onehot(v, dom) = [x == v ? 1 : 0 for x in dom]
-@dist LabeledCat(labels, pvec) = labels[categorical(pvec)]
-findnearest(input_arr::AbstractArray, val) = input_arr[findmin([abs(a) for a in input_arr.-val])[2]]
 
 # start the recursion with dist_i = length(distance_divs)
 
@@ -66,6 +56,21 @@ struct Object3D
     # eventually want to give each voxel material a color
 end
 
+spherical_overlap(vox::SphericalVoxel, coord::Tuple) = coord[1] == vox.az && coord[2] == vox.alt && coord[3] == vox.r
+
+CoordDivs = Dict(:az => collect(-90:10:90), 
+                 :alt => collect(-90:10:90),
+                 :dist => collect(0:5),
+                 :x => collect(-5:5),
+                 :y => collect(-5:5),
+                 :z => collect(-5:5))
+                 
+
+photon_count_probs(n, max) = .5 ^(n) * [i <= n ? binomial(n, i) : 0. for i=0:max]
+onehot(v, dom) = [x == v ? 1 : 0 for x in dom]
+@dist LabeledCat(labels, pvec) = labels[categorical(pvec)]
+findnearest(input_arr::AbstractArray, val) = input_arr[findmin([abs(a) for a in input_arr.-val])[2]]
+
 # OK so now you have to make a model that generates objects in XYZ space and makes an
 # azimuth altitude representation of them. so you generate an XYZ object,
 # pass that to the spherical transform, then project that onto the retina.
@@ -77,6 +82,7 @@ end
 # note you may actually want to infer photon counts behind occluders sometimes; depends on if you want to
 # infer "brightnesses" or "objects"
 
+# x is into page. y is horizontal. z is vertical. 
 
 @gen function generate_image()
     # eventually draw more complex shapes
@@ -84,12 +90,13 @@ end
     shape_height = { :shape_height } ~  uniform_discrete(1, 5)
     brightness = { :brightness } ~ uniform_discrete(50, 100)
     alpha = { :alpha } ~ uniform_discrete(1, 1)
-    shape_x = { :shape_x } ~ uniform_discrete(1, 10)
-    shape_y = { :shape_y } ~ uniform_discrete(1, 10)
-    shape_z = { :shape_z } ~ uniform_discrete(1, 10)
+    shape_x = { :shape_x } ~ uniform_discrete(CoordDivs[:x][1], CoordDivs[:x][end])
+    shape_y = { :shape_y } ~ uniform_discrete(CoordDivs[:y][1], CoordDivs[:y][end])
+    shape_z = { :shape_z } ~ uniform_discrete(CoordDivs[:z][1], CoordDivs[:z][end])
+    distance = { :r } ~ Gen.normal(norm([shape_x, shape_y, shape_z]), .01)
     object_vox = []
-    if shape == :line
-        for z in shape_z:shape_height
+    if shape == :rect
+        for z in shape_z:shape_z+shape_height
             vox = XYZVoxel(shape_x, shape_y, z, alpha, brightness)
             push!(object_vox, vox)
         end
@@ -100,7 +107,7 @@ end
     eye = Detector(0, 0, 0, [1, 0, 0], [0, 1, 0], [0, 0, 1])
     object_in_spherical = xyz_vox_to_spherical([object_xyz], eye)
     az_alt_retina = { :image_2D } ~ produce_noisy_2D_retinal_image(set_world_state(object_in_spherical))
-    return az_alt_retina
+    return reshape(az_alt_retina, (length(CoordDivs[:az]), length(CoordDivs[:alt])))
 end
 
 
@@ -129,6 +136,8 @@ end
 
 
 
+""" NOISE MODEL 1: BITNOISE ON A BOXFILTER """
+
 @gen function bernoulli_noisegen(p::Float64)
   # i.e. if all 9 are black pixels, still have a .1 chance of turning it white
   baseline_noise = .05 
@@ -143,13 +152,32 @@ end
     conv_filter = baseline_noise*ones(filter_size, filter_size) / (filter_size^2)
     image_2D = { :image_2D } ~ Gen.Map(bernoulli_noisegen)(imfilter(im_mat, conv_filter))
 end
+
+
+""" NOISE MODEL 2: GAUSSIAN ON A BOXFILTER """
+
+@gen function gaussian_noisegen(μ::Float64)
+    σ = .1
+    pix ~ normal(μ, .1)
+end
+
+@gen function generate_blur(im_mat::Matrix{Float64}, filter_size::Int)
+    # if all 9 are white pixels, still have a .1 chance of going black.
+    # this will be offset by the baseline noise the other way. 
+    conv_filter = ones(filter_size, filter_size) / (filter_size^2)
+    image_2D = { :image_2D } ~ Gen.Map(gaussian_noisegen)(imfilter(im_mat, conv_filter))
+end
+
+
+
+
                          
 
 @gen function produce_noisy_2D_retinal_image(world_state::Array{Voxel})
     projected_az_alt_vals = [recur_lightproj_deterministic(az_i, alt_i, length(CoordDivs[:dist]), world_state, 0) for az_i=1:length(CoordDivs[:az]), alt_i=1:length(CoordDivs[:alt])]
 
     az_alt_mat = reshape(projected_az_alt_vals, (length(CoordDivs[:az]), length(CoordDivs[:alt])))
-    noisy_projection ~ generate_bitnoise(az_alt_mat, 3)
+    noisy_projection ~ generate_blur(az_alt_mat, 3)
 end
                                                                                        
 
@@ -213,7 +241,7 @@ end
 
 
 function retina_proj_wrap()
-    xyz_object_state = [Object3D([XYZVoxel(2, 20, 2, 1, 100), XYZVoxel(2, 20, 0, 1, 100)])]
+    xyz_object_state = [Object3D([XYZVoxel(2, 2, 2, 1, 100), XYZVoxel(2, 2, 0, 1, 100)])]
     eye = Detector(0, 0, 0, [1, 0, 0], [0, 1, 0], [0, 0, 1])
     spherical_object_state = xyz_vox_to_spherical(xyz_object_state, eye)
     world_state_spherical = set_world_state(spherical_object_state)
@@ -231,7 +259,11 @@ function retina_mh_update(tr_populated, amnt_computation)
         push!(mh_traces, tr)
         push!(accepted_list, accepted)
     end
-    max_distance = floor(maximum([norm([x,y,z]) for x in 1:10, y in 1:10, z in 1:10]))
+    max_distance = floor(maximum([norm([x,y,z]) for x in CoordDivs[:x][1]:CoordDivs[:x][end],
+                                      y in CoordDivs[:y][1]:CoordDivs[:y][end],
+                                      z in CoordDivs[:z][1]:CoordDivs[:z][end]]))
+
+    # don't hardcode this -- put height range in coord divs
     dist_vs_height = zeros(length(1:max_distance), 5)
     for mht in mh_traces
         dist = convert(Int64, floor(norm([tr[:shape_x], tr[:shape_y], tr[:shape_z]])))
