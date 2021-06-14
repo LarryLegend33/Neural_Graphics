@@ -1,7 +1,9 @@
 using GLMakie
 using Gen
+using GenGridEnumeration
 using LinearAlgebra
 using ImageFiltering
+using OrderedCollections
 
 
 # eventually want to find a way to subtype the voxel types to define
@@ -23,7 +25,7 @@ abstract type Voxel end
 struct SphericalVoxel <: Voxel
     az::Float64
     alt::Float64
-    r::Int64
+    r::Float64
     alpha::Float64
     brightness::Float64
     # color::
@@ -32,7 +34,7 @@ end
 struct XYZVoxel <: Voxel
     x::Float64
     y::Float64
-    z::Int64
+    z::Float64
     alpha::Float64
     brightness::Float64
 end
@@ -48,24 +50,39 @@ struct Detector
     #yaw::Float64
 end
 
-# eventual goal is to write methods to move Object3Ds through
-# space
+
+# note that proposals will go from az, alt only to XYZ. estimates will be noisier for more distant grid tiles.
+
+
+
 
 struct Object3D
     voxels::Array{Voxel}
     # eventually want to give each voxel material a color
 end
 
-spherical_overlap(vox::SphericalVoxel, coord::Tuple) = coord[1] == vox.az && coord[2] == vox.alt && coord[3] == vox.r
+#spherical_overlap(vox::SphericalVoxel, coord::Tuple) = coord[1] == vox.az && coord[2] == vox.alt && coord[3] == vox.r
 
-CoordDivs = Dict(:az => collect(-90:10:90), 
-                 :alt => collect(-90:10:90),
-                 :dist => collect(0:5),
-                 :x => collect(-5:5),
-                 :y => collect(-5:5),
-                 :z => collect(-5:5))
+spherical_overlap(vox::SphericalVoxel,
+                  tile) = within(vox.az, tile[1]) && within(vox.alt, tile[2]) && within(vox.r, tile[3])
+
+CoordDivs = Dict(:az => collect(-90:5:90), 
+                 :alt => collect(-90:5:90),
+                 :x => collect(1:3:30),
+                 :y => collect(-10:10),
+                 :z => collect(-5:5),
+                 :height => collect(2:2:20))
+CoordDivs[:dist] = collect(0:1:ceil(maximum([norm([x,y,z]) for x in CoordDivs[:x],
+                                                 y in CoordDivs[:y],
+                                                 z in CoordDivs[:z]])))
+                           
+SphericalTiles = Dict(:az => mapwindow(collect, CoordDivs[:az], 0:1, border=Inner()),
+                      :alt => mapwindow(collect, CoordDivs[:alt], 0:1, border=Inner()),
+                      :dist => mapwindow(collect, CoordDivs[:dist], 0:1, border=Inner()))
+                                       
                  
 
+within(val, boundaries) = val >= boundaries[1] && val < boundaries[end]
 photon_count_probs(n, max) = .5 ^(n) * [i <= n ? binomial(n, i) : 0. for i=0:max]
 onehot(v, dom) = [x == v ? 1 : 0 for x in dom]
 @dist LabeledCat(labels, pvec) = labels[categorical(pvec)]
@@ -87,17 +104,24 @@ findnearest(input_arr::AbstractArray, val) = input_arr[findmin([abs(a) for a in 
 @gen function generate_image()
     # eventually draw more complex shapes
     shape = LabeledCat([:rect], [1])
-    shape_height = { :shape_height } ~  uniform_discrete(1, 5)
-    brightness = { :brightness } ~ uniform_discrete(50, 100)
+    shape_height = { :shape_height } ~  uniform_discrete(
+        CoordDivs[:height][1], CoordDivs[:height][end])
+    brightness = { :brightness } ~ uniform_discrete(100, 100)
     alpha = { :alpha } ~ uniform_discrete(1, 1)
+    # this will eventually be the object's center, with the voxels defined by nishad's descriptions. 
     shape_x = { :shape_x } ~ uniform_discrete(CoordDivs[:x][1], CoordDivs[:x][end])
     shape_y = { :shape_y } ~ uniform_discrete(CoordDivs[:y][1], CoordDivs[:y][end])
     shape_z = { :shape_z } ~ uniform_discrete(CoordDivs[:z][1], CoordDivs[:z][end])
-    distance = { :r } ~ Gen.normal(norm([shape_x, shape_y, shape_z]), .01)
+    origin_to_objectcenter_dist = Int64(floor(norm([shape_x, shape_y, shape_z+shape_height/2])))
+    distance = { :r } ~ #Gen.normal(norm([shape_x, shape_y, shape_z+shape_height/2]), .01)
+        uniform_discrete(origin_to_objectcenter_dist-1, origin_to_objectcenter_dist+1)
+    # FIXTHIS -- this is just the middle of the object. want distance to each object component
     object_vox = []
     if shape == :rect
-        for z in shape_z:shape_z+shape_height
+        for (i, z) in enumerate(shape_z:shape_z+shape_height)
             vox = XYZVoxel(shape_x, shape_y, z, alpha, brightness)
+            # eventually want distance of each component like this. propose the distance of each vox. 
+            # distance = { :r } ~ Gen.normal(norm([shape_x, shape_y, z]), .01)
             push!(object_vox, vox)
         end
     end
@@ -107,9 +131,17 @@ findnearest(input_arr::AbstractArray, val) = input_arr[findmin([abs(a) for a in 
     eye = Detector(0, 0, 0, [1, 0, 0], [0, 1, 0], [0, 0, 1])
     object_in_spherical = xyz_vox_to_spherical([object_xyz], eye)
     az_alt_retina = { :image_2D } ~ produce_noisy_2D_retinal_image(set_world_state(object_in_spherical))
-    return reshape(az_alt_retina, (length(CoordDivs[:az]), length(CoordDivs[:alt])))
+    return convert(Matrix{Float64},
+                   reshape(az_alt_retina, (length(SphericalTiles[:az]), length(SphericalTiles[:alt]))))
 end
 
+
+
+# instead of az, alt, and dist indices, this will be az and alt and dist wins.
+
+# switch spherical_overlap to asking if the coordinate is inside the passed tile.
+# project_noisy_2D_image will cycle through indices just as before, but in tile_occupied here,
+# index the tiles. 
 
 function recur_lightproj_deterministic(az_i, alt_i, dist_i, world_state, radial_photon_count)
     if dist_i == 0
@@ -117,8 +149,8 @@ function recur_lightproj_deterministic(az_i, alt_i, dist_i, world_state, radial_
     else
         tile_occupied = map(ws -> spherical_overlap(
             ws,
-            (CoordDivs[:az][az_i], CoordDivs[:alt][alt_i], CoordDivs[:dist][dist_i])),
-                            world_state)
+            [SphericalTiles[:az][az_i], SphericalTiles[:alt][alt_i], SphericalTiles[:dist][dist_i]]),
+            world_state)
         if any(tile_occupied)
             vox = world_state[findfirst(tile_occupied)]
             # note all filters in the world are multiplicative and not additive.
@@ -139,10 +171,10 @@ end
 """ NOISE MODEL 1: BITNOISE ON A BOXFILTER """
 
 @gen function bernoulli_noisegen(p::Float64)
-  # i.e. if all 9 are black pixels, still have a .1 chance of turning it white
-  baseline_noise = .05 
-  pix ~ bernoulli(p+baseline_noise)
-  return pix
+    # i.e. if all 9 are black pixels, still have a .1 chance of turning it white
+    baseline_noise = .05 
+    pix ~ bernoulli(p+baseline_noise)
+    return pix
 end
 
 @gen function generate_bitnoise(im_mat::Matrix{Float64}, filter_size::Int)
@@ -157,8 +189,8 @@ end
 """ NOISE MODEL 2: GAUSSIAN ON A BOXFILTER """
 
 @gen function gaussian_noisegen(μ::Float64)
-    σ = .1
-    pix ~ normal(μ, .1)
+    σ = 1
+    pix ~ normal(μ, σ)
 end
 
 @gen function generate_blur(im_mat::Matrix{Float64}, filter_size::Int)
@@ -169,17 +201,14 @@ end
 end
 
 
-
-
-                         
-
 @gen function produce_noisy_2D_retinal_image(world_state::Array{Voxel})
-    projected_az_alt_vals = [recur_lightproj_deterministic(az_i, alt_i, length(CoordDivs[:dist]), world_state, 0) for az_i=1:length(CoordDivs[:az]), alt_i=1:length(CoordDivs[:alt])]
-
-    az_alt_mat = reshape(projected_az_alt_vals, (length(CoordDivs[:az]), length(CoordDivs[:alt])))
+    projected_az_alt_vals = [recur_lightproj_deterministic(az_i, alt_i, length(SphericalTiles[:dist]), world_state, 0) for az_i=1:length(SphericalTiles[:az]), alt_i=1:length(SphericalTiles[:alt])]
+    az_alt_mat = reshape(projected_az_alt_vals, (length(SphericalTiles[:az]), length(SphericalTiles[:alt])))
     noisy_projection ~ generate_blur(az_alt_mat, 3)
 end
-                                                                                       
+
+
+
 
 function make_2D_constraints(input_trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     constraints = Gen.choicemap()
@@ -228,9 +257,13 @@ function xyz_vox_to_spherical(objects_in_xyz::Array{Object3D}, detector::Detecto
             end
             # eventually want an "out of range" filter here for if any of the az, alt, dist coord are
             # not in the div range, meaning you can't see the object. 
-            push!(spherical_voxels, SphericalVoxel(findnearest(CoordDivs[:az], rad2deg(az)),
-                                                   findnearest(CoordDivs[:alt], rad2deg(alt)),
-                                                   findnearest(CoordDivs[:dist], radius),
+            # push!(spherical_voxels, SphericalVoxel(findnearest(CoordDivs[:az], rad2deg(az)),
+            #                                        findnearest(CoordDivs[:alt], rad2deg(alt)),
+            #                                        findnearest(CoordDivs[:dist], radius),
+            #                                        vox.alpha, vox.brightness))
+            push!(spherical_voxels, SphericalVoxel(rad2deg(az),
+                                                   rad2deg(alt),
+                                                   radius,
                                                    vox.alpha, vox.brightness))
         end
         push!(objects_in_spherical, Object3D(spherical_voxels))
@@ -239,13 +272,34 @@ function xyz_vox_to_spherical(objects_in_xyz::Array{Object3D}, detector::Detecto
 end
 
 
-
 function retina_proj_wrap()
-    xyz_object_state = [Object3D([XYZVoxel(2, 2, 2, 1, 100), XYZVoxel(2, 2, 0, 1, 100)])]
-    eye = Detector(0, 0, 0, [1, 0, 0], [0, 1, 0], [0, 0, 1])
-    spherical_object_state = xyz_vox_to_spherical(xyz_object_state, eye)
-    world_state_spherical = set_world_state(spherical_object_state)
-    tr = Gen.simulate(produce_2D_retinal_image, (world_state_spherical, ))
+    tr = Gen.simulate(generate_image, ())
+    retina_proj_wrap(tr)
+end
+
+function retina_proj_wrap(constraints::DynamicChoiceMap)
+    tr, w = Gen.generate(generate_image, (), constraints)
+    println(w)
+    retina_proj_wrap(tr)
+end
+
+function retina_proj_wrap(tr::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    az_alt_grid = get_retval(tr)
+    println("X")
+    println(tr[:shape_x])
+    println("Y")
+    println(tr[:shape_y])
+    println("Z")
+    println(tr[:shape_z])
+    println("Height")
+    println(tr[:shape_height])
+    fig = Figure(resolution=(1000,1000))
+    azalt_ax = fig[1,1] = Axis(fig)
+    heatmap!(azalt_ax, CoordDivs[:az], CoordDivs[:alt], az_alt_grid)
+    azalt_ax.aspect = DataAspect()
+    azalt_ax.xlabel = "Azimuth"
+    azalt_ax.ylabel = "Altitude"
+    display(fig)
     return tr
 end
 
@@ -253,31 +307,97 @@ end
 function retina_mh_update(tr_populated, amnt_computation)
     mh_traces = []
     accepted_list = []
+    println(tr_populated[:r])
+    println(tr_populated[:shape_height])
     tr = make_2D_constraints(tr_populated)
     for i in 1:amnt_computation
         (tr, accepted) = Gen.mh(tr, select(:shape_x, :shape_y, :shape_z, :shape_height))
         push!(mh_traces, tr)
         push!(accepted_list, accepted)
     end
-    max_distance = floor(maximum([norm([x,y,z]) for x in CoordDivs[:x][1]:CoordDivs[:x][end],
-                                      y in CoordDivs[:y][1]:CoordDivs[:y][end],
-                                      z in CoordDivs[:z][1]:CoordDivs[:z][end]]))
 
     # don't hardcode this -- put height range in coord divs
-    dist_vs_height = zeros(length(1:max_distance), 5)
+    dist_vs_height = zeros(length(CoordDivs[:dist]), length(CoordDivs[:height]))
+    xvals = []
     for mht in mh_traces
-        dist = convert(Int64, floor(norm([tr[:shape_x], tr[:shape_y], tr[:shape_z]])))
+        dist = convert(Int64, floor(mht[:r]))
         height = tr[:shape_height]
         dist_vs_height[dist, height] += 1
+        push!(xvals, tr[:shape_x])
     end
     fig = Figure()
     ax_dist_height = fig[1, 1] = Axis(fig)
-    heatmap!(ax_dist_height, dist_vs_height)
+    heatmap!(ax_dist_height, CoordDivs[:dist], CoordDivs[:height], dist_vs_height)
+    ax_dist_height.xlabel = "Distance"
+    ax_dist_height.ylabel = "Height"
     display(fig)
-    return mh_traces, accepted_list
+    return mh_traces, accepted_list, xvals
+end
+
+function enumeration_grid(input_trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
+    tr_w_constraints = make_2D_constraints(input_trace)
+    g = UniformPointPushforwardGrid(tr_w_constraints, OrderedDict(
+        :r => DiscreteSingletons(CoordDivs[:dist]),
+        :shape_height => DiscreteSingletons(CoordDivs[:height])))
+    makie_plot_grid(g, :r, :shape_height)
+    println(input_trace[:r])
+    println(input_trace[:shape_height])
+    return g
 end
 
 
+
+# want grid to be plotted as a cone. 
+
+function makie_plot_grid(g::UniformPointPushforwardGrid,
+                         x_addr, y_addr;
+                         title::String="Cell weights and representative points")
+    @assert x_addr != y_addr
+    partitions = Dict(
+        x_addr => g.addr2partition[x_addr],
+        y_addr => g.addr2partition[y_addr])
+    repss = Dict()
+    valss = Dict()
+    sub_boundss = Dict()
+    for (addr, prt) in partitions
+        if prt isa DiscreteSingletons
+            valss[addr] = all_representatives(prt)
+            repss[addr] = 1:length(valss[addr])
+            sub_boundss[addr] = 1//2 : 1 : length(valss[addr]) + 1//2
+        else
+            repss[addr] = all_representatives(prt)
+            sub_bounds = all_subinterval_bounds(prt)
+            clip_to_finite!(sub_bounds, lower=minimum(repss[addr]) - 5,
+                            upper=maximum(repss[addr]) + 5)
+            sub_boundss[addr] = sub_bounds
+        end
+    end
+    w = let w_ = GenGridEnumeration.weights(g)
+        addrs = collect(keys(g.addr2partition))
+        (x_ind, y_ind) = indexin([x_addr, y_addr], addrs)
+        dims = Tuple(setdiff(1:length(addrs), [x_ind, y_ind]))
+        w = dropdims(sum(w_; dims=dims); dims=dims)
+        x_ind < y_ind ? w : w'
+    end
+    (x_heavy, y_heavy) = let (i_x, i_y) = Tuple(argmax(w))
+        (repss[x_addr][i_x], repss[y_addr][i_y])
+    end
+    println("making heatmap")
+    f = Figure(resolution = (1600, 800))
+    ax = GLMakie.Axis(f[1, 1])
+    ax.xlabel = string(x_addr)
+    ax.ylabel = string(y_addr)
+    if x_addr ∈ keys(valss)
+        ax.xticks = (1:length(valss[x_addr]), [string(round(v, digits=2)) for v in valss[x_addr]])
+    end
+    if y_addr ∈ keys(valss)
+        ax.yticks = (1:length(valss[y_addr]), [string(round(v, digits=2)) for v in valss[y_addr]])
+    end
+    heatmap!(ax, float(collect(sub_boundss[x_addr])),
+             float(collect(sub_boundss[y_addr])), w, colormap=:thermal)
+    display(f)
+    return ax
+end
 
 
 
@@ -304,9 +424,6 @@ end
     
     # 
 #end
-
-
-
 
 
 # use this if i you want to model the image generation process at the photon level. 
@@ -348,3 +465,4 @@ end
     
 
 
+testv = Voxel[SphericalVoxel(0.0, -5.0, 5, 1.0, 100.0), SphericalVoxel(0.0, -5.0, 5, 1.0, 100.0), SphericalVoxel(0.0, 0.0, 5, 1.0, 100.0), SphericalVoxel(0.0, 0.0, 5, 1.0, 100.0), SphericalVoxel(0.0, 0.0, 5, 1.0, 100.0), SphericalVoxel(0.0, 5.0, 5, 1.0, 100.0), SphericalVoxel(0.0, 5.0, 5, 1.0, 100.0), SphericalVoxel(0.0, 10.0, 5, 1.0, 100.0), SphericalVoxel(0.0, 10.0, 5, 1.0, 100.0), SphericalVoxel(0.0, 15.0, 5, 1.0, 100.0), SphericalVoxel(0.0, 15.0, 5, 1.0, 100.0), SphericalVoxel(0.0, 20.0, 5, 1.0, 100.0), SphericalVoxel(0.0, 20.0, 5, 1.0, 100.0), SphericalVoxel(0.0, 25.0, 5, 1.0, 100.0)]
