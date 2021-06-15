@@ -31,6 +31,24 @@ discretized_gaussian(mean, std, dom) = normalize([
 
 @dist LabeledCategorical(labels, probs) = labels[categorical(probs)]
 
+
+# note these distributions work as follows:
+
+# e.g. :x = { :x } ~ categorical(maybe_one_off(x_curr + v, .2, Xs))
+
+# Xs is the domain of all Xs. xcurr+v is a scalar, .2 is the probability distributed across
+# the indicies one before and one after x_curr+v. onehot will yield a vector that is 0 everywhere
+# but the index provided. maybe_one_off will distribute weight to nextdoor neighbors. categorical will
+# draw an index of Xs according to the probabilities returned by maybe_one_off. importantly,
+# Xs runs 1:20, so indices can be substituted for actual values. 
+
+#
+# obs = { :obs } ~ categorical(discretized_gaussian(x, 2.0, Xs))
+# this is the same idea, but 
+
+
+
+
 Xs = collect(1:20)
 HOME = 10
 Vels = collect(-3:3)
