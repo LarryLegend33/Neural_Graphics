@@ -1,6 +1,5 @@
 using GLMakie
 using Gen
-using GenGridEnumeration
 using LinearAlgebra
 using ImageFiltering
 using OrderedCollections
@@ -80,12 +79,12 @@ spherical_overlap(vox::SphericalVoxel,
                           vox.r, tile[3], SphericalTiles[:dist][end][end])
 
 CoordDivs = Dict(:az => collect(-80.0:10.0:80.0), 
-                 :alt => collect(-80:10:80),
-                 :x => collect(2:2:20), 
-                 :y => collect(-10:2:10),
-                 :z => collect(-10:2:10),
-                 :height => collect(2:20),
-                 :brightness => collect(100:100))
+                 :alt => collect(-80.0:10.0:80.0),
+                 :x => collect(2.0:2.0:20.0), 
+                 :y => collect(-10.0:2.0:10.0),
+                 :z => collect(-10.0:2.0:10.0),
+                 :height => collect(2.0:20.0),
+                 :brightness => collect(100.0:100.0))
 
 CoordDivs[:dist] = collect(0:3:ceil(maximum([norm([x,y,z]) for x in CoordDivs[:x],
                                                  y in CoordDivs[:y],
@@ -158,22 +157,19 @@ discretized_gaussian(mean, std, dom) = normalize([
 @gen function generate_image()
     # eventually draw more complex shapes
     shape = LabeledCat([:rect], [1])
-    shape_height = { :shape_height } ~  uniformLabCat(CoordDivs[:height])
-       
+    height = { :height } ~  uniformLabCat(CoordDivs[:height])
     brightness = { :brightness } ~ uniformLabCat(CoordDivs[:brightness])
     alpha = { :alpha } ~ uniform_discrete(1, 1)
     # this will eventually be the object's center, with the voxels defined by nishad's descriptions. 
-    shape_x = { :shape_x } ~ uniformLabCat(CoordDivs[:x])
-    shape_y = { :shape_y } ~ uniformLabCat(CoordDivs[:y])
-    shape_z = { :shape_z } ~ uniformLabCat(CoordDivs[:z])
-    origin_to_objectcenter_dist = Int64(floor(norm([shape_x, shape_y, shape_z+shape_height/2])))
-    distance = { :r } ~ #Gen.normal(norm([shape_x, shape_y, shape_z+shape_height/2]), .01)
-        uniform_discrete(origin_to_objectcenter_dist, origin_to_objectcenter_dist)
+    x = { :x } ~ uniformLabCat(CoordDivs[:x])
+    y = { :y } ~ uniformLabCat(CoordDivs[:y])
+    z = { :z } ~ uniformLabCat(CoordDivs[:z])
+#    origin_to_objectcenter_dist = Int64(floor(norm([x, y, z + height/2])))
     # FIXTHIS -- this is just the middle of the object. want distance to each object component
     object_vox = []
     if shape == :rect
-        for (i, z) in enumerate(shape_z:shape_z+shape_height)
-            vox = XYZVoxel(shape_x, shape_y, z, alpha, brightness)
+        for (i, zc) in enumerate(z:z+height)
+            vox = XYZVoxel(x, y, zc, alpha, brightness)
             # eventually want distance of each component like this. propose the distance of each vox. 
             # distance = { :r } ~ Gen.normal(norm([shape_x, shape_y, z]), .01)
             push!(object_vox, vox)
@@ -278,8 +274,7 @@ end
 function make_2D_constraints(input_trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     constraints = Gen.choicemap()
     set_submap!(constraints, :image_2D, get_submap(get_choices(input_trace), :image_2D))
-    tr, w = Gen.generate(generate_image, (), constraints)
-    return tr
+    return constraints
 end
 
 
@@ -353,13 +348,13 @@ end
 function retina_proj_wrap(tr::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
     az_alt_grid = get_retval(tr)
     println("X")
-    println(tr[:shape_x])
+    println(tr[:x])
     println("Y")
-    println(tr[:shape_y])
+    println(tr[:y])
     println("Z")
-    println(tr[:shape_z])
+    println(tr[:z])
     println("Height")
-    println(tr[:shape_height])
+    println(tr[:height])
     fig = Figure(resolution=(1000,1000))
     azalt_ax = fig[1,1] = Axis(fig)
     heatmap!(azalt_ax, CoordDivs[:az], CoordDivs[:alt], az_alt_grid)
@@ -374,106 +369,70 @@ end
 function retina_mh_update(tr_populated, amnt_computation)
     mh_traces = []
     accepted_list = []
-    println(tr_populated[:r])
-    println(tr_populated[:shape_height])
-    tr = make_2D_constraints(tr_populated)
+    println(tr_populated[:height])
+    cmap_w_image2D = make_2D_constraints(tr_populated)
+    tr, w = Gen.generate(generate_image, (), cmap_w_image2D)
     for i in 1:amnt_computation
-        (tr, accepted) = Gen.mh(tr, select(:shape_x, :shape_y, :shape_z, :r, :shape_height))
+        (tr, accepted) = Gen.mh(tr, select(:x, :y, :z, :height))
         push!(mh_traces, tr)
         push!(accepted_list, accepted)
     end
-
     # 
-    dist_vs_height = zeros(length(CoordDivs[:dist]), length(CoordDivs[:height]))
+    depth_vs_height = zeros(length(CoordDivs[:x]), length(CoordDivs[:height]))
     xvals = []
     for mht in mh_traces
-        dist = mht[:r]
-        height = tr[:shape_height]
-        dist_vs_height[findfirst(d -> within(dist, d, SphericalTiles[:dist][end][end]),
-                                 SphericalTiles[:dist]),
+        depth = mht[:x]
+        height = tr[:height]
+        depth_vs_height[findfirst(x -> x == depth, CoordDivs[:x]),
                        findfirst(h -> h == height, CoordDivs[:height])] += 1
-        push!(xvals, tr[:shape_x])
+        push!(xvals, tr[:x])
     end
     fig = Figure()
     ax_dist_height = fig[1, 1] = Axis(fig)
-    heatmap!(ax_dist_height, CoordDivs[:dist], CoordDivs[:height], dist_vs_height)
-    ax_dist_height.xlabel = "Distance"
+    heatmap!(ax_dist_height, CoordDivs[:x], CoordDivs[:height], depth_vs_height)
+    ax_dist_height.xlabel = "Depth"
     ax_dist_height.ylabel = "Height"
     display(fig)
     return mh_traces, accepted_list, xvals
 end
 
 
-function enumeration_grid(input_trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}})
-    tr_w_constraints = make_2D_constraints(input_trace)
-    g = UniformPointPushforwardGrid(tr_w_constraints, OrderedDict(
-#        :shape_z => DiscreteSingletons(CoordDivs[:z]),
-   #     :shape_y => DiscreteSingletons(CoordDivs[:y]),
-        :shape_x => DiscreteSingletons(CoordDivs[:x]),
-        :shape_height => DiscreteSingletons(CoordDivs[:height])))
-    makie_plot_grid(g, :shape_x, :shape_height)
-    println(input_trace[:shape_x])
-    println(input_trace[:shape_height])
-    return g
+function grid_enumerate(gen_fn, args, addr_valueset_pairs, input_tr)
+    # addr_vaslueset_pairs = [(addr1, set_of_values_for_this_addr), (addr2, set), ...]
+    logweights = Dict()
+    addrs = [d[1] for d in addr_valueset_pairs]
+    cmap_w_image2D = make_2D_constraints(input_tr)
+    for assmt in Iterators.product((set for (_, set) in addr_valueset_pairs)...)
+        [cmap_w_image2D[addr] = val for (addr, val) in zip(addrs, assmt)]
+        _, weight = Gen.generate(gen_fn, args, cmap_w_image2D)
+        logweights[assmt] = weight
+    end
+    return logweights, addrs
 end
+# want grid to be plotted as a cone.
 
 
+function plot_grid_enumeration_weights(logweights, addrs, addr_x, addr_y)
 
-# want grid to be plotted as a cone. 
-
-function makie_plot_grid(g::UniformPointPushforwardGrid,
-                         x_addr, y_addr;
-                         title::String="Cell weights and representative points")
-    @assert x_addr != y_addr
-    partitions = Dict(
-        x_addr => g.addr2partition[x_addr],
-        y_addr => g.addr2partition[y_addr])
-    repss = Dict()
-    valss = Dict()
-    sub_boundss = Dict()
-    for (addr, prt) in partitions
-        if prt isa DiscreteSingletons
-            valss[addr] = all_representatives(prt)
-            repss[addr] = 1:length(valss[addr])
-            sub_boundss[addr] = 1//2 : 1 : length(valss[addr]) + 1//2
-        else
-            repss[addr] = all_representatives(prt)
-            sub_bounds = all_subinterval_bounds(prt)
-            clip_to_finite!(sub_bounds, lower=minimum(repss[addr]) - 5,
-                            upper=maximum(repss[addr]) + 5)
-            sub_boundss[addr] = sub_bounds
-        end
-    end
-    # w is a matrix of weights ordered exactly how you'd expect. 
-    w = let w_ = GenGridEnumeration.weights(g)
-        addrs = collect(keys(g.addr2partition))
-        (x_ind, y_ind) = indexin([x_addr, y_addr], addrs)
-        dims = Tuple(setdiff(1:length(addrs), [x_ind, y_ind]))
-        w = dropdims(sum(w_; dims=dims); dims=dims)
-        x_ind < y_ind ? w : w'
-    end
-    # this is for plotting centers
-    #    (x_heavy, y_heavy) = let (i_x, i_y) = Tuple(argmax(w))
-    #        (repss[x_addr][i_x], repss[y_addr][i_y])
-    #   end
-    println("making heatmap")
-    f = Figure(resolution = (1600, 800))
-    ax = GLMakie.Axis(f[1, 1])
-    ax.xlabel = string(x_addr)
-    ax.ylabel = string(y_addr)
-    if x_addr ∈ keys(valss)
-        ax.xticks = (1:length(valss[x_addr]), [string(round(v, digits=2)) for v in valss[x_addr]])
-    end
-    if y_addr ∈ keys(valss)
-        ax.yticks = (1:length(valss[y_addr]), [string(round(v, digits=2)) for v in valss[y_addr]])
-    end
-
-    # definite problem here is you are just plotting the weights as a 3D matrix when it has to be a collapsed
-    # 2D array. 
+    addr_x_index = findfirst(f -> f == addr_x, addrs)
+    addr_y_index = findfirst(f -> f == addr_y, addrs)
     
-    heatmap!(ax, float(collect(sub_boundss[x_addr])),
-             float(collect(sub_boundss[y_addr])), w, colormap=:thermal)
-    display(f)
+    prob_matrix = zeros(length(CoordDivs[addr_x]), length(CoordDivs[addr_y]))
+    for (xind, xval) in enumerate(CoordDivs[addr_x]), (yind, yval) in enumerate(CoordDivs[addr_y])
+        weights_for_gridcell = []
+        for key in keys(logweights)
+            if key[addr_x_index] == xval && key[addr_y_index] == yval
+                push!(weights_for_gridcell, logweights[key])
+            end
+        end
+        prob_matrix[xind, yind] = logsumexp(convert(Array{Float64, 1}, weights_for_gridcell))
+    end
+    fig = Figure()
+    ax = fig[1, 1] = Axis(fig)
+    heatmap!(ax, CoordDivs[addr_x], CoordDivs[addr_y], prob_matrix, colormap=:thermal)
+    ax.xlabel = string(addr_x)
+    ax.ylabel = string(addr_y)
+    display(fig)
     return ax
 end
 
