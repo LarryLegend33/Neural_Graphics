@@ -65,6 +65,75 @@ end
 
 
 
+# first proposal is this is the position based on pixels.
+# can propose what it is / how many objects there idea.
+
+
+# threshold. next, calculate maybe_one_of(az). altitude is going to be spread over
+# multiple divs; once you propose a distance, then this becomes a basically
+# deterministic inversion to XYZ. we did a subtraction on the inferred x coordinate. 
+
+
+# note for SMC, you'll need to propose the first distance. 
+
+@gen function linefinder_proposal(twodimage, curr_trace)
+    # first propose a distance
+    # find x and y
+
+    # find nonzero indices in the twodimage. 
+
+    r = { :r } ~ uniformLabCat(CoordDivs[:dist])
+
+    occupied_azalt = sort(findall(f -> f > 0, get_retval(curr_trace)))
+    height = { :height } ~ LabeledCat(CoordDivs[:height],
+                                      maybe_one_off(
+                                          length(occupied_azalt), .2, CoordDivs[:height]))
+    az_location = [mode([c[1] for c in occupied_azalt])]
+    az_tile = SphericalTiles[:az][az_location]
+    alt_tile = SphericalTiles[:az][minimum([c[2] for c in occupied_azalt if c[1] == az_location])]
+    x = { :x } ~ LabeledCat(CoordDivs[:x], maybe_one_off(even(
+        r * cos(alt_tile[2]-alt_tile[1]) * sin(az_tile[2]-az_tile[1])),
+        .2, CoordDivs[:x]))
+    y = { :y } ~ LabeledCat(CoordDivs[:y], maybe_one_off(even(
+        r * cos(alt_tile[2]-alt_tile[1]) * cos(az_tile[2]-az_tile[1])),
+        .2, CoordDivs[:y]))
+    z = { :z } ~ LabeledCat(CoordDivs[:z], maybe_one_off(even(r * sin(alt_tile[2]-alt_tile[1])),
+                                                         .2, CoordDivs[:z]))
+    return x, y, z
+end
+
+
+    
+    # XYZVox
+
+    
+    # z_in_basis = r * sin(alt)
+    # y_in_basis = r * cos(alt) * cos(az)
+    # x_in_basis = r * cos(alt * sin(az)
+
+
+
+
+# slightly more complex version
+
+# function vertical_line_finder(image2D)
+#     nonzero_azalt = sort(findall(f -> f > 0, image2D))
+#     object_dict = Dict()
+#     [object_dict[i] = [] for i in SphericalTiles[:az]]
+#     [push!(object_dict[ci[1]], ci[2]) for ci in nonzero_azalt]
+#     line_cands = []
+#     for (az_div, az_range) in enumerate(SphericalTiles)
+#         alt_coords = object_dict[az_div]
+#         if length(alt_coords) > 2
+# end
+            
+            
+        
+        
+        
+    
+    
+
 
 struct Object3D
     voxels::Array{Voxel}
@@ -100,7 +169,9 @@ within(val, boundaries, b_max) = (val >= boundaries[1] && val < boundaries[end])
 @dist LabeledCat(labels, pvec) = labels[categorical(pvec)]
 @dist uniformLabCat(labels) = LabeledCat(labels, 1/length(labels) * ones(length(labels)))
 findnearest(input_arr::AbstractArray, val) = input_arr[findmin([abs(a) for a in input_arr.-val])[2]]
+even(input) = 2 * round(input / 2)
 
+                            
 onehot(x, dom) =
     x < first(dom) ? onehot(first(dom), dom) :
     x > last(dom)  ? onehot(last(dom), dom)  :
@@ -164,7 +235,8 @@ discretized_gaussian(mean, std, dom) = normalize([
     x = { :x } ~ uniformLabCat(CoordDivs[:x])
     y = { :y } ~ uniformLabCat(CoordDivs[:y])
     z = { :z } ~ uniformLabCat(CoordDivs[:z])
-#    origin_to_objectcenter_dist = Int64(floor(norm([x, y, z + height/2])))
+    origin_to_objectcenter_dist = Int64(floor(norm([x, y, z + height/2])))
+#    r = { :r } ~ LabeledCat(maybe_one_off
     # FIXTHIS -- this is just the middle of the object. want distance to each object component
     object_vox = []
     if shape == :rect
@@ -222,17 +294,22 @@ end
 
 @gen function bernoulli_noisegen(p::Float64)
     # i.e. if all 9 are black pixels, still have a .1 chance of turning it white
-    baseline_noise = .05 
+    baseline_noise = 0.0
     pix ~ bernoulli(p+baseline_noise)
     return pix
 end
 
+
+# note problem with this is that you will likely extend the percept upwards 
+
 @gen function generate_bitnoise(im_mat::Matrix{Float64}, filter_size::Int)
     # if all 9 are white pixels, still have a .1 chance of going black.
     # this will be offset by the baseline noise the other way. 
-    baseline_noise = .9
-    conv_filter = baseline_noise*ones(filter_size, filter_size) / (filter_size^2)
-    image_2D = { :image_2D } ~ Gen.Map(bernoulli_noisegen)(imfilter(im_mat, conv_filter))
+    baseline_noise = .99
+    conv_filter = hcat(zeros(filter_size, 1), ones(filter_size, 1), zeros(filter_size, 1) /
+        (filter_size))
+    #    image_2D = { :image_2D } ~ Gen.Map(bernoulli_noisegen)(imfilter(im_mat, conv_filter))
+    image_2D = { :image_2D } ~ Gen.Map(bernoulli_noisegen)(im_mat / CoordDivs[:brightness][1])
 end
 
 
@@ -241,7 +318,7 @@ end
 # discretized normal distribution here. 
 
 @gen function gaussian_noisegen(μ::Float64, maxpix::Float64)
-    σ = 20.0
+    σ = 10.0
     pixrange = collect(0.0:maxpix)
     pix ~ LabeledCat(pixrange, discretized_gaussian(μ, σ, pixrange))
     #    pix ~ normal(μ, σ)
@@ -265,7 +342,9 @@ end
 @gen function produce_noisy_2D_retinal_image(world_state::Array{Voxel})
     projected_az_alt_vals = [recur_lightproj_deterministic(az_i, alt_i, length(SphericalTiles[:dist]), world_state, 0) for az_i=1:length(SphericalTiles[:az]), alt_i=1:length(SphericalTiles[:alt])]
     az_alt_mat = reshape(projected_az_alt_vals, (length(SphericalTiles[:az]), length(SphericalTiles[:alt])))
-    noisy_projection ~ generate_blur(az_alt_mat, 1)
+#    noisy_projection ~ generate_blur(az_alt_mat, 1)
+    noisy_projection ~ generate_bitnoise(az_alt_mat, 1)
+    
 end
 
 
@@ -425,7 +504,12 @@ function plot_grid_enumeration_weights(logweights, addrs, addr_x, addr_y)
                 push!(weights_for_gridcell, logweights[key])
             end
         end
-        prob_matrix[xind, yind] = logsumexp(convert(Array{Float64, 1}, weights_for_gridcell))
+        if  logsumexp(convert(Array{Float64, 1}, weights_for_gridcell)) != -Inf
+            println(xval)
+            println(yval)
+            println(logsumexp(convert(Array{Float64, 1}, weights_for_gridcell)))
+        end
+        prob_matrix[xind, yind] = exp(logsumexp(convert(Array{Float64, 1}, weights_for_gridcell)))
     end
     fig = Figure()
     ax = fig[1, 1] = Axis(fig)
@@ -449,9 +533,6 @@ end
         
 #function project_to_xyz(trace::, cam::Detector)
     
-    # z_in_basis = r * sin(alt)
-    # y_in_basis = r * cos(alt) * cos(az)
-    # x_in_basis = r * cos(alt * sin(az)
     # draw these out perfectly later.
     # unit_cam, unit_parallel, unit_perp has to be calculated from cam_unit_vec
     # dx = unit_cam * x_in_basis
