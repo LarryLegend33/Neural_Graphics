@@ -22,9 +22,8 @@ using Distributions
 
 # TODO
 
-# write a better height proposal
-# code in the :r variable into the model with a discretized gaussian around the norm
-# write a bernoulli variable that either changes the height or changes the depth. 
+# in line_proposal write the correct way to get an exact az and alt coord out of a tile (median? mean?)
+
 
 
 abstract type Voxel end
@@ -100,7 +99,7 @@ end
 spherical_overlap(vox::SphericalVoxel,
                   tile) = within(vox.az, tile[1], SphericalTiles[:az][end][end]) && within(
                       vox.alt, tile[2], SphericalTiles[:alt][end][end]) && within(
-                          vox.r, tile[3], SphericalTiles[:dist][end][end])
+                          vox.r, tile[3], SphericalTiles[:r][end][end])
 
 CoordDivs = Dict(:az => collect(-80.0:10.0:80.0), 
                  :alt => collect(-80.0:10.0:80.0),
@@ -111,15 +110,18 @@ CoordDivs = Dict(:az => collect(-80.0:10.0:80.0),
                  :height => collect(2.0:20.0),
                  :brightness => collect(100.0:100.0))
 
-CoordDivs[:dist] = collect(0:3:ceil(maximum([norm([x,y,z]) for x in CoordDivs[:x],
+CoordDivs[:r] = collect(0:3:ceil(maximum([norm([x,y,z]) for x in CoordDivs[:x],
                                                  y in CoordDivs[:y],
                                                  z in CoordDivs[:z]])))
                            
 SphericalTiles = Dict(:az => mapwindow(collect, CoordDivs[:az], 0:1, border=Inner()),
                       :alt => mapwindow(collect, CoordDivs[:alt], 0:1, border=Inner()),
-                      :dist => mapwindow(collect, CoordDivs[:dist], 0:1, border=Inner()))
+                      :r => mapwindow(collect, CoordDivs[:r], 0:1, border=Inner()))
 
-
+XInit = 10.0
+YInit = 0.0
+ZInit = 0.0
+HeightInit = 8.0
 
 # only value that isn't caught by boundaries is the last member of the range.
 # if the value is the last member of the domain and the last tile is the boundary. 
@@ -179,8 +181,7 @@ discretized_gaussian(mean, std, dom) = normalize([
     y = { :y } ~ uniformLabCat(CoordDivs[:y])
     z = { :z } ~ uniformLabCat(CoordDivs[:z])
     origin_to_objectcenter_dist = Int64(floor(norm([x, y, z + height/2])))
-#    r = { :r } ~ LabeledCat(maybe_one_off
-    # FIXTHIS -- this is just the middle of the object. want distance to each object component
+    r = { :r } ~ LabeledCat(CoordDivs[:r], discretized_gaussian(origin_to_objectcenter_dist, 2.0, CoordDivs[:r]))
     object_vox = []
     if shape == :rect
         for (i, zc) in enumerate(z:z+height)
@@ -212,7 +213,7 @@ function recur_lightproj_deterministic(az_i, alt_i, dist_i, world_state, radial_
     else
         tile_occupied = map(ws -> spherical_overlap(
             ws,
-            [SphericalTiles[:az][az_i], SphericalTiles[:alt][alt_i], SphericalTiles[:dist][dist_i]]),
+            [SphericalTiles[:az][az_i], SphericalTiles[:alt][alt_i], SphericalTiles[:r][dist_i]]),
             world_state)
         if any(tile_occupied)
             vox = world_state[findfirst(tile_occupied)]
@@ -270,7 +271,7 @@ end
     # this will be offset by the baseline noise the other way. 
     conv_filter = ones(filter_size, filter_size) / (filter_size^2)
     #    maxpix = maximum(im_mat)
-    maxpix = reduce(+ , [CoordDivs[:brightness][end] for d in SphericalTiles[:dist]])
+    maxpix = reduce(+ , [CoordDivs[:brightness][end] for d in SphericalTiles[:r]])
     size_mat = size(im_mat)
     image_2D = { :image_2D } ~ Gen.Map(gaussian_noisegen)(
         imfilter(im_mat, conv_filter), maxpix*ones(size_mat[1]*size_mat[2]))
@@ -280,7 +281,7 @@ end
 
 
 @gen function produce_noisy_2D_retinal_image(world_state::Array{Voxel})
-    projected_az_alt_vals = [recur_lightproj_deterministic(az_i, alt_i, length(SphericalTiles[:dist]), world_state, 0) for az_i=1:length(SphericalTiles[:az]), alt_i=1:length(SphericalTiles[:alt])]
+    projected_az_alt_vals = [recur_lightproj_deterministic(az_i, alt_i, length(SphericalTiles[:r]), world_state, 0) for az_i=1:length(SphericalTiles[:az]), alt_i=1:length(SphericalTiles[:alt])]
     az_alt_mat = reshape(projected_az_alt_vals, (length(SphericalTiles[:az]), length(SphericalTiles[:alt])))
 #    noisy_projection ~ generate_blur(az_alt_mat, 1)
     noisy_projection ~ generate_bitnoise(az_alt_mat, 1)
@@ -291,23 +292,24 @@ end
 """ SMC RELATED FUNCTIONS """
 
 @gen function move_object_in_xyz(T::Int)
-    x = 10.0
-    y = 0.0
-    v = 1.0
-    height = 8.0
+    x = XInit
+    y = YInit
+    v = VThatLeadToXYInit
+    height = HeightInit
+    z = ZInit
     # this should be implicit. your velocity before this was 0.
     # XInit and EInit are added to the plot as the first member of the array. 
     xs = []
     ys = []
     obss = []
     # draw z, draw height
-    height = { :height } ~ uniformLabCat(CoordDivs[:height])
-    z = { :z } ~ uniformLabCat(CoordDivs[:z])
+    size_or_depth = { :size_or_depth } ~ bernoulli(.5)
+#    z = { :z } ~ uniformLabCat(CoordDivs[:z])
     brightness = { :brightness } ~ uniformLabCat(CoordDivs[:brightness])
     alpha = { :alpha } ~ uniform_discrete(1, 1)
-    size_or_depth = { :size_or_depth } ~ bernoulli(.5)
+
     for t in 1:T
-        (v, x, y, h, obs) = {t} ~ xyz_step_model(v, x, y, z, height, alpha, brightness)
+        (v, x, y, h, obs) = {t} ~ xyz_step_model(v, x, y, z, height, alpha, brightness, size_or_depth)
         push!(xs, x)
         push!(ys, y)
         push!(obss, obs)
@@ -317,22 +319,27 @@ end
                 obs, (length(SphericalTiles[:az]), length(SphericalTiles[:alt])))) for obs in obss])
 end
 
-@gen function xyz_step_model(v_prev, x_curr, y_curr, z_curr, height, alpha, brightness)
+@gen function xyz_step_model(v_prev, x_curr, y_curr, z_curr, height_curr, alpha, brightness, size_or_depth)
     # make a step depending on your energy and x location, and your previous velocity
     v = { :v } ~ LabeledCat(CoordDivs[:v], maybe_one_off(v_prev, .2, CoordDivs[:v]))
-    x = { :x } ~ LabeledCat(CoordDivs[:x], maybe_one_off(x_curr + v, .2, CoordDivs[:x]))
+    if size_or_depth
+        height = { :height } ~ uniform_discrete(height, height)
+        x = { :x } ~ LabeledCat(CoordDivs[:x], maybe_one_off(x_curr + v, .2, CoordDivs[:x]))
+    else
+        height = { :height } ~ LabeledCat(CoordDivs[:height], maybe_one_off(height_curr + v, .2, CoordDivs[:height]))
+        x = { :x } ~ uniform_discrete(x, x)
+    end
     y = { :y } ~ LabeledCat(CoordDivs[:y], maybe_one_off(y_curr + v, .2, CoordDivs[:y]))
     # this will eventually be the object's center, with the voxels defined by nishad's descriptions. 
     origin_to_objectcenter_dist = Int64(floor(norm([x, y, z_curr + height/2])))
-#    r = { :r } ~ LabeledCat(maybe_one_off
-    # FIXTHIS -- this is just the middle of the object. want distance to each object component
+    r = { :r } ~ LabeledCat(CoordDivs[:r],
+                            discretized_gaussian(origin_to_objectcenter_dist, 2.0, CoordDivs[:r]))
     object_vox = []
     for (i, zc) in enumerate(z_curr:z_curr+height)
         vox = XYZVoxel(x, y, zc, alpha, brightness)
         # eventually want distance of each component like this. propose the distance of each vox. 
         push!(object_vox, vox)
     end
-
     # shape dist is implicitly the mag of the vector between the eye and the vox
     object_xyz = Object3D(object_vox)
     # deterministic for now but want to infer cam angle too
@@ -342,31 +349,34 @@ end
     return (v, x, y, az_alt_retina)
 end
 
-@gen function linefinder_proposal(twodimage, curr_trace)
+@gen function linefinder_proposal(curr_trace, t)
     # first propose a distance
     # find x and y
     # find nonzero indices in the twodimage. 
-    r = { :r } ~ uniformLabCat(CoordDivs[:dist])
     occupied_azalt = sort(findall(f -> f > 0, get_retval(curr_trace)))
-
     az_location = [mode([c[1] for c in occupied_azalt])]
     az_tile = SphericalTiles[:az][az_location]
-    alt_tile = SphericalTiles[:az][minimum([c[2] for c in occupied_azalt if c[1] == az_location])]
+    alt_tile_low = SphericalTiles[:az][minimum([c[2] for c in occupied_azalt if c[1] == az_location])]
+    alt_tile_high = SphericalTiles[:az][maximum([c[2] for c in occupied_azalt if c[1] == az_location])]
+
+    # can be a bit more intelligent about distance here if you want. should be somewhat related to amount of alt
+    if t > 1
+        r = { :r } ~ LabeledCat(CoordDivs[:r],
+                                maybe_one_or_two_off(norm([curr_trace[:x], curr_trace[:y], ZInit]), .6, CoordDivs[:r]))
+    else
+        r = { :r } ~ LabeledCat(CoordDivs[:r], maybe_one_off(norm([XInit, YInit, ZInit]), .2, CoordDivs[:r]))
+    end
     x = { :x } ~ LabeledCat(CoordDivs[:x], maybe_one_off(even(
-        r * cos(alt_tile[2]-alt_tile[1]) * sin(az_tile[2]-az_tile[1])),
+        r * cos(alt_tile_low[2]-alt_tile_low[1]) * sin(az_tile[2]-az_tile[1])),
         .2, CoordDivs[:x]))
     y = { :y } ~ LabeledCat(CoordDivs[:y], maybe_one_off(even(
-        r * cos(alt_tile[2]-alt_tile[1]) * cos(az_tile[2]-az_tile[1])),
+        r * cos(alt_tile_low[2]-alt_tile_low[1]) * cos(az_tile[2]-az_tile[1])),
         .2, CoordDivs[:y]))
     z = { :z } ~ LabeledCat(CoordDivs[:z], maybe_one_off(even(
-        r * sin(alt_tile[2]-alt_tile[1])), .2, CoordDivs[:z]))
-
-    # this is a bad proposal. 
-    # height is directly related to z at depth and amnt alt taken up.
-    # figure out a good proposal here for height! 
+        r * sin(alt_tile_low[2]-alt_tile_low[1])), .2, CoordDivs[:z]))
     height = { :height } ~ LabeledCat(CoordDivs[:height],
-                                      maybe_one_off(
-                                          length(occupied_azalt), .2, CoordDivs[:height]))
+                                      maybe_one_off(r * sin((alt_tile_high[2]-alt_tile_high[1]) - (alt_tile_low[2]
+                                          , .2, CoordDivs[:height]))
 
     
     return x, y, z
@@ -592,7 +602,7 @@ end
     else
         tile_occupied = map(ws -> spherical_overlap(
             ws,
-            (CoordDivs[:az][az_i], CoordDivs[:alt][alt_i], CoordDivs[:dist][dist_i])),
+            (CoordDivs[:az][az_i], CoordDivs[:alt][alt_i], CoordDivs[:r][dist_i])),
                             world_state)
         if any(tile_occupied)
             vox = world_state[findfirst(tile_occupied)]
@@ -612,7 +622,7 @@ end
 
 
 @gen function produce_2D_retinal_image(world_state::Array{Voxel})
-    projected_vals = [{(az_i, alt_i)} ~ recur_light_projection(az_i, alt_i, length(CoordDivs[:dist]), world_state, 0)
+    projected_vals = [{(az_i, alt_i)} ~ recur_light_projection(az_i, alt_i, length(CoordDivs[:r]), world_state, 0)
                       for az_i=1:length(CoordDivs[:az]),
                           alt_i=1:length(CoordDivs[:alt])]
     return projected_vals
