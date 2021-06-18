@@ -17,8 +17,6 @@ using Colors
 # play with the camera location, ideas about perspective. things that are further will be
 # further from the ground.
 
-
-
 # start the recursion with dist_i = length(distance_divs)
 
 
@@ -71,24 +69,6 @@ end
 # note for SMC, you'll need to propose the first distance. 
 
 
-
-# THIS IS FOR TRANSFORMING TO A CAMERA WITH A YAW AND PITCH
-# z_in_basis = r * sin(alt)
-# y_in_basis = r * cos(alt) * cos(az)
-# x_in_basis = r * cos(alt * sin(az)
-
-# slightly more complex version of linefinding
-
-# function vertical_line_finder(image2D)
-#     nonzero_azalt = sort(findall(f -> f > 0, image2D))
-#     object_dict = Dict()
-#     [object_dict[i] = [] for i in SphericalTiles[:az]]
-#     [push!(object_dict[ci[1]], ci[2]) for ci in nonzero_azalt]
-#     line_cands = []
-#     for (az_div, az_range) in enumerate(SphericalTiles)
-#         alt_coords = object_dict[az_div]
-#         if length(alt_coords) > 2
-# end
             
 
 struct Object3D
@@ -112,9 +92,9 @@ CoordDivs = Dict(:az => collect(-80.0:10.0:80.0),
                  :height => collect(2.0:20.0),
                  :brightness => collect(100.0:100.0))
 
-CoordDivs[:r] = collect(0:3:ceil(maximum([norm([x,y,z]) for x in CoordDivs[:x],
-                                                 y in CoordDivs[:y],
-                                                 z in CoordDivs[:z]])))
+CoordDivs[:r] = collect(0:ceil(maximum([norm([x,y,z]) for x in CoordDivs[:x],
+                                            y in CoordDivs[:y],
+                                            z in CoordDivs[:z]])))
                            
 SphericalTiles = Dict(:az => mapwindow(collect, CoordDivs[:az], 0:1, border=Inner()),
                       :alt => mapwindow(collect, CoordDivs[:alt], 0:1, border=Inner()),
@@ -183,11 +163,11 @@ discretized_gaussian(mean, std, dom) = normalize([
     x = { :x } ~ uniformLabCat(CoordDivs[:x])
     y = { :y } ~ uniformLabCat(CoordDivs[:y])
     z = { :z } ~ uniformLabCat(CoordDivs[:z])
-    origin_to_objectcenter_dist = Int64(floor(norm([x, y, z + height/2])))
+    origin_to_objectcenter_dist = Int64(floor(norm([x, y, z])))
     r = { :r } ~ LabeledCat(CoordDivs[:r], discretized_gaussian(origin_to_objectcenter_dist, 2.0, CoordDivs[:r]))
     object_vox = []
     if shape == :rect
-        for (i, zc) in enumerate(z:z+height)
+        for (i, zc) in enumerate(z-(height/2):z+(height/2))
             vox = XYZVoxel(x, y, zc, alpha, brightness)
             # eventually want distance of each component like this. propose the distance of each vox. 
             # distance = { :r } ~ Gen.normal(norm([shape_x, shape_y, z]), .01)
@@ -306,13 +286,13 @@ end
     obss = []
     # draw z, draw height
     size_or_depth = { :size_or_depth } ~ bernoulli(.5)
-#    z = { :z } ~ uniformLabCat(CoordDivs[:z])
+#    z = { :z } ~ uniformLabCat(CoordDivs[:Z])
     brightness = { :brightness } ~ uniformLabCat(CoordDivs[:brightness])
     alpha = { :alpha } ~ uniform_discrete(1, 1)
     for t in 1:T
-        (v, x, y, h, obs) = {t} ~ xyz_step_model(v, x, y, z, height, alpha, brightness, size_or_depth)
+        (v, x, y, height, obs) = {t} ~ xyz_step_model(v, x, y, z, height, alpha, brightness, size_or_depth)
         push!(xs, x)
-        push!(hs, h)
+        push!(hs, height)
         push!(obss, obs)
     end
     return (xs, hs, obss,
@@ -324,19 +304,19 @@ end
     # make a step depending on your energy and x location, and your previous velocity
     v = { :v } ~ LabeledCat(CoordDivs[:v], maybe_one_off(v_prev, .2, CoordDivs[:v]))
     if size_or_depth
-        height = { :height } ~ uniform_discrete(height, height)
+        height = { :height } ~ uniform_discrete(convert(Int64, height_curr), convert(Int64, height_curr))
         x = { :x } ~ LabeledCat(CoordDivs[:x], maybe_one_off(x_curr + v, .2, CoordDivs[:x]))
     else
         height = { :height } ~ LabeledCat(CoordDivs[:height], maybe_one_off(height_curr + v, .2, CoordDivs[:height]))
-        x = { :x } ~ uniform_discrete(x, x)
+        x = { :x } ~ uniform_discrete(convert(Int64, x_curr), convert(Int64, x_curr))
     end
     y = { :y } ~ LabeledCat(CoordDivs[:y], maybe_one_off(y_curr + v, .2, CoordDivs[:y]))
     # this will eventually be the object's center, with the voxels defined by nishad's descriptions. 
-    origin_to_objectcenter_dist = Int64(floor(norm([x, y, z_curr + height/2])))
+    origin_to_objectcenter_dist = Int64(floor(norm([x, y, z_curr])))
     r = { :r } ~ LabeledCat(CoordDivs[:r],
                             discretized_gaussian(origin_to_objectcenter_dist, 2.0, CoordDivs[:r]))
     object_vox = []
-    for (i, zc) in enumerate(z_curr:z_curr+height)
+    for (i, zc) in enumerate(z_curr-round(height/2):z_curr+round(height/2))
         vox = XYZVoxel(x, y, zc, alpha, brightness)
         # eventually want distance of each component like this. propose the distance of each vox. 
         push!(object_vox, vox)
@@ -346,41 +326,52 @@ end
     # deterministic for now but want to infer cam angle too
     eye = Detector(0, 0, 0, [1, 0, 0], [0, 1, 0], [0, 0, 1])
     object_in_spherical = xyz_vox_to_spherical([object_xyz], eye)
-    az_alt_retina = { :image_2D } ~ produce_noisy_2D_retinal_image(set_world_state(object_in_spherical))
-    return (v, x, y, az_alt_retina)
+    projected_az_alt_vals = [recur_lightproj_deterministic(az_i, alt_i, length(SphericalTiles[:r]),
+                                                           set_world_state(object_in_spherical), 0) for az_i=1:length(SphericalTiles[:az]),
+                                                               alt_i=1:length(SphericalTiles[:alt])]
+    az_alt_mat = reshape(projected_az_alt_vals, (length(SphericalTiles[:az]), length(SphericalTiles[:alt])))
+
+    az_alt_retina = { :image_2D } ~ Gen.Map(bernoulli_noisegen)(az_alt_mat / CoordDivs[:brightness][1])
+  #  az_alt_retina = { :image_2D } ~ produce_noisy_2D_retinal_image(set_world_state(object_in_spherical))
+    return (v, x, y, height, az_alt_retina)
+
 end
 
 @gen function linefinder_proposal(curr_trace, obs, t)
     occupied_azalt = sort(findall(f -> f > 0, obs))
-    az_location = [mode([c[1] for c in occupied_azalt])]
+    az_location = mode([c[1] for c in occupied_azalt])
     az_tile = SphericalTiles[:az][az_location]
     alt_tile_low = SphericalTiles[:az][minimum([c[2] for c in occupied_azalt if c[1] == az_location])]
     alt_tile_high = SphericalTiles[:az][maximum([c[2] for c in occupied_azalt if c[1] == az_location])]
     # can be a bit more intelligent about distance here if you want. should be somewhat related to amount of alt tiles 
     if t > 1
-        r = { :r } ~ LabeledCat(CoordDivs[:r],
-                                maybe_one_or_two_off(norm([curr_trace[t-1 => :x],
-                                                           curr_trace[t-1 => :y], ZInit]), .6, CoordDivs[:r]))
+        r = { t => :r } ~ LabeledCat(CoordDivs[:r],
+                                maybe_one_or_two_off(round(norm([curr_trace[t-1 => :x],
+                                                           curr_trace[t-1 => :y], ZInit])), .6, CoordDivs[:r]))
     else
-        r = { :r } ~ LabeledCat(CoordDivs[:r], maybe_one_off(norm([XInit, YInit, ZInit]), .2, CoordDivs[:r]))
+        r = { t => :r } ~ LabeledCat(CoordDivs[:r], maybe_one_off(round(norm([XInit, YInit, ZInit])), .2, CoordDivs[:r]))
     end
-    x = { :x } ~ LabeledCat(CoordDivs[:x],
+    x = { t => :x } ~ LabeledCat(CoordDivs[:x],
                             maybe_one_off(even(round(r * cos(mean(alt_tile_low)) * sin(mean(az_tile)))),
                                           .2, CoordDivs[:x]))
-    y = { :y } ~ LabeledCat(CoordDivs[:y],
+    y = { t => :y } ~ LabeledCat(CoordDivs[:y],
                             maybe_one_off(even(round(r * cos(mean(alt_tile_low)) * cos(mean(az_tile)))),
                                           .2, CoordDivs[:y]))
-   # z = { :z } ~ LabeledCat(CoordDivs[:z], maybe_one_off(even(
+   # z = { t => :z } ~ LabeledCat(CoordDivs[:z], maybe_one_off(even(
     #    r * sin(alt_tile_low[2]-alt_tile_low[1])), .2, CoordDivs[:z]))
-    height = { :height } ~ LabeledCat(CoordDivs[:height],
-                                      maybe_one_off(r * sin(mean(alt_tile_high) - mean(alt_tile_low)),                                          .2, CoordDivs[:height]))
+    if t > 1
+        v = { t => :v } ~ LabeledCat(CoordDivs[:v], maybe_one_off(y-curr_trace[t-1 => :y], .2, CoordDivs[:v]))
+    else
+        v = { t => :v } ~ LabeledCat(CoordDivs[:v], maybe_one_off(y-YInit, .2, CoordDivs[:v]))
+    end
+    height = { t => :height } ~ LabeledCat(CoordDivs[:height],
+                                      maybe_one_off(round(r * sin(mean(alt_tile_high) - mean(alt_tile_low))), .2, CoordDivs[:height]))
     return x, y, height
 end
 
 
 function linepos_particle_filter(num_particles::Int, gt_trace::Trace, gen_function::DynamicDSLFunction{Any}, proposal)
-    observations = get_retval(gt_trace)[3]
-#    obs_choices = [Gen.choicemap((i => :image_2D, get_submap(get_choices(gt_trace), i => :image_2D))) for i in 1:length(observations)]
+    observations = get_retval(gt_trace)[4]
     obs_choices = [Gen.choicemap() for i in 1:length(observations)]
     [set_submap!(c, t => :image_2D, get_submap(get_choices(gt_trace), t => :image_2D)) for (t, c) in enumerate(obs_choices)]
     if proposal == ()
@@ -389,14 +380,13 @@ function linepos_particle_filter(num_particles::Int, gt_trace::Trace, gen_functi
         state = Gen.initialize_particle_filter(gen_function, (1,), obs_choices[1], proposal, (gt_trace, observations[1], 1), num_particles)
     end
     for t in 2:length(observations)
-        obs = observations[t]
+        obs = obs_choices[t]
         Gen.maybe_resample!(state, ess_threshold=num_particles)
         if proposal == ()
             Gen.particle_filter_step!(state, (t,), (UnknownChange(),), obs)
         else
-            Gen.particle_filter_step!(state, (t,), (UnknownChange(),), obs, proposal, (observations[t],t))
+            Gen.particle_filter_step!(state, (t,), (UnknownChange(),), obs, proposal, (observations[t], t))
         end
-        println([state.traces[1][tind => :x] for tind in 1:t])
     end
     heatmap_pf_results(state, gt_trace)
     return state
@@ -436,9 +426,10 @@ end
 
 
 
+# note to get realistic effect, height has to grow upwards and downwards, not from bottom z up. 
 
-
-function animate_azalt_movement(obs)
+function animate_azalt_movement(tr)
+    obs = get_retval(tr)[end]
     fig = Figure(resolution=(1000,1000))
     azalt_ax = fig[1,1] = Axis(fig)
     time = Node(1)
@@ -685,3 +676,21 @@ end
 end
 
     
+
+# THIS IS FOR TRANSFORMING TO A CAMERA WITH A YAW AND PITCH
+# z_in_basis = r * sin(alt)
+# y_in_basis = r * cos(alt) * cos(az)
+# x_in_basis = r * cos(alt * sin(az)
+
+# slightly more complex version of linefinding
+
+# function vertical_line_finder(image2D)
+#     nonzero_azalt = sort(findall(f -> f > 0, image2D))
+#     object_dict = Dict()
+#     [object_dict[i] = [] for i in SphericalTiles[:az]]
+#     [push!(object_dict[ci[1]], ci[2]) for ci in nonzero_azalt]
+#     line_cands = []
+#     for (az_div, az_range) in enumerate(SphericalTiles)
+#         alt_coords = object_dict[az_div]
+#         if length(alt_coords) > 2
+# end
