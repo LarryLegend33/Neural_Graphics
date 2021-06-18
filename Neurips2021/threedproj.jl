@@ -4,6 +4,8 @@ using LinearAlgebra
 using ImageFiltering
 using OrderedCollections
 using Distributions
+using StatsBase
+using Colors
 
 
 # eventually want to find a way to subtype the voxel types to define
@@ -121,6 +123,7 @@ SphericalTiles = Dict(:az => mapwindow(collect, CoordDivs[:az], 0:1, border=Inne
 XInit = 10.0
 YInit = 0.0
 ZInit = 0.0
+VThatLeadToXYInit = 1.0
 HeightInit = 8.0
 
 # only value that isn't caught by boundaries is the last member of the range.
@@ -196,7 +199,7 @@ discretized_gaussian(mean, std, dom) = normalize([
     # deterministic for now but want to infer cam angle too
     eye = Detector(0, 0, 0, [1, 0, 0], [0, 1, 0], [0, 0, 1])
     object_in_spherical = xyz_vox_to_spherical([object_xyz], eye)
-    az_alt_retina = { :image_2D } ~ produce_noisy_2D_retinal_image(set_world_state(object_in_spherical))
+    az_alt_retina = { :obs } ~ produce_noisy_2D_retinal_image(set_world_state(object_in_spherical))
     return convert(Matrix{Float64},
                    reshape(az_alt_retina, (length(SphericalTiles[:az]), length(SphericalTiles[:alt]))))
 end
@@ -285,7 +288,6 @@ end
     az_alt_mat = reshape(projected_az_alt_vals, (length(SphericalTiles[:az]), length(SphericalTiles[:alt])))
 #    noisy_projection ~ generate_blur(az_alt_mat, 1)
     noisy_projection ~ generate_bitnoise(az_alt_mat, 1)
-    
 end
 
 
@@ -300,21 +302,20 @@ end
     # this should be implicit. your velocity before this was 0.
     # XInit and EInit are added to the plot as the first member of the array. 
     xs = []
-    ys = []
+    hs = []
     obss = []
     # draw z, draw height
     size_or_depth = { :size_or_depth } ~ bernoulli(.5)
 #    z = { :z } ~ uniformLabCat(CoordDivs[:z])
     brightness = { :brightness } ~ uniformLabCat(CoordDivs[:brightness])
     alpha = { :alpha } ~ uniform_discrete(1, 1)
-
     for t in 1:T
         (v, x, y, h, obs) = {t} ~ xyz_step_model(v, x, y, z, height, alpha, brightness, size_or_depth)
         push!(xs, x)
-        push!(ys, y)
+        push!(hs, h)
         push!(obss, obs)
     end
-    return (xs, ys,
+    return (xs, hs, obss,
             [convert(Matrix{Float64}, reshape(
                 obs, (length(SphericalTiles[:az]), length(SphericalTiles[:alt])))) for obs in obss])
 end
@@ -349,38 +350,93 @@ end
     return (v, x, y, az_alt_retina)
 end
 
-@gen function linefinder_proposal(curr_trace, t)
-    # first propose a distance
-    # find x and y
-    # find nonzero indices in the twodimage. 
-    occupied_azalt = sort(findall(f -> f > 0, get_retval(curr_trace)))
+@gen function linefinder_proposal(curr_trace, obs, t)
+    occupied_azalt = sort(findall(f -> f > 0, obs))
     az_location = [mode([c[1] for c in occupied_azalt])]
     az_tile = SphericalTiles[:az][az_location]
     alt_tile_low = SphericalTiles[:az][minimum([c[2] for c in occupied_azalt if c[1] == az_location])]
     alt_tile_high = SphericalTiles[:az][maximum([c[2] for c in occupied_azalt if c[1] == az_location])]
-
-    # can be a bit more intelligent about distance here if you want. should be somewhat related to amount of alt
+    # can be a bit more intelligent about distance here if you want. should be somewhat related to amount of alt tiles 
     if t > 1
         r = { :r } ~ LabeledCat(CoordDivs[:r],
-                                maybe_one_or_two_off(norm([curr_trace[:x], curr_trace[:y], ZInit]), .6, CoordDivs[:r]))
+                                maybe_one_or_two_off(norm([curr_trace[t-1 => :x],
+                                                           curr_trace[t-1 => :y], ZInit]), .6, CoordDivs[:r]))
     else
         r = { :r } ~ LabeledCat(CoordDivs[:r], maybe_one_off(norm([XInit, YInit, ZInit]), .2, CoordDivs[:r]))
     end
-    x = { :x } ~ LabeledCat(CoordDivs[:x], maybe_one_off(even(
-        r * cos(alt_tile_low[2]-alt_tile_low[1]) * sin(az_tile[2]-az_tile[1])),
-        .2, CoordDivs[:x]))
-    y = { :y } ~ LabeledCat(CoordDivs[:y], maybe_one_off(even(
-        r * cos(alt_tile_low[2]-alt_tile_low[1]) * cos(az_tile[2]-az_tile[1])),
-        .2, CoordDivs[:y]))
-    z = { :z } ~ LabeledCat(CoordDivs[:z], maybe_one_off(even(
-        r * sin(alt_tile_low[2]-alt_tile_low[1])), .2, CoordDivs[:z]))
+    x = { :x } ~ LabeledCat(CoordDivs[:x],
+                            maybe_one_off(even(round(r * cos(mean(alt_tile_low)) * sin(mean(az_tile)))),
+                                          .2, CoordDivs[:x]))
+    y = { :y } ~ LabeledCat(CoordDivs[:y],
+                            maybe_one_off(even(round(r * cos(mean(alt_tile_low)) * cos(mean(az_tile)))),
+                                          .2, CoordDivs[:y]))
+   # z = { :z } ~ LabeledCat(CoordDivs[:z], maybe_one_off(even(
+    #    r * sin(alt_tile_low[2]-alt_tile_low[1])), .2, CoordDivs[:z]))
     height = { :height } ~ LabeledCat(CoordDivs[:height],
-                                      maybe_one_off(r * sin((alt_tile_high[2]-alt_tile_high[1]) - (alt_tile_low[2]
-                                          , .2, CoordDivs[:height]))
-
-    
-    return x, y, z
+                                      maybe_one_off(r * sin(mean(alt_tile_high) - mean(alt_tile_low)),                                          .2, CoordDivs[:height]))
+    return x, y, height
 end
+
+
+function linepos_particle_filter(num_particles::Int, gt_trace::Trace, gen_function::DynamicDSLFunction{Any}, proposal)
+    observations = get_retval(gt_trace)[3]
+#    obs_choices = [Gen.choicemap((i => :image_2D, get_submap(get_choices(gt_trace), i => :image_2D))) for i in 1:length(observations)]
+    obs_choices = [Gen.choicemap() for i in 1:length(observations)]
+    [set_submap!(c, t => :image_2D, get_submap(get_choices(gt_trace), t => :image_2D)) for (t, c) in enumerate(obs_choices)]
+    if proposal == ()
+        state = Gen.initialize_particle_filter(gen_function, (1,), obs_choices[1], num_particles)
+    else
+        state = Gen.initialize_particle_filter(gen_function, (1,), obs_choices[1], proposal, (gt_trace, observations[1], 1), num_particles)
+    end
+    for t in 2:length(observations)
+        obs = observations[t]
+        Gen.maybe_resample!(state, ess_threshold=num_particles)
+        if proposal == ()
+            Gen.particle_filter_step!(state, (t,), (UnknownChange(),), obs)
+        else
+            Gen.particle_filter_step!(state, (t,), (UnknownChange(),), obs, proposal, (observations[t],t))
+        end
+        println([state.traces[1][tind => :x] for tind in 1:t])
+    end
+    heatmap_pf_results(state, gt_trace)
+    return state
+end
+
+
+function heatmap_pf_results(state, gt::Trace)
+    gray_cmap = range(colorant"white", stop=colorant"gray32", length=6)
+    true_depth = get_retval(gt)[1]
+    true_height = get_retval(gt)[2]
+    times = length(get_retval(gt)[1])
+    depth_matrix = zeros(length(CoordDivs[:x]), times)
+    height_matrix = zeros(length(CoordDivs[:height]), times)
+    for t in 1:times
+        for tr in state.traces
+            depth_matrix[tr[t => :x], t] += 1
+            height_matrix[tr[t => :height], t] += 1
+        end
+    end
+    # also plot the true x values
+    fig = Figure(resolution=(1200,1200))
+    ax_depth = fig[1, 1] = Axis(fig)
+    hm_depth = heatmap!(ax_depth, depth_matrix, colormap=gray_cmap)    
+    cbar = fig[1, 2] = Colorbar(fig, hm_depth, label="N Particles")
+
+    ax_height = fig[2, 1] = Axis(fig)
+    hm_height = heatmap!(ax_height, height_matrix, colormap=gray_cmap)
+    cbar2 = fig[2, 2] = Colorbar(fig, hm_depth, label="N Particles")
+#    scatter!(ax, [o-.5 for o in observations], [t-.5 for t in 1:times], color=:skyblue2, marker=:rect, markersize=30.0)
+    scatter!(ax_depth, [tx-.5 for tx in true_depth], [t-.5 for t in 1:times], color=:orange, markersize=20.0)
+    scatter!(ax_height, [th-.5 for th in true_height], [t-.5 for t in 1:times], color=:orange, markersize=20.0)
+    println(countmap([tr[:size_or_depth] for tr in state.traces]))
+#    vlines!(ax, HOME, color=:red)
+    display(fig)
+    return fig
+end
+
+
+
+
 
 function animate_azalt_movement(obs)
     fig = Figure(resolution=(1000,1000))
