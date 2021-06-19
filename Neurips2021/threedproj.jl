@@ -8,6 +8,12 @@ using StatsBase
 using Colors
 
 
+#i might get rid of 0 velocity
+
+#and decrease the amount of steps significantly
+
+#(to maybe like 5 steps)
+
 # eventually want to find a way to subtype the voxel types to define
 # voxel-wide fields,
 # repeat definition of fields and to define functions on Voxels (i.e. adding, preventing
@@ -88,7 +94,7 @@ CoordDivs = Dict(:az => collect(-80.0:10.0:80.0),
                  :x => collect(2.0:20.0), 
                  :y => collect(-10.0:10.0),
                  :z => collect(-10.0:2.0:10.0),
-                 :v => collect(-2.0:2.0),
+                 :v => collect(2.0:4.0),
                  :height => collect(2.0:20.0),
                  :brightness => collect(100.0:100.0))
 
@@ -101,10 +107,10 @@ SphericalTiles = Dict(:az => mapwindow(collect, CoordDivs[:az], 0:1, border=Inne
                       :r => mapwindow(collect, CoordDivs[:r], 0:1, border=Inner()))
 
 XInit = 10.0
-YInit = 0.0
+YInit = -8.0
 ZInit = 0.0
 VThatLeadToXYInit = 1.0
-HeightInit = 8.0
+HeightInit = 12.0
 
 # only value that isn't caught by boundaries is the last member of the range.
 # if the value is the last member of the domain and the last tile is the boundary. 
@@ -307,7 +313,7 @@ end
         height = { :height } ~ uniform_discrete(convert(Int64, height_curr), convert(Int64, height_curr))
         x = { :x } ~ LabeledCat(CoordDivs[:x], maybe_one_off(x_curr + v, .2, CoordDivs[:x]))
     else
-        height = { :height } ~ LabeledCat(CoordDivs[:height], maybe_one_off(height_curr + v, .2, CoordDivs[:height]))
+        height = { :height } ~ LabeledCat(CoordDivs[:height], maybe_one_off(height_curr - v, .2, CoordDivs[:height]))
         x = { :x } ~ uniform_discrete(convert(Int64, x_curr), convert(Int64, x_curr))
     end
     y = { :y } ~ LabeledCat(CoordDivs[:y], maybe_one_off(y_curr + v, .2, CoordDivs[:y]))
@@ -336,6 +342,9 @@ end
     return (v, x, y, height, az_alt_retina)
 
 end
+
+
+# should i propose size or depth here or is that cheating? 
 
 @gen function linefinder_proposal(curr_trace, obs, t)
     occupied_azalt = sort(findall(f -> f > 0, obs))
@@ -388,7 +397,7 @@ function linepos_particle_filter(num_particles::Int, gt_trace::Trace, gen_functi
             Gen.particle_filter_step!(state, (t,), (UnknownChange(),), obs, proposal, (observations[t], t))
         end
     end
-    heatmap_pf_results(state, gt_trace)
+  #  heatmap_pf_results(state, gt_trace)
     return state
 end
 
@@ -402,8 +411,8 @@ function heatmap_pf_results(state, gt::Trace)
     height_matrix = zeros(length(CoordDivs[:height]), times)
     for t in 1:times
         for tr in state.traces
-            depth_matrix[tr[t => :x], t] += 1
-            height_matrix[tr[t => :height], t] += 1
+            depth_matrix[t, Int64(tr[t => :x])] += 1
+            height_matrix[t, Int64(tr[t => :height])] += 1
         end
     end
     # also plot the true x values
@@ -411,13 +420,17 @@ function heatmap_pf_results(state, gt::Trace)
     ax_depth = fig[1, 1] = Axis(fig)
     hm_depth = heatmap!(ax_depth, depth_matrix, colormap=gray_cmap)    
     cbar = fig[1, 2] = Colorbar(fig, hm_depth, label="N Particles")
-
     ax_height = fig[2, 1] = Axis(fig)
     hm_height = heatmap!(ax_height, height_matrix, colormap=gray_cmap)
     cbar2 = fig[2, 2] = Colorbar(fig, hm_depth, label="N Particles")
 #    scatter!(ax, [o-.5 for o in observations], [t-.5 for t in 1:times], color=:skyblue2, marker=:rect, markersize=30.0)
-    scatter!(ax_depth, [tx-.5 for tx in true_depth], [t-.5 for t in 1:times], color=:orange, markersize=20.0)
-    scatter!(ax_height, [th-.5 for th in true_height], [t-.5 for t in 1:times], color=:orange, markersize=20.0)
+    scatter!(ax_depth, [t-.5 for t in 1:times], [tx-.5 for tx in true_depth], color=:orange, markersize=20.0)
+    scatter!(ax_height, [t-.5 for t in 1:times], [th-.5 for th in true_height], color=:orange, markersize=20.0)
+    ax_depth.ylabel = "Depth"
+    ax_height.ylabel = "Height"
+    ax_height.xlabel = "Time"
+    ylims!(ax_height, (0.0, CoordDivs[:height][end]))
+    ylims!(ax_depth, (0.0, CoordDivs[:x][end]))
     println(countmap([tr[:size_or_depth] for tr in state.traces]))
 #    vlines!(ax, HOME, color=:red)
     display(fig)
