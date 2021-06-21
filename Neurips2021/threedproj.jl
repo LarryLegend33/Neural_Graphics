@@ -291,7 +291,7 @@ end
     hs = []
     obss = []
     # draw z, draw height
-    size_or_depth = { :size_or_depth } ~ bernoulli(.5)
+    size_or_depth = { :size_or_depth } ~ uniformLabCat([:size, :depth])
 #    z = { :z } ~ uniformLabCat(CoordDivs[:Z])
     brightness = { :brightness } ~ uniformLabCat(CoordDivs[:brightness])
     alpha = { :alpha } ~ uniform_discrete(1, 1)
@@ -309,7 +309,7 @@ end
 @gen function xyz_step_model(v_prev, x_curr, y_curr, z_curr, height_curr, alpha, brightness, size_or_depth)
     # make a step depending on your energy and x location, and your previous velocity
     v = { :v } ~ LabeledCat(CoordDivs[:v], maybe_one_off(v_prev, .2, CoordDivs[:v]))
-    if size_or_depth
+    if size_or_depth == :depth
         height = { :height } ~ uniform_discrete(convert(Int64, height_curr), convert(Int64, height_curr))
         x = { :x } ~ LabeledCat(CoordDivs[:x], maybe_one_off(x_curr + v, .2, CoordDivs[:x]))
     else
@@ -344,27 +344,31 @@ end
 end
 
 
-# should i propose size or depth here or is that cheating? 
+# should i propose size or depth here or is that cheating?
+
+# Make sure these get translated to radians!!! That's why they're off. 
 
 @gen function linefinder_proposal(curr_trace, obs, t)
     occupied_azalt = sort(findall(f -> f > 0, obs))
     az_location = mode([c[1] for c in occupied_azalt])
     az_tile = SphericalTiles[:az][az_location]
-    alt_tile_low = SphericalTiles[:az][minimum([c[2] for c in occupied_azalt if c[1] == az_location])]
-    alt_tile_high = SphericalTiles[:az][maximum([c[2] for c in occupied_azalt if c[1] == az_location])]
+    alt_tile_low = SphericalTiles[:alt][minimum([c[2] for c in occupied_azalt if c[1] == az_location])]
+    alt_tile_high = SphericalTiles[:alt][maximum([c[2] for c in occupied_azalt if c[1] == az_location])]
+    alt_midpoint = (alt_tile_high[2] - alt_tile_low[1]) / 2
+    
     # can be a bit more intelligent about distance here if you want. should be somewhat related to amount of alt tiles 
     if t > 1
         r = { t => :r } ~ LabeledCat(CoordDivs[:r],
                                 maybe_one_or_two_off(round(norm([curr_trace[t-1 => :x],
-                                                           curr_trace[t-1 => :y], ZInit])), .6, CoordDivs[:r]))
+                                                           curr_trace[t-1 => :y], ZInit])), .1, CoordDivs[:r]))
     else
         r = { t => :r } ~ LabeledCat(CoordDivs[:r], maybe_one_off(round(norm([XInit, YInit, ZInit])), .2, CoordDivs[:r]))
     end
     x = { t => :x } ~ LabeledCat(CoordDivs[:x],
-                            maybe_one_off(even(round(r * cos(mean(alt_tile_low)) * sin(mean(az_tile)))),
+                            maybe_one_off(even(round(r * cos(alt_midpoint) * sin(mean(az_tile)))),
                                           .2, CoordDivs[:x]))
     y = { t => :y } ~ LabeledCat(CoordDivs[:y],
-                            maybe_one_off(even(round(r * cos(mean(alt_tile_low)) * cos(mean(az_tile)))),
+                            maybe_one_off(even(round(r * cos(alt_midpoint) * cos(mean(az_tile)))),
                                           .2, CoordDivs[:y]))
    # z = { t => :z } ~ LabeledCat(CoordDivs[:z], maybe_one_off(even(
     #    r * sin(alt_tile_low[2]-alt_tile_low[1])), .2, CoordDivs[:z]))
@@ -407,8 +411,8 @@ function heatmap_pf_results(state, gt::Trace)
     true_depth = get_retval(gt)[1]
     true_height = get_retval(gt)[2]
     times = length(get_retval(gt)[1])
-    depth_matrix = zeros(length(CoordDivs[:x]), times)
-    height_matrix = zeros(length(CoordDivs[:height]), times)
+    depth_matrix = zeros(times, length(CoordDivs[:x]) + 1)
+    height_matrix = zeros(times, length(CoordDivs[:height]) + 1)
     for t in 1:times
         for tr in state.traces
             depth_matrix[t, Int64(tr[t => :x])] += 1
