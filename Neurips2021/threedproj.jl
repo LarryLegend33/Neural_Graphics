@@ -354,7 +354,8 @@ end
     az_tile = SphericalTiles[:az][az_location]
     alt_tile_low = SphericalTiles[:alt][minimum([c[2] for c in occupied_azalt if c[1] == az_location])]
     alt_tile_high = SphericalTiles[:alt][maximum([c[2] for c in occupied_azalt if c[1] == az_location])]
-    alt_midpoint = (alt_tile_high[2] - alt_tile_low[1]) / 2
+    alt_midpoint_rad = deg2rad(alt_tile_high[2] - alt_tile_low[1]) / 2
+    az_rad = deg2rad(mean(az_tile))
     
     # can be a bit more intelligent about distance here if you want. should be somewhat related to amount of alt tiles 
     if t > 1
@@ -365,10 +366,10 @@ end
         r = { t => :r } ~ LabeledCat(CoordDivs[:r], maybe_one_off(round(norm([XInit, YInit, ZInit])), .2, CoordDivs[:r]))
     end
     x = { t => :x } ~ LabeledCat(CoordDivs[:x],
-                            maybe_one_off(even(round(r * cos(alt_midpoint) * sin(mean(az_tile)))),
+                            maybe_one_off(even(round(r * cos(alt_midpoint_rad) * sin(az_rad))),
                                           .2, CoordDivs[:x]))
     y = { t => :y } ~ LabeledCat(CoordDivs[:y],
-                            maybe_one_off(even(round(r * cos(alt_midpoint) * cos(mean(az_tile)))),
+                            maybe_one_off(even(round(r * cos(alt_midpoint_rad) * cos(az_rad))),
                                           .2, CoordDivs[:y]))
    # z = { t => :z } ~ LabeledCat(CoordDivs[:z], maybe_one_off(even(
     #    r * sin(alt_tile_low[2]-alt_tile_low[1])), .2, CoordDivs[:z]))
@@ -378,7 +379,7 @@ end
         v = { t => :v } ~ LabeledCat(CoordDivs[:v], maybe_one_off(y-YInit, .2, CoordDivs[:v]))
     end
     height = { t => :height } ~ LabeledCat(CoordDivs[:height],
-                                      maybe_one_off(round(r * sin(mean(alt_tile_high) - mean(alt_tile_low))), .2, CoordDivs[:height]))
+                                      maybe_one_off(round(r * sin(deg2rad(mean(alt_tile_high) - mean(alt_tile_low)))), .2, CoordDivs[:height]))
     return x, y, height
 end
 
