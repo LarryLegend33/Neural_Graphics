@@ -1,6 +1,4 @@
-using AbstractPlotting
 using DataFrames, RDatasets
-using AlgebraOfGraphics: linear, smooth
 using GLMakie
 using LightGraphs
 using MetaGraphs

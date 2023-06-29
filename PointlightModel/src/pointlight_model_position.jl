@@ -1,20 +1,21 @@
-import AbstractPlotting: Axis
 using GLMakie
 using Gen
 using GenGridEnumeration
 using OrderedCollections
-using LightGraphs
-using MetaGraphs
 using Random
 #using Images
 using ColorSchemes
 using Statistics
 using StatsBase
-using CurricularAnalytics
+#using CurricularAnalytics
 using BSON: @save, @load
 using MappedArrays
 using Base.Threads: @spawn
 using SpecialFunctions: loggamma
+using Graphs: add_edge!, is_cyclic, nv, vertices, AbstractGraph, SimpleDiGraph, outneighbors, inneighbors, Edge, weights, dijkstra_shortest_paths, enumerate_paths, adjacency_matrix, neighbors
+using DataStructures: Queue, enqueue!, dequeue!
+using LinearAlgebra
+using MetaGraphs
 
 
 # have to kill old threads when you launch a new one, because render thread keeps running.
@@ -225,9 +226,10 @@ function dotwrap(constraints::Gen.DynamicChoiceMap)
     (trace, weight) = Gen.generate(generate_dot_scene, 
                                    (timepoints,),  
                                    constraints)
+    return trace
 #    dotwrap(trace, choicemap())
-    render_dotmotion(trace, true, true)
-    return trace, weight
+#    render_dotmotion(trace, true, true)
+#    return trace, weight
 end
                  
 function dotwrap(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, constraints::Gen.DynamicChoiceMap)
@@ -669,11 +671,11 @@ function plot_inference_results(top_graphs, probabilities)
     limits!(bar_axis, xaxlims)
     screen = display(infres_fig)
     stop_anim = false
-    on(events(infres_fig.scene).keyboardbuttons) do button
-        if ispressed(button, Keyboard.enter)
-            stop_anim = true
-        end
-    end
+ #   on(events(infres_fig.scene).keyboardbuttons) do button
+  #      if ispressed(button, Keyboard.enter)
+   #         stop_anim = true
+   #     end
+  #  end
     query_enter() = stop_anim
     # will either stop when you press enter or when 200 seconds have passed. 
     timedwait(query_enter, 200.0)
@@ -916,16 +918,16 @@ end
 
 
 function node_color(mtype::String, dot_jitter_or_noise::Symbol)
-    skyblue = RGBf0(154, 203, 255) / 255
-    darkcyan = RGBf0(0, 170, 170) / 255
-    lightgreen = RGBf0(144, 238, 144) / 255
-    yellow = RGBf0(255, 240, 120) / 255
-    red = RGBf0(220, 100, 100) / 255
-    magenta = RGBf0(255,128,255) / 255
-    dark_green = RGBf0(34,139,34) / 255
-    dark_blue = RGBf0(0, 60, 120) / 255
-    dark_red = RGBf0(120, 60, 0) / 255
-    gray = RGBf0(130, 130, 130) / 255
+    skyblue = GLMakie.RGB(154/255, 203/255, 255/255) 
+    darkcyan = GLMakie.RGB(0 / 255, 170 /255, 170 / 255) 
+    lightgreen = GLMakie.RGB(144 / 255, 238 / 255, 144 / 255)
+    yellow = GLMakie.RGB(255 / 255, 240 / 255, 120 / 255)
+    red = GLMakie.RGB(220 / 255, 100 / 255, 100 / 255) 
+    magenta = GLMakie.RGB(255 / 255,128 / 255,255 / 255)
+    dark_green = GLMakie.RGB(34/ 255,139 / 255,34 / 255) 
+    dark_blue = GLMakie.RGB(0 / 255, 60 / 255, 120 / 255) 
+    dark_red = GLMakie.RGB(120 / 255, 60 / 255, 0 / 255) 
+    gray = GLMakie.RGB(130 / 255, 130 / 255, 130 / 255) 
     if mtype == "Linear"
         nodecolor = lightgreen
     elseif mtype == "Periodic"
@@ -1039,18 +1041,18 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     stationary_duration = 50
     stationary_coords = [dotmotion[1] for i in 1:stationary_duration]
     raw_stationary_coords = [raw_dot_tuples[1] for i in 1:stationary_duration]
-    time_node = Node(1);
+    time_node = Observable(1);
     f(t, coords) = coords[t]
     f_color(t) = t < stationary_duration ? :white : :black
     f_textsize(t) = t < stationary_duration ? 2 : 0
     f_timeseries(t, coords) = t < stationary_duration ? [coords[1]] : coords[1:t-stationary_duration+1]
     n_rows = 3
     n_cols = 2
-    white = RGBf0(255,255,255)
-    black = RGBf0(0,0,0)
+    white = GLMakie.RGB(255/255,255/255,255/255)
+    black = GLMakie.RGB(0,0,0)
+    
     if show_timeseries
-        dotmotion_fig = Figure(resolution=(2*res, 2*res), backgroundcolor=white, outer_padding=0)
-
+        dotmotion_fig = Figure(resolution=(2*res, 2*res), backgroundcolor=white, figure_padding=0)
         """ Uncomment if you want to plot static scenegraph in Panel 2"""
         # scenegraph_axis = Axis(dotmotion_fig, showaxis = false, 
         #                        xgridvisible = false, 
@@ -1095,43 +1097,45 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
 
     """ Panel 1 """ 
     
-    motion_axis = dotmotion_fig[1, 1] = Axis(dotmotion_fig, showaxis = false, 
-                                             xgridvisible = false, 
-                                             ygridvisible = false, 
-                                             xticksvisible = false,
-                                             yticksvisible = false,
-                                             xticklabelsvisible = false,
-                                             yticklabelsvisible = false,
-                                             leftspinevisible= false,
-                                             rightspinevisible = false,
-                                             topspinevisible = false,
-                                             bottomspinevisible = false, 
-                                             backgroundcolor = black)
+    motion_axis = dotmotion_fig[1, 1] = Axis(dotmotion_fig)
+                                             # showaxis = false, 
+                                             # xgridvisible = false, 
+                                             # ygridvisible = false, 
+                                             # xticksvisible = false,
+                                             # yticksvisible = false,
+                                             # xticklabelsvisible = false,
+                                             # yticklabelsvisible = false,
+                                             # leftspinevisible= false,
+                                             # rightspinevisible = false,
+                                             # topspinevisible = false,
+                                             # bottomspinevisible = false, 
+                                             # backgroundcolor = black)
     motion_axis.aspect = DataAspect()
     for dot in visible_dots
         textloc = (trace[(:x_observable, dot)][1], trace[(:y_observable, dot)][1])
         text!(motion_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=white, 
-              textsize=lift(t -> f_textsize(t), time_node))
+              fontsize=lift(t -> f_textsize(t), time_node))
     end
-    scatter!(motion_axis, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=14px, color=RGBf0(255, 255, 255))
+    scatter!(motion_axis, lift(t -> f(t, [stationary_coords; dotmotion]), time_node), markersize=14px, color=GLMakie.RGB(255/255, 255/255, 255/255))
     xlims!(motion_axis, (-bounds, bounds))
     ylims!(motion_axis, (-bounds, bounds))
 
 
     """ Panel 2 """ 
     if show_scenegraph
-        scenegraph_animation_axis = dotmotion_fig[1, 2] = Axis(dotmotion_fig, showaxis = false, 
-                                                               xgridvisible = false, 
-                                                               ygridvisible = false, 
-                                                               xticksvisible = false,
-                                                               yticksvisible = false,
-                                                               xticklabelsvisible = false,
-                                                               yticklabelsvisible = false,
-                                                               leftspinevisible= false,
-                                                               rightspinevisible = false,
-                                                               topspinevisible = false,
-                                                               bottomspinevisible = false, 
-                                                               backgroundcolor = black)
+        scenegraph_animation_axis = dotmotion_fig[1, 2] = Axis(dotmotion_fig)
+                                                               # showaxis = false, 
+                                                               # xgridvisible = false, 
+                                                               # ygridvisible = false, 
+                                                               # xticksvisible = false,
+                                                               # yticksvisible = false,
+                                                               # xticklabelsvisible = false,
+                                                               # yticklabelsvisible = false,
+                                                               # leftspinevisible= false,
+                                                               # rightspinevisible = false,
+                                                               # topspinevisible = false,
+                                                               # bottomspinevisible = false, 
+                                                               # backgroundcolor = black)
         scenegraph_animation_axis.aspect = DataAspect()
         visdotind = 0
         invisdotind = 0
@@ -1145,7 +1149,7 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
             scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords); map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size + 2*perceptual_noise_std,
                      markerspace=SceneSpace, color=node_color(node_color_input, :perceptual_noise), overdraw=true)
             textloc = (trace[(:x_observable, dot)][1]+.5, trace[(:y_observable, dot)][1])
-            text!(scenegraph_animation_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=white, textsize=lift(t-> f_textsize(t), time_node), overdraw=false)
+            text!(scenegraph_animation_axis, string(dot), position = (textloc[1], textloc[2] + 1), color=white, fontsize=lift(t-> f_textsize(t), time_node), overdraw=false)
             if dot in visible_dots
                 scatter!(scenegraph_animation_axis, lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords); map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size,
                          markerspace=SceneSpace, color=node_color(node_color_input, :dot), overdraw=true)
@@ -1153,7 +1157,7 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
             else
                 scatter!(scenegraph_animation_axis,
                          lift(t -> f(t, [map(λ -> [λ[dot]], raw_stationary_coords);
-                                         map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size*10, color=RGBf0(0,0,0),
+                                         map(λ -> [λ[dot]], raw_dot_tuples)]), time_node), markersize=marker_size*10, color=GLMakie.RGB(0,0,0),
                          stroke_color=node_color(node_color_input, :dot)[1], strokewidth=.1)
             end
         end
@@ -1188,11 +1192,11 @@ function render_dotmotion(trace::Gen.DynamicDSLTrace{DynamicDSLFunction{Any}}, s
     num_repeats = 0
     #    isopen(scene))
     stop_anim = false
-    on(events(dotmotion_fig.scene).keyboardbuttons) do button
-        if ispressed(button, Keyboard.enter)
-            stop_anim = true
-        end
-    end
+    # on(events(dotmotion_fig.scene).keyboardbuttons) do button
+    #     if ispressed(button, Keyboard.enter)
+    #         stop_anim = true
+    #     end
+    # end
     while(!stop_anim)
         i += 1
         if i == size([stationary_coords; dotmotion])[1]
@@ -1903,3 +1907,76 @@ end
 # DRAWS FROM THE CHOICEMAP, AND ALSO THE DRAWS OF WHATEVER YOU ARE REPLACING. YOUR UPDATE CALLS WILL
 # SIMPLY REPLACE THE VALUES. THEN YOU WILL ALWAYS PLOT X_OBSERVABLE. GET RID OF TRACE TO TREE, AND ANY TREE REQUIRING CALLS
 # GENERATE WILL ALSO GIVE BACK UPDATED TREES. UPDATE WILL NOT (ONLY FOR THE CHANGED VARIABLE). 
+
+
+#function all_paths(g::AbstractGraph{T}) where T
+
+function reachable_from(g, s::Int, vlist::Array=Array{Int64,1}()) where T
+    for v in neighbors(g, s)
+        if findfirst(isequal(v), vlist) == nothing  # v is not in vlist
+            push!(vlist, v)
+        end
+        reachable_from(g, v, vlist)
+    end
+    return vlist
+end
+
+function reachable_to(g, t::Int) where T
+    reachable_from(gad(g), t)  # vertices reachable from s in the transpose graph
+ end
+
+
+function gad(g::AbstractGraph{T}) where T
+    @assert typeof(g) == SimpleDiGraph{T}
+    return SimpleDiGraph(transpose(adjacency_matrix(g)))
+end
+
+
+function all_paths(g) where T
+    # check that g is acyclic
+    if is_cyclic(g)
+        error("all_paths(): input graph has cycles")
+    end
+    que = Queue{Array}()
+    paths = Array[]
+    sinks = Int[]
+    for v in vertices(g)
+        if (length(outneighbors(g,v)) == 0) && (length(inneighbors(g,v)) > 0) # consider only sink vertices with a non-zero in-degree
+            push!(sinks, v)
+        end
+    end
+    for v in sinks
+        enqueue!(que, [v])
+        while !isempty(que) # work backwards from sink v to all sources reachable to v in BFS fashion
+            x = dequeue!(que) # grab a path from the queue
+            for (i, u) in enumerate(inneighbors(g, x[1]))  # consider the in-neighbors at the beginning of the current path
+                if i == 1 # first neighbor, build onto exising path 
+                    insert!(x, 1, u)  # prepend vertex u to array x
+                    # if reached a source vertex, done with the path; otherwise, put it back in queue
+                    length(inneighbors(g, u)) == 0 ? push!(paths, x) : enqueue!(que, x)
+                else # not first neighbor, create a copy of the path
+                    y = copy(x)
+                    y[1] = u  # overwrite first element in array
+                    length(inneighbors(g, u)) == 0 ? push!(paths, y) : enqueue!(que, y)
+                end
+            end
+        end
+    end
+    return paths
+end
+
+function longest_path(g, s::Int) where T
+    if is_cyclic(g)
+        error("longest_path(): input graph has cycles")
+    end
+    lp = Array{Edge}[]
+    max = 0
+    # shortest path from s to all vertices in -G
+    for path in enumerate_paths(dijkstra_shortest_paths(g, s, -weights(g)))
+        if length(path) > max
+            lp = path
+            max = length(path)
+        end
+    end
+    return lp
+end
